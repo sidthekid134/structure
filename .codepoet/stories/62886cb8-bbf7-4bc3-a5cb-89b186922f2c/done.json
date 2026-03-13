@@ -1,0 +1,11 @@
+{
+  "status": "completed",
+  "summary": "Implemented reusable provider adapter pattern with exponential backoff retry. Created ProvisioningResult, ProviderConfig, and Database types. Built RateLimiter class (HTTP 429 detection, 1s initial delay, 60s max, 10 max retries, ±10% jitter, injectable sleep for testing) and withRetry helper. Built ProviderAdapter abstract class with authenticate/provision/verify/rollback abstract methods, provisionIdempotent method that checks (app_id, provider, idempotency_key) and returns cached result on hit, and a pending→in_progress→success/failed state machine that logs every transition to provisioning_operation_logs. All 100 tests pass (86 pre-existing + 14 new).",
+  "files_changed": [
+    "src/provisioning/types.ts",
+    "src/provisioning/rate-limiter.ts",
+    "src/provisioning/provider-adapter.ts",
+    "src/provisioning/rate-limiter.test.ts",
+    "src/provisioning/provider-adapter.test.ts"
+  ]
+}
