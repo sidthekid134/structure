@@ -1,0 +1,12 @@
+{
+  "status": "completed",
+  "summary": "Implemented provisioning safety guards: OperationLock (file-based per-app locking with timeout), CredentialAccessContext (app-level locking with idempotency step markers and audit-safe credential access), and CredentialPropagator (distributes a single LLM API key to multiple destinations with per-destination error handling). All 57 tests pass.",
+  "files_changed": [
+    "src/credentials/operation-lock.ts",
+    "src/credentials/operation-lock.test.ts",
+    "src/credentials/access-control.ts",
+    "src/credentials/access-control.test.ts",
+    "src/credentials/propagation.ts",
+    "src/credentials/propagation.test.ts"
+  ]
+}
