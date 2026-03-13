@@ -3,3 +3,11 @@ dist/
 .env
 *.enc
 *.hash
+*.key
+*.lock
+.DS_Store
+coverage/
+*.js.map
+__pycache__/
+.venv/
+*.pyc
