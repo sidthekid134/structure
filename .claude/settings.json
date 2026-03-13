@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allowedTools": [
+      "Bash(*)",
+      "Read",
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "NotebookEdit",
+      "Task",
+      "WebSearch"
+    ]
+  }
+}
