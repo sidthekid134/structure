@@ -1,0 +1,12 @@
+{
+  "status": "completed",
+  "summary": "Created PostgreSQL schema (provisioning_operations, provider_credentials, provisioning_operation_logs tables with indexes and constraints), a database migration runner, and a CredentialStore service with async encrypt/decrypt using AES-256-GCM and scrypt key derivation (Argon2-equivalent) with master password hash stored at ~/.provisioning/master.key. Updated .gitignore and README.md. All 68 tests pass.",
+  "files_changed": [
+    ".gitignore",
+    "README.md",
+    "src/db/schema.sql",
+    "src/db/migrate.ts",
+    "src/credentials/credential-store.ts",
+    "src/credentials/credential-store.test.ts"
+  ]
+}
