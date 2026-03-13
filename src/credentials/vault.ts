@@ -70,4 +70,12 @@ export class Vault {
     const entries = this.read();
     return entries.filter((e) => e.provider === provider).map((e) => e.key);
   }
+
+  delete(provider: string, key: string): void {
+    const entries = this.read();
+    const index = entries.findIndex((e) => e.provider === provider && e.key === key);
+    if (index < 0) throw new NotFoundError(provider, key);
+    entries.splice(index, 1);
+    this.write(entries);
+  }
 }
