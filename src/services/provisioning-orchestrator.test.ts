@@ -57,7 +57,8 @@ describe('ProvisioningOrchestrator', () => {
     jest.clearAllMocks();
     pool = new Pool() as Pool;
     mockVault = new (Vault as jest.MockedClass<typeof Vault>)('password') as jest.Mocked<Vault>;
-    mockVault.list.mockReturnValue([]);
+    mockVault.list.mockReturnValue(['api_key']);
+    mockVault.retrieve.mockReturnValue('test-value');
     credentialResolver = new CredentialResolver(mockVault);
     adapterExecutor = new AdapterExecutor();
     orchestrator = new ProvisioningOrchestrator(pool, credentialResolver, adapterExecutor);

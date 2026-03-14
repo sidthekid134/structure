@@ -207,7 +207,9 @@ export class ProvisioningOrchestrator {
 
       if (!result.success) {
         await this.updateQueueItemStatus(operationId, adapter.name, 'failed');
-        throw new Error(result.error ?? `Adapter ${adapter.name} failed`);
+        throw new Error(
+          `Adapter "${adapter.name}" failed (step ${sorted.indexOf(adapter)}): ${result.error ?? 'unknown error'}`
+        );
       }
 
       outputs[adapter.name] = result.output;
@@ -251,8 +253,16 @@ export class ProvisioningOrchestrator {
           ctx.environment,
           ctx.adapterSequence,
           ctx.timeout
-        ).catch(() => {
-          /* errors handled internally */
+        ).catch(async (err) => {
+          try {
+            await this.updateOperationStatus(
+              operationId,
+              'failed',
+              `Queue processing failed: ${err instanceof Error ? err.message : String(err)}`
+            );
+          } catch {
+            /* ignore secondary errors in error handling */
+          }
         });
       }
     }
@@ -301,7 +311,8 @@ export class ProvisioningOrchestrator {
       await this.updateOperationStatus(operationId, 'completed');
       return { operationId, status: 'completed', adapterResults };
     } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const baseMessage = err instanceof Error ? err.message : String(err);
+      const errorMessage = `[appId=${appId}, env=${environment}, operationId=${operationId}] ${baseMessage}`;
       await this.updateOperationStatus(operationId, 'failed', errorMessage);
       return { operationId, status: 'failed', adapterResults: [], error: errorMessage };
     } finally {

@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import { ProvisioningOrchestrator, AdapterDefinition } from '../services/provisioning-orchestrator';
 import { QueueManager } from '../services/queue-manager';
 import { LockTimeoutError } from '../credentials/operation-lock';
+import { ProvisioningValidator } from '../validation/provisioning-validator';
 
 const VALID_ENVIRONMENTS = ['dev', 'preview', 'production'] as const;
 type Environment = (typeof VALID_ENVIRONMENTS)[number];
@@ -41,7 +42,8 @@ function validateStartRequest(body: unknown): StartRequestBody {
 export function createProvisioningRouter(
   orchestrator: ProvisioningOrchestrator,
   queueManager: QueueManager,
-  pool: Pool
+  pool: Pool,
+  validator?: ProvisioningValidator
 ): Router {
   const router = Router();
 
@@ -50,10 +52,26 @@ export function createProvisioningRouter(
     try {
       params = validateStartRequest(req.body);
     } catch (err) {
-      return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      return res.status(400).json({
+        error: err instanceof Error ? err.message : String(err),
+        code: 'VALIDATION_ERROR',
+      });
     }
 
     const { appId, environment, adapterSequence, timeout } = params;
+
+    if (validator) {
+      try {
+        validator.validateProvisioningRequest(appId, environment, adapterSequence, timeout);
+      } catch (err) {
+        return res.status(400).json({
+          error: err instanceof Error ? err.message : String(err),
+          code: 'VALIDATION_ERROR',
+          context: { appId },
+        });
+      }
+    }
+
     console.log(
       `[provisioning] Starting operation: appId=${appId}, environment=${environment}, adapterCount=${adapterSequence.length}`
     );
@@ -69,9 +87,17 @@ export function createProvisioningRouter(
       return res.status(202).json({ operation_id: result.operationId, status: result.status });
     } catch (err) {
       if (err instanceof LockTimeoutError) {
-        return res.status(409).json({ error: 'Another operation is in progress' });
+        return res.status(409).json({
+          error: 'Another operation is in progress',
+          code: 'LOCK_TIMEOUT',
+          context: { appId },
+        });
       }
-      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : String(err),
+        code: 'INTERNAL_ERROR',
+        context: { appId },
+      });
     }
   });
 
