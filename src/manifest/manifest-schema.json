@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "platform.manifest.schema.json",
+  "title": "Platform Manifest",
+  "type": "object",
+  "required": ["projectId", "generatedAt", "version", "resources"],
+  "additionalProperties": false,
+  "properties": {
+    "projectId": { "type": "string", "minLength": 1 },
+    "generatedAt": { "type": "number" },
+    "version": { "type": "string", "minLength": 1 },
+    "lastDriftCheck": { "type": "number" },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["provider", "resourceType", "resourceId", "configHash", "lastVerified"],
+        "additionalProperties": false,
+        "properties": {
+          "provider": { "type": "string", "minLength": 1 },
+          "resourceType": { "type": "string", "minLength": 1 },
+          "resourceId": { "type": "string", "minLength": 1 },
+          "configHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "lastVerified": { "type": "number" },
+          "configuration": { "type": "object" }
+        }
+      }
+    }
+  }
+}
