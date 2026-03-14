@@ -1,0 +1,12 @@
+{
+  "status": "completed",
+  "summary": "Added Express-based REST API endpoints for provisioning: POST /provisioning/start (starts an operation, returns operation_id), GET /provisioning/:operationId (polls status with 202/200/400 per state), GET /provisioning/app/:appId/queue (returns queue depth and positions). Implemented QueueManager class for queue status queries. Added request validation, error handling (409 for LockTimeoutError, 404 for missing ops, 400 for validation), and response logging. Added express/supertest dependencies and full test coverage.",
+  "files_changed": [
+    "package.json",
+    "src/app.ts",
+    "src/services/queue-manager.ts",
+    "src/services/queue-manager.test.ts",
+    "src/routes/provisioning.ts",
+    "src/routes/provisioning.test.ts"
+  ]
+}
