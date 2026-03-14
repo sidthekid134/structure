@@ -28,12 +28,12 @@ describe('CredentialResolver', () => {
     expect(result).toEqual({ api_key: 'sk-test-key', secret: 'my-secret' });
   });
 
-  it('returns empty object when provider has no credentials', () => {
+  it('throws when provider has no credentials', () => {
     mockVault.list.mockReturnValue([]);
 
-    const result = resolver.resolveCredentials('op-2', 'github');
-
-    expect(result).toEqual({});
+    expect(() => resolver.resolveCredentials('op-2', 'github')).toThrow(
+      'No credentials found for provider "github"'
+    );
     expect(mockVault.retrieve).not.toHaveBeenCalled();
   });
 
