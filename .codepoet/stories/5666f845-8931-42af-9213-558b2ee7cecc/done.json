@@ -1,0 +1,12 @@
+{
+  "status": "completed",
+  "summary": "Built the core provisioning orchestration service with three classes: CredentialResolver (wraps the file-based Vault to decrypt and return provider credentials), AdapterExecutor (invokes named adapters with inputs and credentials, catching errors into structured results), and ProvisioningOrchestrator (acquires PostgreSQL advisory locks, executes adapters in topological dependency order, manages operation state transitions in provisioning_operations, queues blocked operations via provisioning_queue, and automatically retries queued operations when locks are released). Includes input validation (non-empty sequence, all adapters registered, no circular dependencies via Kahn's algorithm), partial failure handling (failed operations marked with error_message, leaving resources intact for retry), and full test coverage.",
+  "files_changed": [
+    "src/services/credential-resolver.ts",
+    "src/services/adapter-executor.ts",
+    "src/services/provisioning-orchestrator.ts",
+    "src/services/credential-resolver.test.ts",
+    "src/services/adapter-executor.test.ts",
+    "src/services/provisioning-orchestrator.test.ts"
+  ]
+}

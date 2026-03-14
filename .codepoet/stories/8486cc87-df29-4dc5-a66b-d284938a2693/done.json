@@ -1,0 +1,11 @@
+{
+  "status": "completed",
+  "summary": "Created PostgreSQL-backed provisioning schema and TypeScript implementation: three database tables (provisioning_operations, provisioning_queue, provisioning_dependencies) with composite index, acquireLock using pg_advisory_xact_lock with timeout handling, releaseLock with queue processing trigger, and queueOperation inserting rows into both queue and dependency tables. Added pg dependency and full test coverage.",
+  "files_changed": [
+    "src/types/provisioning.ts",
+    "src/db/provisioning.ts",
+    "src/db/provisioning.test.ts",
+    "src/db/migrations/001_provisioning.sql",
+    "package.json"
+  ]
+}
