@@ -89,8 +89,27 @@ export class ValidationError extends CredentialError {
     message: string,
     operation: string,
     public readonly field?: string,
+    public readonly expected_type?: string,
+    public readonly actual_value?: unknown,
   ) {
     super(message, operation);
     this.name = 'ValidationError';
+  }
+}
+
+/**
+ * Thrown when encryption or decryption validation fails.
+ * Extends CryptoError so existing catch blocks remain compatible.
+ */
+export class EncryptionError extends CryptoError {
+  constructor(
+    message: string,
+    operation: string,
+    public readonly key_derivation_params?: Record<string, unknown>,
+    providerId?: string,
+    cause?: unknown,
+  ) {
+    super(message, operation, providerId, cause);
+    this.name = 'EncryptionError';
   }
 }

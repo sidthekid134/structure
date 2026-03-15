@@ -1,0 +1,258 @@
+/**
+ * Core types for the cloud provider integration framework.
+ *
+ * Defines the ProviderAdapter<T> generic interface and all related schemas
+ * that provider adapters must implement.
+ */
+
+import { CredentialError } from '../types.js';
+
+export const PLATFORM_CORE_VERSION = '1.0';
+
+// ---------------------------------------------------------------------------
+// Provider type literals
+// ---------------------------------------------------------------------------
+
+export type ProviderType =
+  | 'firebase'
+  | 'github'
+  | 'eas'
+  | 'apple'
+  | 'google-play'
+  | 'cloudflare'
+  | 'oauth';
+
+export const PROVIDER_TYPES: readonly ProviderType[] = [
+  'firebase',
+  'github',
+  'eas',
+  'apple',
+  'google-play',
+  'cloudflare',
+  'oauth',
+] as const;
+
+// Dependency order for reconciliation
+export const PROVIDER_DEPENDENCY_ORDER: readonly ProviderType[] = [
+  'firebase',
+  'github',
+  'eas',
+  'apple',
+  'google-play',
+  'cloudflare',
+  'oauth',
+] as const;
+
+// ---------------------------------------------------------------------------
+// Shared supporting types
+// ---------------------------------------------------------------------------
+
+export type Environment = 'dev' | 'preview' | 'prod';
+
+export interface BranchProtectionRule {
+  branch: string;
+  require_reviews: boolean;
+  dismiss_stale_reviews: boolean;
+  require_status_checks: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Provider-specific manifest configs (discriminated union by `provider`)
+// ---------------------------------------------------------------------------
+
+export type FirebaseService =
+  | 'auth'
+  | 'firestore'
+  | 'storage'
+  | 'fcm'
+  | 'analytics'
+  | 'crashlytics'
+  | 'remote-config'
+  | 'app-check'
+  | 'vertex-ai';
+
+export interface FirebaseManifestConfig {
+  readonly provider: 'firebase';
+  project_name: string;
+  billing_account_id: string;
+  services: FirebaseService[];
+  environment: Environment;
+  existing_project_id?: string;
+}
+
+export interface GitHubManifestConfig {
+  readonly provider: 'github';
+  repo_name: string;
+  owner: string;
+  branch_protection_rules: BranchProtectionRule[];
+  environments: Environment[];
+  workflow_templates: string[];
+  existing_repo_id?: string;
+}
+
+export interface EasManifestConfig {
+  readonly provider: 'eas';
+  project_name: string;
+  organization?: string;
+  environments: Environment[];
+}
+
+export interface AppleManifestConfig {
+  readonly provider: 'apple';
+  bundle_id: string;
+  team_id: string;
+  app_name: string;
+  enable_apns: boolean;
+  certificate_type: 'development' | 'distribution';
+}
+
+export interface GooglePlayManifestConfig {
+  readonly provider: 'google-play';
+  package_name: string;
+  app_title: string;
+  default_language: string;
+}
+
+export interface CloudflareManifestConfig {
+  readonly provider: 'cloudflare';
+  domain: string;
+  deep_link_routes: string[];
+  ssl_mode: 'full' | 'flexible' | 'strict';
+}
+
+export interface OAuthManifestConfig {
+  readonly provider: 'oauth';
+  oauth_provider: 'google' | 'github' | 'apple';
+  redirect_uri: string;
+  scopes: string[];
+  firebase_project_id: string;
+}
+
+export type ProviderConfig =
+  | FirebaseManifestConfig
+  | GitHubManifestConfig
+  | EasManifestConfig
+  | AppleManifestConfig
+  | GooglePlayManifestConfig
+  | CloudflareManifestConfig
+  | OAuthManifestConfig;
+
+// ---------------------------------------------------------------------------
+// Provider manifest (top-level document)
+// ---------------------------------------------------------------------------
+
+export interface ProviderManifest {
+  version: string;
+  app_id: string;
+  providers: ProviderConfig[];
+}
+
+// ---------------------------------------------------------------------------
+// Provider state — live representation after provisioning
+// ---------------------------------------------------------------------------
+
+export interface CredentialMetadata {
+  name: string;
+  download_window_closed?: boolean;
+  pending_manual_upload?: boolean;
+  stored_at?: number;
+}
+
+export interface ProviderState {
+  provider_id: string;
+  provider_type: ProviderType;
+  resource_ids: Record<string, string>;
+  config_hashes: Record<string, string>;
+  credential_metadata: Record<string, CredentialMetadata>;
+  partially_complete: boolean;
+  failed_steps: string[];
+  completed_steps: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+// ---------------------------------------------------------------------------
+// Drift report
+// ---------------------------------------------------------------------------
+
+export type ConflictType =
+  | 'missing_in_live'
+  | 'missing_in_manifest'
+  | 'value_mismatch'
+  | 'orphaned_resource';
+
+export interface DriftDifference {
+  field: string;
+  manifest_value: unknown;
+  live_value: unknown;
+  conflict_type: ConflictType;
+}
+
+export interface DriftReport {
+  provider_id: string;
+  provider_type: ProviderType;
+  manifest_state: ProviderConfig;
+  live_state: ProviderState | null;
+  differences: DriftDifference[];
+  orphaned_resources: string[];
+  requires_user_decision: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile direction
+// ---------------------------------------------------------------------------
+
+export type ReconcileDirection = 'manifest→live' | 'live→manifest';
+
+// ---------------------------------------------------------------------------
+// Provider adapter interface
+// ---------------------------------------------------------------------------
+
+export interface ProviderAdapter<T extends ProviderConfig> {
+  /**
+   * Creates or updates cloud resources to match the given config.
+   * Must be idempotent — calling twice should not create duplicate resources.
+   */
+  provision(config: T): Promise<ProviderState>;
+
+  /**
+   * Compares the manifest config against live provider state and
+   * returns a DriftReport describing any differences.
+   */
+  validate(manifest: T, liveState: ProviderState | null): Promise<DriftReport>;
+
+  /**
+   * Reconciles differences between manifest and live state in the given direction.
+   */
+  reconcile(report: DriftReport, direction: ReconcileDirection): Promise<ProviderState>;
+
+  /**
+   * Extracts credentials from the provisioned state as an encrypted key-value map.
+   */
+  extractCredentials(state: ProviderState): Promise<Record<string, string>>;
+}
+
+// ---------------------------------------------------------------------------
+// Error types
+// ---------------------------------------------------------------------------
+
+/** Thrown when a provider adapter operation fails. */
+export class AdapterError extends CredentialError {
+  constructor(
+    message: string,
+    public readonly provider_id: string,
+    operation: string,
+    public readonly underlying_error?: unknown,
+  ) {
+    super(message, operation, provider_id);
+    this.name = 'AdapterError';
+  }
+}
+
+/** Structured error with user-facing and developer-facing messages. */
+export interface StructuredError {
+  error_code: string;
+  user_message: string;
+  developer_message: string;
+  suggestion: string;
+}
