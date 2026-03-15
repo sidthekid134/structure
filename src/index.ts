@@ -41,3 +41,19 @@ export * from './operation-logger.js';
 export * from './events/store.js';
 export * from './events/replayer.js';
 export * from './events/recovery.js';
+
+// Multi-provider orchestration engine
+export * from './orchestration/types.js';
+export * from './orchestration/event-log.js';
+export * from './orchestration/idempotency.js';
+export * from './orchestration/conflict-resolver.js';
+export * from './orchestration/orchestrator.js';
+export * from './orchestration/secret-manager.js';
+export * from './orchestration/app-validator.js';
+export * from './orchestration/error-handler.js';
+
+// Provider validation schemas
+export * from './providers/validator.js';
+
+// Security input validation
+export * from './security/input-validator.js';
