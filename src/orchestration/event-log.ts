@@ -148,6 +148,24 @@ export class EventLog {
     );
   }
 
+  /**
+   * Returns all operations, ordered by creation time descending (most recent first).
+   */
+  listOperations(limit = 100): OperationRecord[] {
+    return this.db
+      .prepare('SELECT * FROM operations ORDER BY created_at DESC LIMIT ?')
+      .all(limit) as OperationRecord[];
+  }
+
+  /**
+   * Returns all operations for a specific app_id, ordered by creation time descending.
+   */
+  listOperationsByAppId(appId: string, limit = 50): OperationRecord[] {
+    return this.db
+      .prepare('SELECT * FROM operations WHERE app_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(appId, limit) as OperationRecord[];
+  }
+
   // ---------------------------------------------------------------------------
   // Events
   // ---------------------------------------------------------------------------

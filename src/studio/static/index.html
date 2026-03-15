@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Studio UI — Platform Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">⚡</div>
+      Studio UI
+    </div>
+    <div class="header-right">
+      <div class="ws-indicator">
+        <div id="ws-dot" class="ws-dot"></div>
+        <span id="ws-label">Offline</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Nav ────────────────────────────────────────────────────────────── -->
+  <nav>
+    <div class="nav-section">Overview</div>
+    <ul>
+      <li data-panel="dashboard">
+        <button data-panel="dashboard">
+          <span>📊</span> Dashboard
+        </button>
+      </li>
+    </ul>
+    <div class="nav-section">Provisioning</div>
+    <ul>
+      <li data-panel="timeline">
+        <button data-panel="timeline">
+          <span>📋</span> Timeline
+        </button>
+      </li>
+      <li data-panel="drift">
+        <button data-panel="drift">
+          <span>⚖️</span> Drift Viewer
+        </button>
+      </li>
+    </ul>
+    <div class="nav-section">Configuration</div>
+    <ul>
+      <li data-panel="secrets">
+        <button data-panel="secrets">
+          <span>🔐</span> Secrets
+        </button>
+      </li>
+      <li data-panel="arch">
+        <button data-panel="arch">
+          <span>🏗️</span> Architecture
+        </button>
+      </li>
+    </ul>
+  </nav>
+
+  <!-- ── Main ───────────────────────────────────────────────────────────── -->
+  <main>
+
+    <!-- ── Dashboard Panel ────────────────────────────────────────────── -->
+    <section id="panel-dashboard" class="panel active">
+      <h1 class="panel-title">Dashboard</h1>
+
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-total">—</div>
+          <div class="stat-label">Total Runs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-success" style="color:var(--success)">—</div>
+          <div class="stat-label">Successful</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-failed" style="color:var(--error)">—</div>
+          <div class="stat-label">Failed / Partial</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-running" style="color:var(--info)">—</div>
+          <div class="stat-label">Running</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+        <div class="card">
+          <div class="card-title">Drift Status</div>
+          <div id="drift-summary">
+            <div class="empty-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Provider Architecture</div>
+          <div id="arch-mini"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Recent Runs</div>
+        <div id="recent-runs">
+          <div class="empty-state"><div class="spinner"></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Live Event Feed</div>
+        <div id="live-feed" class="live-feed">
+          <div class="feed-entry">
+            <span class="feed-time">—</span>
+            <span style="color:var(--text-muted)">Waiting for events…</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Timeline Panel ─────────────────────────────────────────────── -->
+    <section id="panel-timeline" class="panel">
+      <h1 class="panel-title">Provisioning Timeline</h1>
+      <p class="panel-subtitle">
+        Full history of provisioning runs. Expand a run to see provider-level events,
+        errors, and resume controls.
+      </p>
+      <ul id="timeline-list" class="timeline">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </ul>
+    </section>
+
+    <!-- ── Drift Panel ────────────────────────────────────────────────── -->
+    <section id="panel-drift" class="panel">
+      <h1 class="panel-title">Drift Viewer</h1>
+      <p class="panel-subtitle">
+        Compare manifest vs. live provider state. Choose a sync direction and execute
+        reconciliation with real-time WebSocket progress.
+      </p>
+      <div id="drift-content">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </div>
+    </section>
+
+    <!-- ── Secrets Panel ──────────────────────────────────────────────── -->
+    <section id="panel-secrets" class="panel">
+      <h1 class="panel-title">Secret Status</h1>
+      <p class="panel-subtitle">
+        Capture status for all provider secrets. Secrets are stored encrypted at rest.
+        Status shown here reflects schema — actual capture state requires vault access.
+      </p>
+      <div id="secrets-content">
+        <div class="empty-state"><div class="spinner"></div></div>
+      </div>
+    </section>
+
+    <!-- ── Architecture Panel ─────────────────────────────────────────── -->
+    <section id="panel-arch" class="panel">
+      <h1 class="panel-title">Provider Architecture</h1>
+      <p class="panel-subtitle">
+        Dependency graph showing provisioning order. Resources are created in topological
+        order: Firebase → GitHub → EAS/Apple/Google Play/OAuth → Cloudflare.
+      </p>
+
+      <div class="card">
+        <div class="card-title">Dependency Graph</div>
+        <div class="arch-graph" id="arch-graph-main">
+          <div class="empty-state"><div class="spinner"></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Dependency Order</div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="text-align:left;color:var(--text-muted);font-size:11px;text-transform:uppercase">
+              <th style="padding:8px 0">Provider</th>
+              <th>Depends On</th>
+              <th>Status Indicator</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:8px 0;font-weight:600">Firebase</td>
+              <td style="color:var(--text-muted)">—</td>
+              <td><span class="badge badge-synced">synced</span></td>
+            </tr>
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:8px 0;font-weight:600">GitHub</td>
+              <td style="color:var(--text-secondary)">Firebase</td>
+              <td><span class="badge badge-synced">synced</span></td>
+            </tr>
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:8px 0;font-weight:600">EAS</td>
+              <td style="color:var(--text-secondary)">GitHub</td>
+              <td><span class="badge badge-pending">pending</span></td>
+            </tr>
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:8px 0;font-weight:600">Apple</td>
+              <td style="color:var(--text-secondary)">GitHub</td>
+              <td><span class="badge badge-pending">pending</span></td>
+            </tr>
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:8px 0;font-weight:600">Google Play</td>
+              <td style="color:var(--text-secondary)">GitHub</td>
+              <td><span class="badge badge-pending">pending</span></td>
+            </tr>
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:8px 0;font-weight:600">Cloudflare</td>
+              <td style="color:var(--text-muted)">—</td>
+              <td><span class="badge badge-synced">synced</span></td>
+            </tr>
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:8px 0;font-weight:600">OAuth</td>
+              <td style="color:var(--text-secondary)">Firebase</td>
+              <td><span class="badge badge-pending">pending</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ── Resume Modal ───────────────────────────────────────────────────────── -->
+<div id="resume-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);
+  z-index:100;align-items:center;justify-content:center">
+  <div class="card" style="width:420px;max-width:90vw">
+    <div class="card-title">Resume Provisioning Run</div>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+      Run: <code id="resume-run-id" style="font-family:var(--mono);color:var(--accent-hover)"></code>
+    </p>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+      Choose how to handle partially-created resources:
+    </p>
+    <select id="resume-choice" style="width:100%;margin-bottom:16px">
+      <option value="trust-log">Trust event log — skip completed steps</option>
+      <option value="full-revalidate">Full re-validation — re-check all steps</option>
+    </select>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-secondary" id="resume-cancel">Cancel</button>
+      <button class="btn btn-primary" id="resume-submit">Resume</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast Container ───────────────────────────────────────────────────── -->
+<div id="toast-container"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
