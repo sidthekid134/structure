@@ -4,10 +4,14 @@
   "description": "Encrypted credential vault and secret management",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "ui:install": "npm --prefix studio-ui install",
+    "ui:dev": "npm --prefix studio-ui run dev",
+    "ui:build": "npm --prefix studio-ui run build",
+    "build": "npm run ui:build && tsc && mkdir -p dist/studio/static && cp -R src/studio/static/. dist/studio/static",
     "test": "jest --testPathPattern='src/__tests__'",
     "typecheck": "tsc --noEmit",
-    "studio": "node dist/studio/server.js"
+    "studio": "npm run build && node dist/studio/server.js",
+    "studio:dev": "npm run build && STUDIO_DEV_MODE=1 node dist/studio/server.js"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -28,6 +32,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.8.0",
+    "dotenv": "^17.3.1",
     "express": "^4.18.2",
     "ws": "^8.16.0"
   }

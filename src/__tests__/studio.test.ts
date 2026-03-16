@@ -12,10 +12,20 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as childProcess from 'child_process';
 import { StudioServer } from '../studio/server';
 import { WsHandler } from '../studio/ws-handler';
 import { EventLog } from '../orchestration/event-log';
+import { VaultManager } from '../vault';
 import { WebSocketServer, WebSocket } from 'ws';
+
+jest.mock('child_process', () => {
+  const actual = jest.requireActual('child_process') as typeof import('child_process');
+  return {
+    ...actual,
+    execFile: jest.fn(actual.execFile),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,6 +68,80 @@ function postJson(url: string, payload: unknown): Promise<unknown> {
   });
 }
 
+function getJsonWithStatus(url: string): Promise<{ statusCode: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    http.get(url, (res) => {
+      let body = '';
+      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            body: JSON.parse(body),
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
+function postJsonWithStatus(url: string, payload: unknown): Promise<{ statusCode: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const req = http.request(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => {
+          try {
+            resolve({
+              statusCode: res.statusCode ?? 0,
+              body: JSON.parse(data),
+            });
+          } catch (e) {
+            reject(e);
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+function deleteJsonWithStatus(url: string): Promise<{ statusCode: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      url,
+      { method: 'DELETE' },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => {
+          try {
+            resolve({
+              statusCode: res.statusCode ?? 0,
+              body: JSON.parse(data),
+            });
+          } catch (e) {
+            reject(e);
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // StudioServer lifecycle
 // ---------------------------------------------------------------------------
@@ -65,9 +149,14 @@ function postJson(url: string, payload: unknown): Promise<unknown> {
 describe('StudioServer', () => {
   let server: StudioServer;
   let port: number;
+  let storeDir: string;
+  const originalExpoToken = process.env['EXPO_TOKEN'];
+  const originalStudioVaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE'];
 
   beforeEach(async () => {
-    const storeDir = makeTempDir();
+    delete process.env['EXPO_TOKEN'];
+    process.env['STUDIO_VAULT_PASSPHRASE'] = 'studio-test-passphrase-12345';
+    storeDir = makeTempDir();
     port = 30000 + Math.floor(Math.random() * 5000);
     server = new StudioServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
@@ -75,6 +164,16 @@ describe('StudioServer', () => {
 
   afterEach(async () => {
     await server.close();
+    if (originalExpoToken === undefined) {
+      delete process.env['EXPO_TOKEN'];
+    } else {
+      process.env['EXPO_TOKEN'] = originalExpoToken;
+    }
+    if (originalStudioVaultPassphrase === undefined) {
+      delete process.env['STUDIO_VAULT_PASSPHRASE'];
+    } else {
+      process.env['STUDIO_VAULT_PASSPHRASE'] = originalStudioVaultPassphrase;
+    }
   });
 
   it('starts and responds to health check', async () => {
@@ -82,6 +181,7 @@ describe('StudioServer', () => {
     expect(data.status).toBe('ok');
     expect(typeof data.timestamp).toBe('string');
     expect(typeof data.websocket_connections).toBe('number');
+    expect(data.dev_mode).toBe(false);
   });
 
   it('serves static index.html on root', async () => {
@@ -139,6 +239,148 @@ describe('StudioServer', () => {
     expect(typeof data.status).toBe('string');
     expect(typeof data.last_checked).toBe('string');
     expect(Array.isArray(data.recent_failures)).toBe(true);
+  });
+
+  it('rejects project-scoped providers at organization level', async () => {
+    const response = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/organization/integrations`,
+      { provider: 'firebase' },
+    );
+    expect(response.statusCode).toBe(400);
+    const body = response.body as Record<string, unknown>;
+    expect(String(body.error)).toContain('Unsupported organization module');
+  });
+
+  it('reports EAS integration unavailable when EXPO_TOKEN is missing', async () => {
+    const data = await getJson(`http://127.0.0.1:${port}/api/integrations/eas/connection`) as Record<string, unknown>;
+    expect(data.available).toBe(false);
+    expect(data.connected).toBe(false);
+    expect(data.requires_token).toBe(true);
+  });
+
+  it('stores EAS token and syncs org integration', async () => {
+    const execFileMock = childProcess.execFile as unknown as jest.Mock;
+    const actualExecFile = jest.requireActual('child_process').execFile as typeof childProcess.execFile;
+    execFileMock.mockImplementation(
+      (
+        _file: string,
+        _args: readonly string[],
+        _options: childProcess.ExecFileOptions,
+        callback?: (
+          error: childProcess.ExecFileException | null,
+          stdout: string,
+          stderr: string,
+        ) => void,
+      ) => {
+        callback?.(
+          null,
+          [
+            'sidmoparthi',
+            '',
+            'Accounts:',
+            '• sidmoparthi (Role: Owner)',
+            '• bite-food-journal (Role: Owner)',
+            '',
+          ].join('\n'),
+          '',
+        );
+        return {} as childProcess.ChildProcess;
+      },
+    );
+
+    try {
+      const connection = await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/eas/connect`,
+        { token: 'test-token' },
+      );
+      expect(connection.statusCode).toBe(200);
+      const body = connection.body as Record<string, unknown>;
+      expect(body.available).toBe(true);
+      expect(body.connected).toBe(true);
+
+      const organization = await getJson(`http://127.0.0.1:${port}/api/organization`) as {
+        integrations: Record<string, { status: string; config: Record<string, string> }>;
+      };
+      expect(organization.integrations.eas).toBeDefined();
+      expect(organization.integrations.eas.status).toBe('configured');
+      expect(organization.integrations.eas.config.token_source).toBe('credential_vault');
+
+      const vaultPath = path.join(storeDir, 'credentials.enc');
+      const vault = new VaultManager(vaultPath);
+      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE'] as string;
+      expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBe('test-token');
+      expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBe('sidmoparthi');
+      expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBe('sidmoparthi');
+      expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBe(
+        JSON.stringify(['sidmoparthi', 'bite-food-journal']),
+      );
+
+      const vaultRaw = fs.readFileSync(vaultPath, 'utf8');
+      expect(vaultRaw).not.toContain('test-token');
+      expect(vaultRaw).not.toContain('sidmoparthi');
+    } finally {
+      execFileMock.mockImplementation(actualExecFile);
+    }
+  });
+
+  it('disables EAS connection and clears connection metadata', async () => {
+    const execFileMock = childProcess.execFile as unknown as jest.Mock;
+    const actualExecFile = jest.requireActual('child_process').execFile as typeof childProcess.execFile;
+    execFileMock.mockImplementation(
+      (
+        _file: string,
+        _args: readonly string[],
+        _options: childProcess.ExecFileOptions,
+        callback?: (
+          error: childProcess.ExecFileException | null,
+          stdout: string,
+          stderr: string,
+        ) => void,
+      ) => {
+        callback?.(
+          null,
+          [
+            'sidmoparthi',
+            '',
+            'Accounts:',
+            '• sidmoparthi (Role: Owner)',
+            '',
+          ].join('\n'),
+          '',
+        );
+        return {} as childProcess.ChildProcess;
+      },
+    );
+
+    try {
+      await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/eas/connect`,
+        { token: 'test-token' },
+      );
+      const disabled = await deleteJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/eas/connection`,
+      );
+      expect(disabled.statusCode).toBe(200);
+      const body = disabled.body as Record<string, unknown>;
+      expect(body.connected).toBe(false);
+      expect(body.requires_token).toBe(true);
+
+      const organization = await getJson(`http://127.0.0.1:${port}/api/organization`) as {
+        integrations: Record<string, { status: string; config: Record<string, string> }>;
+      };
+      expect(organization.integrations.eas.status).toBe('pending');
+      expect(organization.integrations.eas.config.expo_username).toBeUndefined();
+
+      const vaultPath = path.join(storeDir, 'credentials.enc');
+      const vault = new VaultManager(vaultPath);
+      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE'] as string;
+      expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBeUndefined();
+      expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBeUndefined();
+      expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBeUndefined();
+      expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBeUndefined();
+    } finally {
+      execFileMock.mockImplementation(actualExecFile);
+    }
   });
 
   it('rejects invalid reconcile direction', async () => {
@@ -287,6 +529,44 @@ describe('StudioServer with seeded EventLog', () => {
       );
       req.on('error', reject);
       req.write(body);
+      req.end();
+    });
+  });
+});
+
+describe('StudioServer dev mode', () => {
+  let server: StudioServer;
+  let port: number;
+
+  beforeEach(async () => {
+    const storeDir = makeTempDir();
+    port = 33000 + Math.floor(Math.random() * 5000);
+    server = new StudioServer({ port, host: '127.0.0.1', storeDir, devMode: true });
+    await server.listen();
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it('reports dev mode enabled in health response', async () => {
+    const data = await getJson(`http://127.0.0.1:${port}/api/health`) as Record<string, unknown>;
+    expect(data.dev_mode).toBe(true);
+  });
+
+  it('exposes live reload event stream endpoint', async () => {
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        `http://127.0.0.1:${port}/__studio_live_reload`,
+        { method: 'GET' },
+        (res) => {
+          expect(res.statusCode).toBe(200);
+          expect(String(res.headers['content-type'])).toContain('text/event-stream');
+          req.destroy();
+          resolve();
+        },
+      );
+      req.on('error', reject);
       req.end();
     });
   });

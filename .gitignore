@@ -1,3 +1,31 @@
 node_modules/
 dist/
 *.js.map
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test output
+coverage/
+.nyc_output/
+
+# Build output and caches
+build/
+.cache/
+.turbo/
+.parcel-cache/
+*.tsbuildinfo
+
+# OS / editor files
+.DS_Store
+.vscode/
+.idea/

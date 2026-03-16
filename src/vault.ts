@@ -189,6 +189,48 @@ export class VaultManager {
     this.logger.info('Credential set successfully', { providerId, key });
   }
 
+  /**
+   * Deletes a credential key from a provider entry.
+   *
+   * @returns true when a credential was removed, false when key/provider did not exist.
+   */
+  deleteCredential(
+    passphrase: string,
+    providerId: string,
+    key: string,
+  ): boolean {
+    InputValidator.validatePassphrase(passphrase);
+    InputValidator.validateProviderId(providerId);
+    if (typeof key !== 'string' || key.trim().length === 0) {
+      throw new VaultError('Credential key must be a non-empty string', 'deleteCredential', this.vaultPath);
+    }
+
+    const data = this.loadVault(passphrase);
+    const existing = data.entries[providerId];
+    if (!existing || !(key in existing.credentials)) {
+      return false;
+    }
+
+    this.logger.info('Deleting credential', { providerId, key });
+    const credentials = { ...existing.credentials };
+    delete credentials[key];
+
+    const entries = { ...data.entries };
+    if (Object.keys(credentials).length === 0) {
+      delete entries[providerId];
+    } else {
+      entries[providerId] = {
+        ...existing,
+        credentials,
+        encryptedAt: Date.now(),
+      };
+    }
+
+    this.saveVault(passphrase, { ...data, entries });
+    this.logger.info('Credential deleted successfully', { providerId, key });
+    return true;
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
