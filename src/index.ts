@@ -57,3 +57,12 @@ export * from './providers/validator.js';
 
 // Security input validation
 export * from './security/input-validator.js';
+
+// Core use-cases and shared domain helpers
+export * from './core/provider-schemas.js';
+export * from './core/formatting.js';
+export * from './core/eas-connection.js';
+export * from './core/github-connection.js';
+export * from './core/gcp-connection.js';
+export * from './core/provisioning.js';
+export * from './core/drift.js';

@@ -1,7 +1,7 @@
-import PlatformStudio from './components/generated/PlatformStudio';
+import StudioGate from './components/generated/StudioGate';
 
 function App() {
-  return <PlatformStudio />;
+  return <StudioGate />;
 }
 
 export default App;

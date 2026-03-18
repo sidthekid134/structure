@@ -17,6 +17,7 @@ import { StudioServer } from '../studio/server';
 import { WsHandler } from '../studio/ws-handler';
 import { EventLog } from '../orchestration/event-log';
 import { VaultManager } from '../vault';
+import { GitHubConnectionService } from '../core/github-connection';
 import { WebSocketServer, WebSocket } from 'ws';
 
 jest.mock('child_process', () => {
@@ -127,9 +128,10 @@ function deleteJsonWithStatus(url: string): Promise<{ statusCode: number; body: 
         res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
         res.on('end', () => {
           try {
+            const parsed = data.trim().length > 0 ? JSON.parse(data) : null;
             resolve({
               statusCode: res.statusCode ?? 0,
-              body: JSON.parse(data),
+              body: parsed,
             });
           } catch (e) {
             reject(e);
@@ -192,8 +194,8 @@ describe('StudioServer', () => {
         res.on('end', () => resolve(body));
       }).on('error', reject);
     });
-    expect(html).toContain('Studio UI');
-    expect(html).toContain('<!DOCTYPE html>');
+    expect(html).toContain('<div id="root"></div>');
+    expect(html.toLowerCase()).toContain('<!doctype html>');
   });
 
   it('returns empty provisioning list when no runs exist', async () => {
@@ -251,8 +253,74 @@ describe('StudioServer', () => {
     expect(String(body.error)).toContain('Unsupported organization module');
   });
 
+  it('deletes a project record without infrastructure teardown', async () => {
+    const created = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects`,
+      {
+        name: 'Delete Me',
+        slug: 'delete-me',
+        bundleId: 'com.example.deleteme',
+        platforms: ['ios', 'android'],
+      },
+    );
+    expect(created.statusCode).toBe(201);
+
+    const deleted = await deleteJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects/delete-me`,
+    );
+    expect(deleted.statusCode).toBe(204);
+    expect(deleted.body).toBeNull();
+
+    const lookup = await getJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects/delete-me`,
+    );
+    expect(lookup.statusCode).toBe(404);
+  });
+
+  it('returns integration dependencies with standardized Firebase plan', async () => {
+    const created = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects`,
+      {
+        name: 'Dependency Project',
+        slug: 'dependency-project',
+        bundleId: 'com.example.dependency',
+        platforms: ['ios', 'android'],
+      },
+    );
+    expect(created.statusCode).toBe(201);
+
+    const data = await getJson(
+      `http://127.0.0.1:${port}/api/projects/dependency-project/integrations/dependencies`,
+    ) as {
+      project: { bundleId: string };
+      providers: Array<{
+        provider: string;
+        dependencies: Array<{ key: string; status: string; value: string | null }>;
+        plannedResources: Array<{ key: string; standardized_name: string }>;
+      }>;
+    };
+
+    expect(data.project.bundleId).toBe('com.example.dependency');
+    const firebase = data.providers.find((provider) => provider.provider === 'firebase');
+    expect(firebase).toBeDefined();
+    const bundleDependency = firebase!.dependencies.find((dependency) => dependency.key === 'bundle_id');
+    expect(bundleDependency?.status).toBe('ready');
+    expect(bundleDependency?.value).toBe('com.example.dependency');
+    const serviceAccount = firebase!.plannedResources.find(
+      (resource) => resource.key === 'provisioner_service_account',
+    );
+    expect(serviceAccount?.standardized_name).toContain('platform-provisioner@');
+  });
+
   it('reports EAS integration unavailable when EXPO_TOKEN is missing', async () => {
     const data = await getJson(`http://127.0.0.1:${port}/api/integrations/eas/connection`) as Record<string, unknown>;
+    expect(data.available).toBe(false);
+    expect(data.connected).toBe(false);
+    expect(data.requires_token).toBe(true);
+  });
+
+  it('reports GitHub integration unavailable when token is missing', async () => {
+    const data = await getJson(`http://127.0.0.1:${port}/api/integrations/github/connection`) as Record<string, unknown>;
     expect(data.available).toBe(false);
     expect(data.connected).toBe(false);
     expect(data.requires_token).toBe(true);
@@ -380,6 +448,94 @@ describe('StudioServer', () => {
       expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBeUndefined();
     } finally {
       execFileMock.mockImplementation(actualExecFile);
+    }
+  });
+
+  it('stores GitHub token and syncs org integration', async () => {
+    const spy = jest
+      .spyOn(GitHubConnectionService.prototype, 'fetchGitHubConnectionDetails')
+      .mockResolvedValue({
+        userId: '12345',
+        username: 'sidmoparthi',
+        orgNames: ['acme-mobile', 'example-inc'],
+        scopes: ['repo', 'workflow'],
+      });
+
+    try {
+      const connection = await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/github/connect`,
+        { token: 'ghp_test_token_123' },
+      );
+      expect(connection.statusCode).toBe(200);
+      const body = connection.body as Record<string, unknown>;
+      expect(body.available).toBe(true);
+      expect(body.connected).toBe(true);
+
+      const organization = await getJson(`http://127.0.0.1:${port}/api/organization`) as {
+        integrations: Record<string, { status: string; config: Record<string, string> }>;
+      };
+      expect(organization.integrations.github).toBeDefined();
+      expect(organization.integrations.github.status).toBe('configured');
+      expect(organization.integrations.github.config.token_source).toBe('credential_vault');
+      expect(organization.integrations.github.config.username).toBe('sidmoparthi');
+
+      const vaultPath = path.join(storeDir, 'credentials.enc');
+      const vault = new VaultManager(vaultPath);
+      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE'] as string;
+      expect(vault.getCredential(passphrase, 'github', 'token')).toBe('ghp_test_token_123');
+      expect(vault.getCredential(passphrase, 'github', 'username')).toBe('sidmoparthi');
+      expect(vault.getCredential(passphrase, 'github', 'user_id')).toBe('12345');
+      expect(vault.getCredential(passphrase, 'github', 'orgs')).toBe(
+        JSON.stringify(['acme-mobile', 'example-inc']),
+      );
+
+      const vaultRaw = fs.readFileSync(vaultPath, 'utf8');
+      expect(vaultRaw).not.toContain('ghp_test_token_123');
+      expect(vaultRaw).not.toContain('sidmoparthi');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('disables GitHub connection and clears connection metadata', async () => {
+    const spy = jest
+      .spyOn(GitHubConnectionService.prototype, 'fetchGitHubConnectionDetails')
+      .mockResolvedValue({
+        userId: '12345',
+        username: 'sidmoparthi',
+        orgNames: ['acme-mobile'],
+        scopes: ['repo', 'workflow'],
+      });
+
+    try {
+      await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/github/connect`,
+        { token: 'ghp_test_token_123' },
+      );
+      const disabled = await deleteJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/github/connection`,
+      );
+      expect(disabled.statusCode).toBe(200);
+      const body = disabled.body as Record<string, unknown>;
+      expect(body.connected).toBe(false);
+      expect(body.requires_token).toBe(true);
+
+      const organization = await getJson(`http://127.0.0.1:${port}/api/organization`) as {
+        integrations: Record<string, { status: string; config: Record<string, string> }>;
+      };
+      expect(organization.integrations.github.status).toBe('pending');
+      expect(organization.integrations.github.config.username).toBeUndefined();
+
+      const vaultPath = path.join(storeDir, 'credentials.enc');
+      const vault = new VaultManager(vaultPath);
+      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE'] as string;
+      expect(vault.getCredential(passphrase, 'github', 'token')).toBeUndefined();
+      expect(vault.getCredential(passphrase, 'github', 'username')).toBeUndefined();
+      expect(vault.getCredential(passphrase, 'github', 'user_id')).toBeUndefined();
+      expect(vault.getCredential(passphrase, 'github', 'orgs')).toBeUndefined();
+      expect(vault.getCredential(passphrase, 'github', 'scopes')).toBeUndefined();
+    } finally {
+      spy.mockRestore();
     }
   });
 

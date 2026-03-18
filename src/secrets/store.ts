@@ -21,20 +21,7 @@ import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
 import { ValidationError, CredentialError } from '../types.js';
 import type { Environment, ProviderType } from '../providers/types.js';
-
-// ---------------------------------------------------------------------------
-// Known secret names per provider
-// ---------------------------------------------------------------------------
-
-const PROVIDER_SECRET_SCHEMAS: Readonly<Record<ProviderType, string[]>> = {
-  firebase: ['service_account_json', 'api_key', 'fcm_key'],
-  github: ['token', 'webhook_secret'],
-  eas: ['eas_token', 'expo_token'],
-  apple: ['certificate_pem', 'apns_key', 'p12_password'],
-  'google-play': ['service_account_json', 'keystore_password'],
-  cloudflare: ['api_token', 'zone_id'],
-  oauth: ['client_id', 'client_secret'],
-};
+import { PROVIDER_SECRET_SCHEMAS } from '../core/provider-schemas.js';
 
 // ---------------------------------------------------------------------------
 // Scoping rule: dev and preview share the same scope key

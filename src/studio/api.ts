@@ -13,11 +13,9 @@
  */
 
 import { Router, Request, Response } from 'express';
-import * as childProcess from 'child_process';
 import * as path from 'path';
-import { EventLog, OperationRecord, OperationEvent } from '../orchestration/event-log.js';
+import { EventLog, OperationRecord } from '../orchestration/event-log.js';
 import { WsHandler } from './ws-handler.js';
-import type { ProviderType } from '../providers/types.js';
 import { VaultManager } from '../vault.js';
 import {
   ProjectManager,
@@ -26,74 +24,21 @@ import {
   IntegrationConfigRecord,
   MobilePlatform,
 } from './project-manager.js';
-
-// ---------------------------------------------------------------------------
-// Provider secret schema (mirrors secrets/store.ts PROVIDER_SECRET_SCHEMAS)
-// ---------------------------------------------------------------------------
-
-const PROVIDER_SECRET_SCHEMAS: Readonly<Record<ProviderType, string[]>> = {
-  firebase: ['service_account_json', 'api_key', 'fcm_key'],
-  github: ['token', 'webhook_secret'],
-  eas: ['eas_token', 'expo_token'],
-  apple: ['certificate_pem', 'apns_key', 'p12_password'],
-  'google-play': ['service_account_json', 'keystore_password'],
-  cloudflare: ['api_token', 'zone_id'],
-  oauth: ['client_id', 'client_secret'],
-};
-
-// ---------------------------------------------------------------------------
-// Dependency graph for architecture visualization
-// ---------------------------------------------------------------------------
-
-const PROVIDER_DEPENDENCIES: Readonly<Record<string, string[]>> = {
-  firebase: [],
-  github: ['firebase'],
-  eas: ['github'],
-  apple: ['github'],
-  'google-play': ['github'],
-  cloudflare: [],
-  oauth: ['firebase'],
-};
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatRun(
-  record: OperationRecord,
-  events: OperationEvent[],
-): object {
-  return {
-    id: record.id,
-    app_id: record.app_id,
-    status: record.status,
-    created_at: new Date(record.created_at).toISOString(),
-    updated_at: new Date(record.updated_at).toISOString(),
-    events: events.map(e => ({
-      id: e.id,
-      provider: e.provider,
-      step: e.step,
-      status: e.status,
-      error_message: e.error_message,
-      timestamp: new Date(e.timestamp).toISOString(),
-      result: e.result_json ? JSON.parse(e.result_json) : null,
-    })),
-  };
-}
-
-interface ExpoConnectionDetails {
-  userId: string;
-  username: string;
-  accountNames: string[];
-}
-
-interface EasConnectionStatus {
-  available: boolean;
-  connected: boolean;
-  requires_token: boolean;
-  details?: Omit<ExpoConnectionDetails, 'userId'>;
-  integration?: IntegrationConfigRecord;
-}
+import {
+  PROVIDER_SECRET_SCHEMAS,
+  PROVIDER_DEPENDENCIES,
+  PROVIDER_INTEGRATION_BLUEPRINTS,
+} from '../core/provider-schemas.js';
+import { formatRun, integrationProgress } from '../core/formatting.js';
+import { EasConnectionService } from '../core/eas-connection.js';
+import { GitHubConnectionService } from '../core/github-connection.js';
+import {
+  GcpConnectionService,
+  buildStudioGcpProjectId,
+  GCP_PROVISIONER_SERVICE_ACCOUNT_ID,
+} from '../core/gcp-connection.js';
+import { resumeProvisioningRun } from '../core/provisioning.js';
+import { getDriftStatus, startDriftReconcile } from '../core/drift.js';
 
 // ---------------------------------------------------------------------------
 // Router factory
@@ -108,6 +53,14 @@ export function createApiRouter(
   const router = Router();
   const projectManager = new ProjectManager(storeDir);
   const vaultManager = new VaultManager(path.join(storeDir, 'credentials.enc'));
+  const easConnectionService = new EasConnectionService(vaultManager, projectManager);
+  const gitHubConnectionService = new GitHubConnectionService(vaultManager, projectManager);
+  const gcpConnectionService = new GcpConnectionService(
+    vaultManager,
+    projectManager,
+    process.env['PLATFORM_GCP_OAUTH_CLIENT_ID'] ?? '',
+    process.env['PLATFORM_GCP_OAUTH_CLIENT_SECRET'] ?? '',
+  );
   const validProjectIntegrationProviders = new Set<IntegrationProvider>(
     Object.keys(PROVIDER_SECRET_SCHEMAS) as IntegrationProvider[],
   );
@@ -120,154 +73,6 @@ export function createApiRouter(
 
   function getRunsForProject(projectId: string): OperationRecord[] {
     return eventLog.listOperationsByAppId(projectId, 200);
-  }
-
-  function getVaultPassphrase(): string {
-    const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-    if (!passphrase) {
-      throw new Error(
-        'STUDIO_VAULT_PASSPHRASE is required to use Studio credential storage for EAS tokens.',
-      );
-    }
-    return passphrase;
-  }
-
-  function getStoredExpoToken(): string | undefined {
-    return vaultManager.getCredential(getVaultPassphrase(), 'eas', 'expo_token');
-  }
-
-  function storeExpoToken(token: string): void {
-    if (typeof token !== 'string' || token.trim().length === 0) {
-      throw new Error('Expo token is required.');
-    }
-    vaultManager.setCredential(getVaultPassphrase(), 'eas', 'expo_token', token.trim());
-  }
-
-  function storeExpoConnectionDetails(details: ExpoConnectionDetails): void {
-    const passphrase = getVaultPassphrase();
-    vaultManager.setCredential(passphrase, 'eas', 'expo_user_id', details.userId);
-    vaultManager.setCredential(passphrase, 'eas', 'expo_username', details.username);
-    vaultManager.setCredential(passphrase, 'eas', 'expo_accounts', JSON.stringify(details.accountNames));
-    vaultManager.setCredential(
-      passphrase,
-      'eas',
-      'expo_token_last_validated_at',
-      new Date().toISOString(),
-    );
-  }
-
-  function deleteStoredExpoConnectionDetails(): void {
-    const passphrase = getVaultPassphrase();
-    vaultManager.deleteCredential(passphrase, 'eas', 'expo_user_id');
-    vaultManager.deleteCredential(passphrase, 'eas', 'expo_username');
-    vaultManager.deleteCredential(passphrase, 'eas', 'expo_accounts');
-    vaultManager.deleteCredential(passphrase, 'eas', 'expo_token_last_validated_at');
-  }
-
-  function deleteStoredExpoToken(): boolean {
-    return vaultManager.deleteCredential(getVaultPassphrase(), 'eas', 'expo_token');
-  }
-
-  function integrationProgress(integrations: Partial<Record<IntegrationProvider, IntegrationConfigRecord>>): {
-    configured: number;
-    total: number;
-  } {
-    const list = Object.values(integrations);
-    return {
-      configured: list.filter((entry) => entry.status === 'configured').length,
-      total: list.length,
-    };
-  }
-
-  async function fetchExpoConnectionDetails(token: string): Promise<ExpoConnectionDetails> {
-    const stdout = await new Promise<string>((resolve, reject) => {
-      childProcess.execFile(
-        'npx',
-        ['eas-cli', 'whoami', '--non-interactive'],
-        {
-          env: {
-            ...process.env,
-            EXPO_TOKEN: token,
-          },
-          timeout: 30_000,
-          maxBuffer: 1024 * 1024,
-        },
-        (error, out, stderr) => {
-          if (error) {
-            const details = stderr?.trim() || out?.trim() || error.message;
-            reject(new Error(`eas-cli whoami failed: ${details}`));
-            return;
-          }
-          resolve(out);
-        },
-      );
-    });
-
-    const lines = stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const username = lines.find(
-      (line) =>
-        line !== 'Accounts:' &&
-        !line.startsWith('★') &&
-        !line.startsWith('To upgrade') &&
-        !line.startsWith('Proceeding with outdated version'),
-    );
-    if (!username) {
-      throw new Error(`Unable to parse username from eas-cli output: ${stdout}`);
-    }
-
-    const accountNames = lines
-      .map((line) => {
-        const match = line.match(/^[•*-]\s*(.+?)\s+\(Role:/);
-        return match?.[1]?.trim() ?? null;
-      })
-      .filter((value): value is string => Boolean(value));
-
-    return {
-      // Use username as stable identifier in Studio since whoami output does not expose UUID.
-      userId: username,
-      username,
-      accountNames,
-    };
-  }
-
-  async function syncExpoIntegrationFromCredentialStore(
-    tokenOverride?: string,
-    detailsOverride?: ExpoConnectionDetails,
-  ): Promise<EasConnectionStatus> {
-    const token = tokenOverride ?? getStoredExpoToken();
-    if (!token) {
-      console.log('[studio-eas] No stored expo_token in credential vault; EAS org module is blocked.');
-      return { available: false, connected: false, requires_token: true };
-    }
-
-    console.log('[studio-eas] Expo token found in credential vault; validating Expo connection.');
-    const details = detailsOverride ?? await fetchExpoConnectionDetails(token);
-    const organization = projectManager.getOrganization();
-    if (!organization.integrations.eas) {
-      projectManager.addOrganizationIntegration('eas');
-    }
-
-    const updatedOrganization = projectManager.updateOrganizationIntegration('eas', {
-      status: 'configured',
-      notes: `Connected via stored expo_token for ${details.username}. Expo account metadata is encrypted in credential vault.`,
-      config: {
-        token_source: 'credential_vault',
-      },
-    });
-
-    return {
-      available: true,
-      connected: true,
-      requires_token: false,
-      details: {
-        username: details.username,
-        accountNames: details.accountNames,
-      },
-      integration: updatedOrganization.integrations.eas,
-    };
   }
 
   // -------------------------------------------------------------------------
@@ -286,7 +91,7 @@ export function createApiRouter(
   // -------------------------------------------------------------------------
   router.get('/integrations/eas/connection', async (_req: Request, res: Response) => {
     try {
-      const result = await syncExpoIntegrationFromCredentialStore();
+      const result = await easConnectionService.syncExpoIntegrationFromCredentialStore();
       if (result.connected && result.details) {
         console.log(
           `[studio-eas] Expo connection validated for "${result.details.username}" (${result.details.accountNames.length} accounts).`,
@@ -307,15 +112,7 @@ export function createApiRouter(
   router.post('/organization/integrations/eas/connect', async (req: Request, res: Response) => {
     try {
       const token = req.body?.token as string | undefined;
-      if (!token || !token.trim()) {
-        res.status(400).json({ error: 'Expo token is required.' });
-        return;
-      }
-      const normalizedToken = token.trim();
-      const details = await fetchExpoConnectionDetails(normalizedToken);
-      storeExpoToken(normalizedToken);
-      storeExpoConnectionDetails(details);
-      const result = await syncExpoIntegrationFromCredentialStore(normalizedToken, details);
+      const result = await easConnectionService.connect(token ?? '');
       if (result.connected && result.details) {
         console.log(
           `[studio-eas] Stored expo_token and connected "${result.details.username}" (${result.details.accountNames.length} accounts).`,
@@ -331,38 +128,214 @@ export function createApiRouter(
   });
 
   // -------------------------------------------------------------------------
+  // GET /api/integrations/github/connection — validate stored github token and sync org module
+  // -------------------------------------------------------------------------
+  router.get('/integrations/github/connection', async (_req: Request, res: Response) => {
+    try {
+      const result = await gitHubConnectionService.syncGitHubIntegrationFromCredentialStore();
+      if (result.connected && result.details) {
+        console.log(
+          `[studio-github] GitHub connection validated for "${result.details.username}" (${result.details.orgNames.length} org memberships).`,
+        );
+      }
+      res.json(result);
+    } catch (err) {
+      console.error('[studio-github] Stored GitHub token validation failed:', (err as Error).message);
+      res.status(502).json({
+        error: `Failed to validate stored GitHub token: ${(err as Error).message}`,
+      });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/organization/integrations/github/connect — store token + connect GitHub
+  // -------------------------------------------------------------------------
+  router.post(
+    '/organization/integrations/github/connect',
+    async (req: Request, res: Response) => {
+      try {
+        const token = req.body?.token as string | undefined;
+        const result = await gitHubConnectionService.connect(token ?? '');
+        if (result.connected && result.details) {
+          console.log(
+            `[studio-github] Stored token and connected "${result.details.username}" (${result.details.orgNames.length} org memberships).`,
+          );
+        }
+        res.json(result);
+      } catch (err) {
+        console.error('[studio-github] Failed to store/connect GitHub token:', (err as Error).message);
+        res.status(502).json({
+          error: `Failed to store/connect GitHub token: ${(err as Error).message}`,
+        });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // DELETE /api/organization/integrations/github/connection — remove token + disconnect
+  // -------------------------------------------------------------------------
+  router.delete('/organization/integrations/github/connection', (req: Request, res: Response) => {
+    try {
+      const result = gitHubConnectionService.disconnect();
+      console.log('[studio-github] GitHub connection disabled and stored token removed.');
+      res.json(result);
+    } catch (err) {
+      console.error('[studio-github] Failed to disable GitHub connection:', (err as Error).message);
+      res.status(502).json({
+        error: `Failed to disable GitHub connection: ${(err as Error).message}`,
+      });
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // DELETE /api/organization/integrations/eas/connection — remove token + disconnect
   // -------------------------------------------------------------------------
   router.delete('/organization/integrations/eas/connection', (req: Request, res: Response) => {
     try {
-      const removed = deleteStoredExpoToken();
-      deleteStoredExpoConnectionDetails();
-      const organization = projectManager.getOrganization();
-      let integration: IntegrationConfigRecord | undefined;
-
-      if (organization.integrations.eas) {
-        const updated = projectManager.updateOrganizationIntegration('eas', {
-          status: 'pending',
-          notes: 'EAS connection disabled. Reconnect with a token to configure this module.',
-          config: {},
-          replaceConfig: true,
-        });
-        integration = updated.integrations.eas;
-      }
-
+      const result = easConnectionService.disconnect();
       console.log('[studio-eas] EAS connection disabled and stored expo_token removed.');
-      res.json({
-        removed,
-        available: false,
-        connected: false,
-        requires_token: true,
-        integration,
-      });
+      res.json(result);
     } catch (err) {
       console.error('[studio-eas] Failed to disable EAS connection:', (err as Error).message);
       res.status(502).json({
         error: `Failed to disable EAS connection: ${(err as Error).message}`,
       });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/integrations/gcp/capability — org-level GCP capability metadata
+  // -------------------------------------------------------------------------
+  router.get('/integrations/gcp/capability', (_req: Request, res: Response) => {
+    try {
+      res.json(gcpConnectionService.getCapability());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/integrations/firebase/connection — project GCP status
+  // -------------------------------------------------------------------------
+  router.get('/projects/:projectId/integrations/firebase/connection', (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const result = gcpConnectionService.getProjectConnectionStatus(projectId);
+      if (result.connected && result.details) {
+        console.log(
+          `[studio-gcp] Firebase connection active for Studio project "${projectId}" -> GCP "${result.details.projectId}" (SA: ${result.details.serviceAccountEmail}).`,
+        );
+      }
+      res.json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(502).json({ error: `Failed to check Firebase/GCP connection: ${message}` });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:projectId/integrations/firebase/connect/oauth/start
+  // -------------------------------------------------------------------------
+  router.post(
+    '/projects/:projectId/integrations/firebase/connect/oauth/start',
+    async (req: Request, res: Response) => {
+      try {
+        const { projectId } = req.params;
+        const session = await gcpConnectionService.startProjectOAuthFlow(projectId);
+        console.log(
+          `[studio-gcp] OAuth flow started for Studio project "${projectId}" (session ${session.sessionId}).`,
+        );
+        res.json(session);
+      } catch (err) {
+        const message = (err as Error).message;
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+          return;
+        }
+        res.status(502).json({ error: `Failed to start GCP OAuth flow: ${message}` });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/integrations/firebase/connect/oauth/:sessionId
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/integrations/firebase/connect/oauth/:sessionId',
+    (req: Request, res: Response) => {
+      try {
+        const { projectId, sessionId } = req.params;
+        const status = gcpConnectionService.getProjectOAuthStatus(projectId, sessionId);
+        res.json(status);
+      } catch (err) {
+        const message = (err as Error).message;
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+          return;
+        }
+        if (message.includes('not found')) {
+          res.status(404).json({ error: message });
+          return;
+        }
+        res.status(400).json({ error: message });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:projectId/integrations/firebase/connect — manual SA key connect
+  // -------------------------------------------------------------------------
+  router.post(
+    '/projects/:projectId/integrations/firebase/connect',
+    (req: Request, res: Response) => {
+      try {
+        const { projectId } = req.params;
+        const saKeyJson = req.body?.serviceAccountJson as string | undefined;
+        if (!saKeyJson || !saKeyJson.trim()) {
+          res.status(400).json({ error: 'Service account JSON is required.' });
+          return;
+        }
+        const result = gcpConnectionService.connectProjectWithServiceAccountKey(
+          projectId,
+          saKeyJson.trim(),
+        );
+        if (result.connected && result.details) {
+          console.log(
+            `[studio-gcp] Manual SA key connected for Studio project "${projectId}" -> GCP "${result.details.projectId}".`,
+          );
+        }
+        res.json(result);
+      } catch (err) {
+        const message = (err as Error).message;
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+          return;
+        }
+        res.status(400).json({ error: `Failed to connect with SA key: ${message}` });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // DELETE /api/projects/:projectId/integrations/firebase/connection
+  // -------------------------------------------------------------------------
+  router.delete('/projects/:projectId/integrations/firebase/connection', (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const result = gcpConnectionService.disconnectProject(projectId);
+      console.log(`[studio-gcp] Firebase/GCP disconnected for Studio project "${projectId}".`);
+      res.json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(502).json({ error: `Failed to disconnect Firebase/GCP: ${message}` });
     }
   });
 
@@ -374,7 +347,7 @@ export function createApiRouter(
       const provider = req.body?.provider as IntegrationProvider;
       if (!validOrganizationIntegrationProviders.has(provider)) {
         res.status(400).json({
-          error: `Unsupported organization module "${provider}". Allowed: github, eas, apple, google-play.`,
+          error: `Unsupported organization module "${provider}". Allowed: github, eas, apple, google-play. Firebase/GCP is project-scoped and must be configured per project.`,
         });
         return;
       }
@@ -393,7 +366,7 @@ export function createApiRouter(
       const { provider } = req.params;
       if (!validOrganizationIntegrationProviders.has(provider as IntegrationProvider)) {
         res.status(400).json({
-          error: `Unsupported organization module "${provider}". Allowed: github, eas, apple, google-play.`,
+          error: `Unsupported organization module "${provider}". Allowed: github, eas, apple, google-play. Firebase/GCP is project-scoped and must be configured per project.`,
         });
         return;
       }
@@ -494,6 +467,108 @@ export function createApiRouter(
           total: runs.length,
           runs,
         },
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/integrations/dependencies
+  // Returns dependency + standardized provisioning plan per integration
+  // -------------------------------------------------------------------------
+  router.get('/projects/:projectId/integrations/dependencies', (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const module = projectManager.getProject(projectId);
+      const organization = projectManager.getOrganization();
+      const defaultGcpProjectId = buildStudioGcpProjectId(projectId);
+      const firebaseConfig = (module.integrations.firebase?.config ?? {}) as Record<string, string>;
+      const gcpProjectId = firebaseConfig['gcp_project_id']?.trim() || defaultGcpProjectId;
+      const gcpProvisionerEmail =
+        firebaseConfig['service_account_email']?.trim() ||
+        `${GCP_PROVISIONER_SERVICE_ACCOUNT_ID}@${gcpProjectId}.iam.gserviceaccount.com`;
+
+      const providers = Object.entries(PROVIDER_INTEGRATION_BLUEPRINTS).map(
+        ([provider, blueprint]) => ({
+          provider,
+          scope: blueprint.scope,
+          dependencies: blueprint.dependencies.map((dependency) => {
+            let value: string | null = null;
+            if (dependency.key === 'bundle_id') {
+              value = module.project.bundleId || null;
+            } else if (dependency.key === 'project_slug') {
+              value = module.project.slug || null;
+            } else if (dependency.key === 'github_pat') {
+              const github = organization.integrations.github;
+              value =
+                github?.status === 'configured'
+                  ? 'Configured in organization credential vault'
+                  : null;
+            } else if (dependency.key === 'expo_token') {
+              const eas = organization.integrations.eas;
+              value =
+                eas?.status === 'configured'
+                  ? 'Configured in organization credential vault'
+                  : null;
+            } else if (dependency.key === 'gcp_auth_method') {
+              const firebase = module.integrations.firebase;
+              value =
+                firebase?.status === 'configured'
+                  ? 'Existing Firebase/GCP project connection'
+                  : 'OAuth bootstrap or manual service-account JSON';
+            }
+            return {
+              ...dependency,
+              value,
+              status: dependency.required && !value ? 'missing' : 'ready',
+            };
+          }),
+          plannedResources: blueprint.plannedResources.map((resource) => {
+            if (provider !== 'firebase') {
+              return {
+                ...resource,
+                standardized_name: resource.naming,
+              };
+            }
+
+            if (resource.key === 'gcp_project') {
+              return {
+                ...resource,
+                standardized_name: gcpProjectId,
+              };
+            }
+            if (resource.key === 'provisioner_service_account') {
+              return {
+                ...resource,
+                standardized_name: gcpProvisionerEmail,
+              };
+            }
+            if (resource.key === 'provisioner_service_account_key') {
+              return {
+                ...resource,
+                standardized_name: `${projectId}/service_account_json`,
+              };
+            }
+            return {
+              ...resource,
+              standardized_name: resource.naming,
+            };
+          }),
+        }),
+      );
+
+      res.json({
+        project: {
+          id: module.project.id,
+          slug: module.project.slug,
+          bundleId: module.project.bundleId,
+        },
+        providers,
       });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -654,43 +729,23 @@ export function createApiRouter(
     try {
       const { runId } = req.params;
       const choice = req.body?.choice as string | undefined;
-
-      if (choice !== 'full-revalidate' && choice !== 'trust-log') {
-        res.status(400).json({
-          error: 'Invalid choice. Must be "full-revalidate" or "trust-log".',
-        });
-        return;
-      }
-
-      const record = eventLog.getOperation(runId);
-      if (!record) {
-        res.status(404).json({ error: `Run "${runId}" not found` });
-        return;
-      }
-
-      if (record.status !== 'failure' && record.status !== 'partial') {
-        res.status(409).json({
-          error: `Run is in status "${record.status}" and cannot be resumed. Only "failure" or "partial" runs can be resumed.`,
-        });
-        return;
-      }
-
-      // Broadcast start of resume via WebSocket
-      wsHandler.broadcastStatusUpdate(runId, 'resuming', `User chose: ${choice}`);
-
-      // Simulate async resume (in production this would call Orchestrator.provision with resume=true)
-      // We update status to 'running' to indicate resumption is in progress
-      eventLog.updateOperationStatus(runId, 'running');
-      wsHandler.broadcastProgress(runId, 'system', 'resume', 'running', { choice });
-
-      res.json({
-        runId,
-        choice,
-        status: 'resuming',
-        message: `Resume initiated with strategy: ${choice}. Monitor progress via WebSocket /ws/provisioning/${runId}`,
-      });
+      const result = resumeProvisioningRun(runId, choice, eventLog, wsHandler);
+      res.json(result);
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      const message = (err as Error).message;
+      if (message === 'Invalid choice. Must be "full-revalidate" or "trust-log".') {
+        res.status(400).json({ error: message });
+        return;
+      }
+      if (message.endsWith('not found')) {
+        res.status(404).json({ error: message });
+        return;
+      }
+      if (message.includes('cannot be resumed')) {
+        res.status(409).json({ error: message });
+        return;
+      }
+      res.status(500).json({ error: message });
     }
   });
 
@@ -744,24 +799,7 @@ export function createApiRouter(
   // -------------------------------------------------------------------------
   router.get('/drift', (_req: Request, res: Response) => {
     try {
-      const recentRuns = eventLog.listOperations(20);
-      const failedRuns = recentRuns.filter(r => r.status === 'failure' || r.status === 'partial');
-
-      res.json({
-        last_checked: new Date().toISOString(),
-        status: failedRuns.length > 0 ? 'drift_possible' : 'unknown',
-        requires_user_decision: failedRuns.length > 0,
-        recent_failures: failedRuns.map(r => ({
-          run_id: r.id,
-          app_id: r.app_id,
-          status: r.status,
-          failed_at: new Date(r.updated_at).toISOString(),
-        })),
-        message:
-          failedRuns.length > 0
-            ? 'Some provisioning runs failed. Run drift detection to check provider state.'
-            : 'No recent failures detected. Run drift detection to verify provider state.',
-      });
+      res.json(getDriftStatus(eventLog));
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -774,51 +812,16 @@ export function createApiRouter(
   router.post('/drift/reconcile', (req: Request, res: Response) => {
     try {
       const direction = req.body?.direction as string | undefined;
-      const runId = (req.body?.runId as string | undefined) ?? `reconcile-${Date.now()}`;
-
-      if (direction !== 'manifest-to-live' && direction !== 'live-to-manifest') {
-        res.status(400).json({
-          error: 'Invalid direction. Must be "manifest-to-live" or "live-to-manifest".',
-        });
+      const runId = req.body?.runId as string | undefined;
+      const result = startDriftReconcile(direction, runId, wsHandler);
+      res.json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message === 'Invalid direction. Must be "manifest-to-live" or "live-to-manifest".') {
+        res.status(400).json({ error: message });
         return;
       }
-
-      // Broadcast reconciliation start
-      wsHandler.broadcastStatusUpdate(runId, 'reconciling', `Direction: ${direction}`);
-
-      // Simulate broadcasting progress for each provider in dependency order
-      const providerOrder: ProviderType[] = [
-        'firebase',
-        'github',
-        'eas',
-        'apple',
-        'google-play',
-        'cloudflare',
-        'oauth',
-      ];
-
-      let delay = 0;
-      for (const provider of providerOrder) {
-        const capturedProvider = provider;
-        setTimeout(() => {
-          wsHandler.broadcastReconcileProgress(runId, capturedProvider, true);
-        }, delay);
-        delay += 200;
-      }
-
-      setTimeout(() => {
-        wsHandler.broadcastStatusUpdate(runId, 'complete', 'Reconciliation complete');
-      }, delay + 100);
-
-      res.json({
-        runId,
-        direction,
-        status: 'reconciling',
-        message: `Reconciliation started (${direction}). Monitor progress via WebSocket /ws/provisioning/${runId}`,
-        websocket_url: `/ws/provisioning/${runId}`,
-      });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: message });
     }
   });
 
@@ -827,14 +830,15 @@ export function createApiRouter(
   // -------------------------------------------------------------------------
   router.get('/architecture', (_req: Request, res: Response) => {
     try {
-      const nodes = Object.keys(PROVIDER_DEPENDENCIES).map(provider => ({
+      const providers = Object.keys(PROVIDER_DEPENDENCIES) as Array<keyof typeof PROVIDER_DEPENDENCIES>;
+      const nodes = providers.map((provider) => ({
         id: provider,
         label: provider.charAt(0).toUpperCase() + provider.slice(1),
-        dependencies: PROVIDER_DEPENDENCIES[provider],
+        dependencies: PROVIDER_DEPENDENCIES[provider] as string[],
       }));
 
       const edges: Array<{ from: string; to: string }> = [];
-      for (const [provider, deps] of Object.entries(PROVIDER_DEPENDENCIES)) {
+      for (const [provider, deps] of Object.entries(PROVIDER_DEPENDENCIES) as Array<[string, string[]]>) {
         for (const dep of deps) {
           edges.push({ from: dep, to: provider });
         }
