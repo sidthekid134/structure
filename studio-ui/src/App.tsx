@@ -1,4 +1,4 @@
-import StudioGate from './components/generated/StudioGate';
+import StudioGate from './components/gate/StudioGate';
 
 function App() {
   return <StudioGate />;

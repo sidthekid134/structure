@@ -1,69 +1,21 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Github,
-  Cpu,
-  Shield,
-  Zap,
-  Layers,
-  Lock,
   CheckCircle2,
-  Loader2,
   ChevronRight,
+  Cpu,
+  Github,
+  Loader2,
+  Lock,
+  Shield,
   Terminal,
-  BrainCircuit,
-  Webhook,
+  Zap,
 } from 'lucide-react';
-import PlatformStudio from './PlatformStudio';
-
-const FEATURE_ITEMS = [
-  {
-    id: 'llm-infra',
-    icon: BrainCircuit,
-    color: 'text-violet-500',
-    bg: 'bg-violet-500/10',
-    label: 'LLM as Infrastructure',
-    description:
-      'Provision Firebase, EAS & GitHub via LLM MCP calls or REST API - no console needed',
-  },
-  {
-    id: 'mcp',
-    icon: Webhook,
-    color: 'text-blue-500',
-    bg: 'bg-blue-500/10',
-    label: 'MCP & API Gateway',
-    description:
-      'Every third-party interaction routed through structured MCP tool calls or direct API',
-  },
-  {
-    id: 'ui',
-    icon: Layers,
-    color: 'text-amber-500',
-    bg: 'bg-amber-500/10',
-    label: 'Web UI Studio',
-    description:
-      'Full visual interface to configure, trigger, and monitor all provisioning workflows',
-  },
-  {
-    id: 'vault',
-    icon: Lock,
-    color: 'text-emerald-500',
-    bg: 'bg-emerald-500/10',
-    label: 'Secure Vault',
-    description:
-      'Encrypted credential management - your secrets, never exposed to the LLM layer',
-  },
-];
-
-const AUTH_STEPS = [
-  { id: 's1', label: 'Connecting to GitHub OAuth...' },
-  { id: 's2', label: 'Verifying organization access...' },
-  { id: 's3', label: 'Loading workspace...' },
-];
+import { AUTH_STEPS, FEATURE_ITEMS } from './constants';
 
 type AuthState = 'idle' | 'loading' | 'success';
 
-const GitHubLoginPage = ({
+export const GitHubLoginPage = ({
   onAuthenticated,
 }: {
   onAuthenticated: () => void;
@@ -463,45 +415,3 @@ const GitHubLoginPage = ({
     </div>
   );
 };
-
-/** Set to true to show the GitHub OAuth login gate; false = unauthenticated, user-inputted token only */
-const SHOW_LOGIN_GATE = false;
-
-export const StudioGate = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState(!SHOW_LOGIN_GATE);
-
-  return (
-    <AnimatePresence mode="wait">
-      {!isAuthenticated ? (
-        <motion.div
-          key="login"
-          initial={{ opacity: 1 }}
-          exit={{ opacity: 0, scale: 1.02 }}
-          transition={{ duration: 0.35, ease: 'easeIn' }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 50,
-          }}
-        >
-          <GitHubLoginPage onAuthenticated={() => setIsAuthenticated(true)} />
-        </motion.div>
-      ) : (
-        <motion.div
-          key="studio"
-          initial={{ opacity: 0, scale: 0.98 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.4, ease: 'easeOut' }}
-          style={{
-            width: '100%',
-            height: '100%',
-          }}
-        >
-          <PlatformStudio />
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-};
-
-export default StudioGate;
