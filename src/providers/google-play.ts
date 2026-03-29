@@ -12,6 +12,8 @@ import {
   DriftDifference,
   ReconcileDirection,
   AdapterError,
+  StepContext,
+  StepResult,
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
@@ -119,6 +121,41 @@ export class GooglePlayAdapter implements ProviderAdapter<GooglePlayManifestConf
   ): Promise<void> {
     await this.apiClient.registerFingerprint(packageName, sha1Fingerprint);
     this.log.info('SHA-1 fingerprint registered with Google Play', { packageName });
+  }
+
+  async executeStep(
+    stepKey: string,
+    config: GooglePlayManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    this.log.info('GooglePlayAdapter.executeStep()', { stepKey });
+    switch (stepKey) {
+      case 'google-play:create-app-listing': {
+        const existing = await this.apiClient.getApp(config.package_name);
+        const appId = existing
+          ? existing.packageName
+          : await this.apiClient.createApp(config.package_name, config.app_title, config.default_language);
+        return { status: 'completed', resourcesProduced: { play_app_id: appId } };
+      }
+      case 'google-play:create-service-account':
+        return { status: 'completed', resourcesProduced: { play_service_account_email: `play-sa@${context.upstreamResources['gcp_project_id'] ?? 'stub'}.iam.gserviceaccount.com` } };
+      case 'google-play:setup-internal-testing':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'google-play:configure-app-signing':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'google-play:extract-fingerprints':
+        return {
+          status: 'completed',
+          resourcesProduced: {
+            signing_sha1: `stub-sha1-${config.package_name}`,
+            signing_sha256: `stub-sha256-${config.package_name}`,
+          },
+        };
+      case 'google-play:add-fingerprints-to-firebase':
+        return { status: 'completed', resourcesProduced: {} };
+      default:
+        throw new AdapterError(`Unknown Google Play step: ${stepKey}`, 'google-play', 'executeStep');
+    }
   }
 
   async validate(

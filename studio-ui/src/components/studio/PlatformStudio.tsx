@@ -2,13 +2,17 @@ import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import {
   ALL_REGISTRY_PLUGINS,
-  DEFAULT_ENVIRONMENTS,
   INTEGRATION_CONFIGS,
   PROVIDER_PLUGIN_MAP,
   REGISTRY_CATEGORIES,
 } from './constants';
 import { api, bundleFromSlug, formatDate, providerToBackendKey, slugify } from './helpers';
-import { CreateProjectModal, type CreateProjectForm } from './CreateProjectModal';
+import {
+  CreateProjectModal,
+  DEFAULT_ENVIRONMENTS,
+  DEFAULT_MODULE_IDS,
+  type CreateProjectForm,
+} from './CreateProjectModal';
 import { IntegrationModal } from './IntegrationModal';
 import { MainHeader } from './MainHeader';
 import { OrgOverview } from './OrgOverview';
@@ -41,13 +45,16 @@ export default function PlatformStudio() {
   const [showCreate, setShowCreate] = useState(false);
   const [wsStatus, setWsStatus] = useState<'offline' | 'connecting' | 'live' | 'error'>('offline');
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
-  const [createForm, setCreateForm] = useState({
+  const [createForm, setCreateForm] = useState<CreateProjectForm>({
     name: '',
     slug: '',
     bundleId: 'com.example',
     description: '',
     githubOrg: '',
     easAccount: '',
+    environments: DEFAULT_ENVIRONMENTS,
+    templateId: 'mobile-app',
+    modules: DEFAULT_MODULE_IDS,
   });
   const [connections, setConnections] = useState<Map<string, WebSocket>>(new Map());
   const [connectedProviders, setConnectedProviders] = useState<ConnectedProviders>({
@@ -408,7 +415,8 @@ export default function PlatformStudio() {
         description: createForm.description.trim(),
         githubOrg: createForm.githubOrg.trim() || undefined,
         easAccount: createForm.easAccount.trim() || undefined,
-        environments: DEFAULT_ENVIRONMENTS,
+        environments: createForm.environments.filter((e) => e.trim().length > 0),
+        modules: createForm.modules,
       }),
     });
     setShowCreate(false);
@@ -419,6 +427,9 @@ export default function PlatformStudio() {
       description: '',
       githubOrg: '',
       easAccount: '',
+      environments: DEFAULT_ENVIRONMENTS,
+      templateId: 'mobile-app',
+      modules: DEFAULT_MODULE_IDS,
     });
     await refreshProjects();
     setActiveProjectId(payload.project.id);
@@ -586,14 +597,35 @@ export default function PlatformStudio() {
           form={createForm}
           onClose={() => setShowCreate(false)}
           onChange={(next: CreateProjectForm) => {
-            const name = next.name;
-            const nextSlug = slugify(next.slug || name);
-            setCreateForm({
-              ...next,
-              name,
-              slug: nextSlug,
-              bundleId: next.bundleId !== 'com.example' ? next.bundleId.trim().toLowerCase() : bundleFromSlug(nextSlug),
-            });
+            const nameChanged = next.name !== createForm.name;
+            const slugChangedByUser = next.slug !== createForm.slug;
+            const bundleChangedByUser = next.bundleId !== createForm.bundleId;
+
+            const prevAutoSlug = slugify(createForm.name);
+            const slugWasAuto = createForm.slug === prevAutoSlug || createForm.slug === '';
+
+            let slug: string;
+            if (slugChangedByUser) {
+              slug = slugify(next.slug);
+            } else if (nameChanged && slugWasAuto) {
+              slug = slugify(next.name);
+            } else {
+              slug = next.slug;
+            }
+
+            const prevAutoBundleId = bundleFromSlug(prevAutoSlug);
+            const bundleWasAuto = createForm.bundleId === prevAutoBundleId || createForm.bundleId === 'com.example';
+
+            let bundleId: string;
+            if (bundleChangedByUser) {
+              bundleId = next.bundleId.trim().toLowerCase();
+            } else if (bundleWasAuto) {
+              bundleId = bundleFromSlug(slug);
+            } else {
+              bundleId = next.bundleId;
+            }
+
+            setCreateForm({ ...next, slug, bundleId });
           }}
           onCreate={() => void createProject().catch((error: Error) => notify(error.message, 'error'))}
         />

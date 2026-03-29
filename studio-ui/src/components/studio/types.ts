@@ -1,6 +1,254 @@
 import type * as React from 'react';
 
-export type StudioView = 'overview' | 'project' | 'project-providers' | 'runs' | 'registry' | 'infrastructure';
+export type StudioView =
+  | 'overview'
+  | 'project'
+  | 'project-setup'
+  | 'project-modules'
+  | 'project-dashboard'
+  | 'project-settings'
+  | 'project-providers'
+  | 'runs'
+  | 'registry'
+  | 'infrastructure';
+
+// ---------------------------------------------------------------------------
+// Provisioning Graph Types (mirrors backend graph.types.ts)
+// ---------------------------------------------------------------------------
+
+export type EnvironmentScope = 'global' | 'per-environment';
+export type AutomationLevel = 'full' | 'assisted' | 'manual';
+export type StepDirection = 'provision' | 'teardown';
+export type UserActionCategory =
+  | 'account-enrollment'
+  | 'credential-upload'
+  | 'external-configuration'
+  | 'approval';
+
+export type VerificationMethod =
+  | { type: 'api-check'; description: string }
+  | { type: 'credential-upload'; secretKey: string }
+  | { type: 'manual-confirm' };
+
+export type InteractiveAction =
+  | { type: 'oauth'; provider: 'firebase'; label: string };
+
+export interface DependencyRef {
+  nodeKey: string;
+  required: boolean;
+  description?: string;
+}
+
+export interface CompletionRelatedLink {
+  label: string;
+  href?: string;
+  hrefTemplate?: string;
+}
+
+export interface ResourceOutputPresentation {
+  sensitive?: boolean;
+  primaryLinkFromValue?: boolean;
+  primaryHrefTemplate?: string;
+  relatedLinks?: CompletionRelatedLink[];
+}
+
+export interface ResourceOutput {
+  key: string;
+  label: string;
+  description: string;
+  presentation?: ResourceOutputPresentation;
+}
+
+export interface CompletionPortalLink {
+  label: string;
+  href?: string;
+  hrefTemplate?: string;
+}
+
+export interface UserActionNode {
+  type: 'user-action';
+  key: string;
+  label: string;
+  description: string;
+  category: UserActionCategory;
+  provider?: string;
+  verification: VerificationMethod;
+  interactiveAction?: InteractiveAction;
+  helpUrl?: string;
+  dependencies: DependencyRef[];
+  produces: ResourceOutput[];
+  completionPortalLinks?: CompletionPortalLink[];
+}
+
+export interface ProvisioningStepNode {
+  type: 'step';
+  key: string;
+  label: string;
+  description: string;
+  provider: string;
+  environmentScope: EnvironmentScope;
+  automationLevel: AutomationLevel;
+  dependencies: DependencyRef[];
+  produces: ResourceOutput[];
+  estimatedDurationMs?: number;
+  bridgeTarget?: string;
+  direction?: StepDirection;
+  teardownOf?: string;
+  completionPortalLinks?: CompletionPortalLink[];
+  interactiveAction?: InteractiveAction;
+}
+
+export type ProvisioningGraphNode = UserActionNode | ProvisioningStepNode;
+
+export type NodeStatus =
+  | 'not-started'
+  | 'blocked'
+  | 'ready'
+  | 'in-progress'
+  | 'waiting-on-user'
+  | 'resolving'
+  | 'completed'
+  | 'failed'
+  | 'skipped';
+
+export interface NodeState {
+  nodeKey: string;
+  status: NodeStatus;
+  environment?: string;
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+  resourcesProduced?: Record<string, string>;
+}
+
+export type JourneyPhaseId =
+  | 'accounts'
+  | 'domain_dns'
+  | 'credentials'
+  | 'cloud_firebase'
+  | 'repo'
+  | 'cicd'
+  | 'mobile_build'
+  | 'signing_apple'
+  | 'play'
+  | 'edge_ssl'
+  | 'deep_links'
+  | 'oauth'
+  | 'verification'
+  | 'teardown';
+
+/** Display titles — keep in sync with `src/provisioning/journey-phases.ts` */
+export const JOURNEY_PHASE_TITLE: Record<JourneyPhaseId, string> = {
+  accounts: 'Accounts & billing',
+  domain_dns: 'Domain & DNS',
+  credentials: 'Credentials & access',
+  cloud_firebase: 'Cloud & Firebase',
+  repo: 'Source repository',
+  cicd: 'CI/CD & automation',
+  mobile_build: 'Mobile builds',
+  signing_apple: 'Apple signing & App Store',
+  play: 'Google Play',
+  edge_ssl: 'Edge & SSL',
+  deep_links: 'Deep linking',
+  oauth: 'Auth & OAuth',
+  verification: 'Verification & go-live',
+  teardown: 'Teardown',
+};
+
+export interface SequentialExecutionItem {
+  nodeKey: string;
+  environment?: string;
+}
+
+export interface ProvisioningPlanResponse {
+  projectId: string;
+  environments: string[];
+  selectedModules: string[];
+  nodes: ProvisioningGraphNode[];
+  nodeStates: Record<string, NodeState>;
+  /** Server-computed topological order (logical node keys). */
+  canonicalNodeOrder: string[];
+  journeyPhaseByNodeKey: Record<string, JourneyPhaseId>;
+  /** Phases that appear in this plan, in sidebar order. */
+  journeyPhaseOrder: JourneyPhaseId[];
+  sequentialExecutionItems: SequentialExecutionItem[];
+}
+
+export type ModuleId =
+  | 'firebase-core'
+  | 'firebase-auth'
+  | 'firebase-firestore'
+  | 'firebase-storage'
+  | 'firebase-messaging'
+  | 'github-repo'
+  | 'github-ci'
+  | 'eas-builds'
+  | 'eas-submit'
+  | 'apple-signing'
+  | 'google-play-publishing'
+  | 'cloudflare-domain'
+  | 'oauth-social';
+
+/** Logical capability buckets for the Studio module picker (UI only). */
+export type ModuleFunctionGroupId =
+  | 'cloud-foundation'
+  | 'persistent-store'
+  | 'object-storage'
+  | 'messaging'
+  | 'auth-identity'
+  | 'domain-edge'
+  | 'source-control'
+  | 'ci-automation'
+  | 'mobile-release'
+  | 'apple-distribution'
+  | 'google-play';
+
+export interface ModuleDefinition {
+  id: ModuleId;
+  label: string;
+  description: string;
+  provider: string;
+  /** Studio: group under a capability heading in the module wizard. */
+  functionGroupId: ModuleFunctionGroupId;
+  requiredModules: ModuleId[];
+  optionalModules: ModuleId[];
+  stepKeys: string[];
+  teardownStepKeys: string[];
+}
+
+export type ProjectTemplateId = 'mobile-app' | 'web-app' | 'api-backend' | 'custom';
+
+export interface ProjectTemplate {
+  id: ProjectTemplateId;
+  label: string;
+  description: string;
+  modules: ModuleId[];
+}
+
+export type StepProgressStatus =
+  | 'ready'
+  | 'running'
+  | 'success'
+  | 'failure'
+  | 'waiting-on-user'
+  | 'resolving'
+  | 'skipped'
+  | 'blocked';
+
+export interface WsStepProgressMessage {
+  type: 'step_progress';
+  runId: string;
+  timestamp: string;
+  data: {
+    nodeKey: string;
+    nodeType: 'step' | 'user-action';
+    status: StepProgressStatus;
+    environment?: string;
+    resourcesProduced?: Record<string, string>;
+    error?: string;
+    userPrompt?: string;
+  };
+}
 export type ProviderId = 'firebase' | 'expo' | 'github';
 export type SetupTaskStatus = 'idle' | 'running' | 'completed' | 'error' | 'manual-required';
 
@@ -168,18 +416,28 @@ export interface OrganizationProfile {
 }
 
 export interface GcpOAuthStepStatus {
-  id: 'oauth_consent' | 'gcp_project' | 'service_account' | 'iam_binding' | 'vault';
+  id: 'oauth_consent';
   label: string;
   status: 'pending' | 'in_progress' | 'completed' | 'failed';
   message?: string;
 }
 
+export interface GcpOAuthProjectDiscoverResult {
+  outcome: 'linked' | 'already_linked' | 'not_found' | 'inaccessible' | 'ambiguous' | 'error';
+  gcpProjectId?: string;
+  expectedProjectId: string;
+  expectedDisplayName: string;
+  message: string;
+}
+
 export interface GcpOAuthSessionStatus {
   sessionId: string;
+  projectId?: string;
   phase: 'awaiting_user' | 'processing' | 'completed' | 'failed' | 'expired';
   connected: boolean;
   error?: string;
   steps: GcpOAuthStepStatus[];
+  gcpProjectDiscover?: GcpOAuthProjectDiscoverResult;
 }
 
 export interface FirebaseConnectionDetails {

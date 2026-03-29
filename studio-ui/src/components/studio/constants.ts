@@ -25,7 +25,8 @@ import type {
   ServiceHealth,
 } from './types';
 
-export const DEFAULT_ENVIRONMENTS = ['dev', 'preview', 'production'];
+/** @deprecated Import DEFAULT_ENVIRONMENTS from CreateProjectModal instead */
+export const DEFAULT_ENVIRONMENTS = ['qa', 'production'];
 export const SLUG_MAX = 25;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -375,7 +376,7 @@ export const PROJECT_SETUP_CONFIGS: Record<ProviderId, ProjectSetupConfig> = {
     iconColorClass: 'text-blue-500',
     iconBgClass: 'bg-blue-500/10',
     introDescription:
-      'Studio creates a dedicated service account in Google Cloud for this project. The SA is granted the minimum IAM roles needed to provision Firebase services. Your personal Google credentials are used once for authorization and are never stored.',
+      'Studio creates a dedicated service account in Google Cloud for this project. The SA is granted the minimum IAM roles needed to provision Firebase services. Sign in with Google once so Studio can store a refresh token; project creation, IAM, and SA keys are separate provisioning steps.',
     introBadges: [
       'roles/firebase.admin',
       'roles/iam.serviceAccountAdmin',
@@ -385,11 +386,11 @@ export const PROJECT_SETUP_CONFIGS: Record<ProviderId, ProjectSetupConfig> = {
     ],
     setupMethod: 'oauth-or-manual',
     oauthSteps: [
-      { key: 'oauth_consent', label: 'Google authorization', description: 'Sign in and grant GCP access to Studio.' },
-      { key: 'gcp_project', label: 'GCP project resolved', description: 'Project ID located or created for this project.' },
-      { key: 'service_account', label: 'Service account created', description: 'A provisioner SA is created with required IAM roles.' },
-      { key: 'iam_binding', label: 'IAM roles bound', description: 'firebase.admin, iam.admin, and cloudkms.admin granted.' },
-      { key: 'vault', label: 'Key stored securely', description: 'SA key encrypted and saved to local vault.' },
+      {
+        key: 'oauth_consent',
+        label: 'Google authorization',
+        description: 'Sign in and grant GCP access; refresh token stored for automated provisioning steps.',
+      },
     ],
     steps: [],
     pluginIds: ['firebase-auth', 'firestore', 'fcm', 'app-check', 'vertex-ai'],

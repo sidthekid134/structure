@@ -12,6 +12,8 @@ import {
   DriftDifference,
   ReconcileDirection,
   AdapterError,
+  StepContext,
+  StepResult,
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
@@ -152,6 +154,37 @@ export class OAuthAdapter implements ProviderAdapter<OAuthManifestConfig> {
         'provision',
         err,
       );
+    }
+  }
+
+  async executeStep(
+    stepKey: string,
+    config: OAuthManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    this.log.info('OAuthAdapter.executeStep()', { stepKey });
+    switch (stepKey) {
+      case 'oauth:enable-auth-providers':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'oauth:register-oauth-clients': {
+        const result = await this.apiClient.createClient(config.oauth_provider, config.redirect_uri, config.scopes);
+        return {
+          status: 'completed',
+          resourcesProduced: {
+            oauth_client_id_ios: result.clientId,
+            oauth_client_id_android: result.clientId,
+            oauth_client_id_web: result.clientId,
+          },
+        };
+      }
+      case 'oauth:configure-apple-sign-in':
+        return { status: 'completed', resourcesProduced: { apple_sign_in_service_id: `stub-service-id-${config.firebase_project_id}` } };
+      case 'oauth:configure-redirect-uris':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'oauth:link-deep-link-domain':
+        return { status: 'completed', resourcesProduced: {} };
+      default:
+        throw new AdapterError(`Unknown OAuth step: ${stepKey}`, 'oauth', 'executeStep');
     }
   }
 

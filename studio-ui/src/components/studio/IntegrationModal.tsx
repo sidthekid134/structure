@@ -117,24 +117,13 @@ export function IntegrationModal({
     }
 
     if (resourceKey === 'gcp_project') {
-      return mapGcpStepToSetupStatus(oauthStepById.gcp_project?.status);
+      return mapGcpStepToSetupStatus(oauthStepById.oauth_consent?.status);
     }
-    if (resourceKey === 'provisioner_service_account') {
-      const serviceAccountStep = oauthStepById.service_account?.status;
-      const iamBindingStep = oauthStepById.iam_binding?.status;
-      if (serviceAccountStep === 'failed' || iamBindingStep === 'failed') {
-        return 'failed';
-      }
-      if (iamBindingStep === 'in_progress') {
-        return 'in_progress';
-      }
-      if (iamBindingStep === 'completed') {
-        return 'completed';
-      }
-      return mapGcpStepToSetupStatus(serviceAccountStep);
+    if (oauthStepById.oauth_consent?.status === 'completed') {
+      return setupPlanStepStates[resourceKey] ?? 'idle';
     }
-    if (resourceKey === 'provisioner_service_account_key') {
-      return mapGcpStepToSetupStatus(oauthStepById.vault?.status);
+    if (resourceKey === 'provisioner_service_account' || resourceKey === 'provisioner_service_account_key') {
+      return 'idle';
     }
 
     return setupPlanStepStates[resourceKey] ?? 'idle';

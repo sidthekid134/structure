@@ -12,6 +12,8 @@ import {
   DriftDifference,
   ReconcileDirection,
   AdapterError,
+  StepContext,
+  StepResult,
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
@@ -149,6 +151,36 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
         'provision',
         err,
       );
+    }
+  }
+
+  async executeStep(
+    stepKey: string,
+    config: CloudflareManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    this.log.info('CloudflareAdapter.executeStep()', { stepKey });
+    switch (stepKey) {
+      case 'cloudflare:add-domain-zone': {
+        const existing = await this.apiClient.getZoneId(config.domain);
+        const zoneId = existing ?? await this.apiClient.createZone(config.domain);
+        return { status: 'completed', resourcesProduced: { cloudflare_zone_id: zoneId } };
+      }
+      case 'cloudflare:configure-dns':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'cloudflare:configure-ssl':
+        await this.apiClient.setSslMode(context.upstreamResources['cloudflare_zone_id'] ?? '', config.ssl_mode);
+        return { status: 'completed', resourcesProduced: {} };
+      case 'cloudflare:setup-apple-app-site-association':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'cloudflare:setup-android-asset-links':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'cloudflare:configure-deep-link-routes': {
+        const baseUrl = `https://${config.domain}`;
+        return { status: 'completed', resourcesProduced: { deep_link_base_url: baseUrl } };
+      }
+      default:
+        throw new AdapterError(`Unknown Cloudflare step: ${stepKey}`, 'cloudflare', 'executeStep');
     }
   }
 

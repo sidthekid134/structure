@@ -15,6 +15,8 @@ import {
   DriftDifference,
   ReconcileDirection,
   AdapterError,
+  StepContext,
+  StepResult,
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
@@ -191,6 +193,51 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         'provision',
         err,
       );
+    }
+  }
+
+  async executeStep(
+    stepKey: string,
+    config: AppleManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    this.log.info('AppleAdapter.executeStep()', { stepKey });
+    switch (stepKey) {
+      case 'apple:register-app-id': {
+        const existing = await this.apiClient.getBundleId(config.bundle_id);
+        const appId = existing
+          ? existing.id
+          : await this.apiClient.createBundleId(config.bundle_id, config.app_name, config.team_id);
+        return {
+          status: 'completed',
+          resourcesProduced: { apple_app_id: appId, apple_bundle_id: config.bundle_id },
+        };
+      }
+      case 'apple:create-dev-provisioning-profile':
+        return { status: 'completed', resourcesProduced: { apple_dev_profile_id: `stub-dev-profile-${config.bundle_id}` } };
+      case 'apple:create-dist-provisioning-profile':
+        return { status: 'completed', resourcesProduced: { apple_dist_profile_id: `stub-dist-profile-${config.bundle_id}` } };
+      case 'apple:generate-apns-key': {
+        const keyResult = await this.apiClient.createApnsKey(config.team_id);
+        await context.vaultWrite(`${context.projectId}/apns_key_p8`, keyResult.privateKeyP8);
+        return {
+          status: 'completed',
+          resourcesProduced: { apns_key_id: keyResult.keyId, apns_key_p8: 'vaulted' },
+        };
+      }
+      case 'apple:upload-apns-to-firebase':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'apple:create-app-store-listing':
+        return { status: 'completed', resourcesProduced: { asc_app_id: `stub-asc-${config.bundle_id}` } };
+      case 'apple:generate-asc-api-key':
+        return {
+          status: 'completed',
+          resourcesProduced: { asc_api_key_id: `stub-asc-key-${config.team_id}`, asc_api_key_p8: 'vaulted' },
+        };
+      case 'apple:store-signing-in-eas':
+        return { status: 'completed', resourcesProduced: {} };
+      default:
+        throw new AdapterError(`Unknown Apple step: ${stepKey}`, 'apple', 'executeStep');
     }
   }
 

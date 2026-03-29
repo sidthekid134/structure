@@ -4,6 +4,9 @@
  * OperationResult is the canonical return value for all provider provisioning
  * operations. ProgressEvent is the unit of the async generator stream that
  * Orchestrator.provision() yields.
+ *
+ * StepProgressEvent is the newer step-level equivalent yielded by
+ * Orchestrator.provisionBySteps().
  */
 
 import type { ProviderType } from '../providers/types.js';
@@ -86,6 +89,42 @@ export interface OrchestrationOptions {
   user_id?: string;
   /** Dry-run: validate and detect drift but do not provision */
   dry_run?: boolean;
+  /**
+   * Step-level provisioning: `sequential` runs one expanded item at a time in journey order
+   * (matches Setup wizard). `parallel` runs items in the same DAG layer concurrently.
+   * @default 'sequential'
+   */
+  stepExecutionMode?: 'parallel' | 'sequential';
+}
+
+// ---------------------------------------------------------------------------
+// StepProgressEvent — yielded by Orchestrator.provisionBySteps()
+// ---------------------------------------------------------------------------
+
+export type StepProgressStatus =
+  | 'ready'
+  | 'running'
+  | 'success'
+  | 'failure'
+  | 'waiting-on-user'
+  | 'resolving'
+  | 'skipped'
+  | 'blocked';
+
+export interface StepProgressEvent {
+  /** Step or user-action key, e.g. 'firebase:create-gcp-project' */
+  nodeKey: string;
+  nodeType: 'step' | 'user-action';
+  provider?: ProviderType;
+  /** null for global steps; 'dev'/'prod'/etc for per-env step instances */
+  environment?: string;
+  status: StepProgressStatus;
+  resourcesProduced?: Record<string, string>;
+  error?: string;
+  /** Shown to the user when status is 'waiting-on-user' */
+  userPrompt?: string;
+  timestamp: Date;
+  correlation_id: string;
 }
 
 // ---------------------------------------------------------------------------

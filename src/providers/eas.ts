@@ -13,6 +13,8 @@ import {
   ReconcileDirection,
   AdapterError,
   Environment,
+  StepContext,
+  StepResult,
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
@@ -131,6 +133,36 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
         'provision',
         err,
       );
+    }
+  }
+
+  async executeStep(
+    stepKey: string,
+    config: EasManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    this.log.info('EasAdapter.executeStep()', { stepKey });
+    switch (stepKey) {
+      case 'eas:create-project': {
+        const existing = await this.apiClient.getProject(config.project_name, config.organization);
+        const projectId = existing ?? await this.apiClient.createProject(config.project_name, config.organization);
+        return { status: 'completed', resourcesProduced: { eas_project_id: projectId } };
+      }
+      case 'eas:configure-build-profiles': {
+        const env = (context.environment ?? config.environments[0] ?? 'dev') as Environment;
+        await this.apiClient.uploadEnvFile(context.upstreamResources['eas_project_id'] ?? '', env, {});
+        return { status: 'completed', resourcesProduced: {} };
+      }
+      case 'eas:link-github':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'eas:store-token-in-github':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'eas:configure-submit-apple':
+        return { status: 'completed', resourcesProduced: {} };
+      case 'eas:configure-submit-android':
+        return { status: 'completed', resourcesProduced: {} };
+      default:
+        throw new AdapterError(`Unknown EAS step: ${stepKey}`, 'eas', 'executeStep');
     }
   }
 

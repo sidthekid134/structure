@@ -43,6 +43,14 @@ export interface ProjectModule {
   integrations: Partial<Record<IntegrationProvider, IntegrationConfigRecord>>;
 }
 
+export interface ProvisioningPlanFile {
+  projectId: string;
+  environments: string[];
+  selectedModules: string[];
+  nodes: unknown[];
+  nodeStates: Record<string, unknown>;
+}
+
 export interface OrganizationProfile {
   integrations: Partial<Record<IntegrationProvider, IntegrationConfigRecord>>;
   updatedAt: string;
@@ -95,6 +103,27 @@ export class ProjectManager {
 
   deleteProject(projectId: string): void {
     fs.rmSync(this.projectDir(projectId), { recursive: true, force: false });
+  }
+
+  savePlan(projectId: string, plan: ProvisioningPlanFile): void {
+    const planPath = this.planPath(projectId);
+    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+  }
+
+  loadPlan(projectId: string): ProvisioningPlanFile | null {
+    const planPath = this.planPath(projectId);
+    if (!fs.existsSync(planPath)) return null;
+    const raw = fs.readFileSync(planPath, 'utf8');
+    return JSON.parse(raw) as ProvisioningPlanFile;
+  }
+
+  deletePlan(projectId: string): void {
+    const planPath = this.planPath(projectId);
+    if (!fs.existsSync(planPath)) return;
+    fs.unlinkSync(planPath);
   }
 
   getOrganization(): OrganizationProfile {
@@ -180,7 +209,7 @@ export class ProjectManager {
         platform: platforms.length === 2 ? 'cross-platform' : platforms[0],
         githubOrg: input.githubOrg?.trim() ?? '',
         easAccount: input.easAccount?.trim() ?? '',
-        environments: input.environments?.length ? input.environments : ['dev', 'preview', 'production'],
+        environments: input.environments?.length ? input.environments : ['qa', 'production'],
         platforms,
         domain: input.domain?.trim() ?? '',
         plugins,
@@ -356,6 +385,10 @@ export class ProjectManager {
 
   private modulePath(projectId: string): string {
     return path.join(this.projectDir(projectId), 'module.json');
+  }
+
+  private planPath(projectId: string): string {
+    return path.join(this.projectDir(projectId), 'plan.json');
   }
 
   private projectDir(projectId: string): string {
