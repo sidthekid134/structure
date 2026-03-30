@@ -1,4 +1,15 @@
 import type { ProviderType } from '../providers/types.js';
+import type { ProviderBlueprint } from '../provisioning/graph.types.js';
+import {
+  FIREBASE_STEPS,
+  GITHUB_STEPS,
+  EAS_STEPS,
+  APPLE_STEPS,
+  GOOGLE_PLAY_STEPS,
+  CLOUDFLARE_STEPS,
+  OAUTH_STEPS,
+  USER_ACTIONS,
+} from '../provisioning/step-registry.js';
 
 export const PROVIDER_SECRET_SCHEMAS: Readonly<Record<ProviderType, string[]>> = {
   firebase: ['service_account_json', 'api_key', 'fcm_key'],
@@ -44,6 +55,60 @@ export interface IntegrationBlueprintDescriptor {
   plannedResources: IntegrationPlannedResourceDescriptor[];
 }
 
+// ---------------------------------------------------------------------------
+// New: ProviderBlueprint catalog — step-level representation
+// ---------------------------------------------------------------------------
+
+export const PROVIDER_BLUEPRINTS: Readonly<Record<ProviderType, ProviderBlueprint>> = {
+  firebase: {
+    provider: 'firebase',
+    scope: 'project',
+    steps: FIREBASE_STEPS,
+    userActions: USER_ACTIONS.filter((a) => a.provider === 'firebase'),
+  },
+  github: {
+    provider: 'github',
+    scope: 'organization',
+    steps: GITHUB_STEPS,
+    userActions: USER_ACTIONS.filter((a) => a.provider === 'github'),
+  },
+  eas: {
+    provider: 'eas',
+    scope: 'organization',
+    steps: EAS_STEPS,
+    userActions: USER_ACTIONS.filter((a) => a.provider === 'eas'),
+  },
+  apple: {
+    provider: 'apple',
+    scope: 'organization',
+    steps: APPLE_STEPS,
+    userActions: USER_ACTIONS.filter((a) => a.provider === 'apple'),
+  },
+  'google-play': {
+    provider: 'google-play',
+    scope: 'organization',
+    steps: GOOGLE_PLAY_STEPS,
+    userActions: USER_ACTIONS.filter((a) => a.provider === 'google-play'),
+  },
+  cloudflare: {
+    provider: 'cloudflare',
+    scope: 'project',
+    steps: CLOUDFLARE_STEPS,
+    userActions: USER_ACTIONS.filter((a) => a.provider === 'cloudflare'),
+  },
+  oauth: {
+    provider: 'oauth',
+    scope: 'project',
+    steps: OAUTH_STEPS,
+    userActions: [],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Legacy: PROVIDER_INTEGRATION_BLUEPRINTS — kept for backward compat
+// ---------------------------------------------------------------------------
+
+/** @deprecated Use PROVIDER_BLUEPRINTS instead */
 export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
   Record<ProviderType, IntegrationBlueprintDescriptor>
 > = {

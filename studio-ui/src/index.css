@@ -149,6 +149,23 @@ body {
   * {
     @apply border-border outline-ring/50;
   }
+
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']):not(:disabled),
+  input[type='button']:not(:disabled),
+  input[type='submit']:not(:disabled),
+  input[type='reset']:not(:disabled) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  input[type='button']:disabled,
+  input[type='submit']:disabled,
+  input[type='reset']:disabled,
+  [role='button'][aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-body);

@@ -15,6 +15,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 export type WsMessageType =
   | 'connected'
   | 'progress'
+  | 'step_progress'
   | 'status_update'
   | 'reconcile_progress'
   | 'error'
@@ -132,6 +133,36 @@ export class WsHandler {
       runId,
       timestamp: new Date().toISOString(),
       data: { provider, reconciled, error },
+    });
+  }
+
+  /**
+   * Broadcasts a step-level progress event (for the new DAG-based provisioning).
+   * Clients listening on the project's provisioning channel receive these events.
+   */
+  broadcastStepProgress(
+    projectId: string,
+    nodeKey: string,
+    nodeType: 'step' | 'user-action',
+    status: string,
+    environment?: string,
+    resourcesProduced?: Record<string, string>,
+    error?: string,
+    userPrompt?: string,
+  ): void {
+    this.broadcast(projectId, {
+      type: 'step_progress',
+      runId: projectId,
+      timestamp: new Date().toISOString(),
+      data: {
+        nodeKey,
+        nodeType,
+        status,
+        environment,
+        resourcesProduced,
+        error,
+        userPrompt,
+      },
     });
   }
 

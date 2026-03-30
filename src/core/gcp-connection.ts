@@ -1,34 +1,85 @@
-import * as http from 'http';
-import * as https from 'https';
-import * as url from 'url';
-import * as crypto from 'crypto';
-import { OAuth2Client } from 'google-auth-library';
-import { VaultManager } from '../vault.js';
+/**
+ * GCP / Firebase connection service.
+ *
+ * Thin orchestration layer that composes OAuthManager, GcpOAuthProvider, and the
+ * GCP credential/API helpers. Provides the same public interface as before so
+ * existing callers (api.ts, gate-resolvers.ts, firebase adapter) continue to work
+ * without changes.
+ *
+ * Implementation details live in:
+ *   - src/core/oauth-manager.ts         — provider-agnostic OAuth session lifecycle
+ *   - src/core/gcp/gcp-oauth-provider.ts — Google Cloud OAuth specifics
+ *   - src/core/gcp/gcp-api-client.ts    — raw GCP HTTP client + helpers
+ *   - src/core/gcp/gcp-credentials.ts   — vault credential management
+ *   - src/core/gcp/gcp-step-handlers.ts — per-step create/delete/validate/sync
+ */
+
+import { GoogleAuth } from 'google-auth-library';
+import type { VaultManager } from '../vault.js';
+import type { ProjectManager, IntegrationConfigRecord } from '../studio/project-manager.js';
+import { OAuthManager } from './oauth-manager.js';
+import { GcpOAuthProvider } from './gcp/gcp-oauth-provider.js';
 import {
-  ProjectManager,
-  IntegrationConfigRecord,
-} from '../studio/project-manager.js';
+  GcpHttpError,
+  gcpRequest,
+  parseDisabledApiServiceName,
+  formatDisabledApiHelp,
+  fetchGcpProjectSummary,
+  getGcpProjectStatus,
+  findGcpProjectsByDisplayName,
+  createGcpProject,
+  deleteGcpProject,
+  waitForProjectActive,
+  ensureRequiredProjectApis,
+  ensureProvisionerServiceAccount,
+  grantProvisionerRoles,
+  removeProvisionerRoles,
+  findMissingProvisionerRoles,
+  createServiceAccountKey,
+  deleteServiceAccount,
+  enableProjectService,
+  sleep,
+  provisionerSaEmail,
+} from './gcp/gcp-api-client.js';
+import {
+  buildStudioGcpProjectId,
+  buildGcpProjectIdWithEntropy,
+  getStoredGcpProjectId,
+  storeGcpProjectId,
+  getStoredSaEmail,
+  storeSaEmail,
+  getStoredSaKeyJson,
+  storeSaKeyJson,
+  deleteGcpCredentials,
+  getStoredConnectionDetails,
+  storeConnectionDetails,
+  buildOAuthPreviewDetails,
+  syncFirebaseIntegration,
+  applyGcpProjectLinked,
+  recordProvisionerServiceAccountKey,
+  type GcpConnectionDetails,
+  type GcpProjectConnectionStatus,
+} from './gcp/gcp-credentials.js';
+
+// ---------------------------------------------------------------------------
+// Re-export types consumed by api.ts and other callers
+// ---------------------------------------------------------------------------
+
+export type { GcpConnectionDetails, GcpProjectConnectionStatus };
+export { buildStudioGcpProjectId };
+export const GCP_PROVISIONER_SERVICE_ACCOUNT_ID = 'platform-provisioner';
 
 export type GcpStepStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+export type GcpOAuthSessionStepId = 'oauth_consent';
+export type GcpBootstrapPhaseId = 'oauth_consent' | 'gcp_project' | 'service_account' | 'iam_binding' | 'vault';
+/** @deprecated Use GcpOAuthSessionStepId */
+export type GcpOAuthStepId = GcpOAuthSessionStepId;
 
 export interface GcpOAuthStep {
-  id: 'oauth_consent' | 'gcp_project' | 'service_account' | 'iam_binding' | 'vault';
+  id: GcpOAuthSessionStepId;
   label: string;
   status: GcpStepStatus;
   message?: string;
-}
-
-export interface GcpConnectionDetails {
-  projectId: string;
-  serviceAccountEmail: string;
-  userEmail: string;
-  connectedAt: string;
-}
-
-export interface GcpProjectConnectionStatus {
-  connected: boolean;
-  details?: GcpConnectionDetails;
-  integration?: IntegrationConfigRecord;
 }
 
 export interface GcpOAuthSessionStart {
@@ -46,916 +97,685 @@ export interface GcpOAuthSessionStatus {
   steps: GcpOAuthStep[];
   connected: boolean;
   details?: GcpConnectionDetails;
+  gcpProjectDiscover?: GcpOAuthProjectDiscoverResult;
   error?: string;
 }
 
-interface InternalSession {
-  sessionId: string;
-  projectId: string;
-  state: string;
-  client: OAuth2Client;
-  server: http.Server;
-  codePromise: Promise<string>;
-  resolveCode: (code: string) => void;
-  rejectCode: (err: Error) => void;
-  timeout: NodeJS.Timeout;
-  status: GcpOAuthSessionStatus;
+export interface GcpOAuthProjectDiscoverResult {
+  outcome: 'linked' | 'already_linked' | 'not_found' | 'inaccessible' | 'ambiguous' | 'error';
+  gcpProjectId?: string;
+  expectedProjectId: string;
+  expectedDisplayName: string;
+  message: string;
 }
 
-interface TokenInfo {
-  email?: string;
-  scope?: string;
+export interface GcpCredentialProvider {
+  getAccessToken(projectId: string, context?: string): Promise<string>;
 }
 
-interface ServiceAccountKeyResponse {
-  privateKeyData?: string;
+export interface GcpStepValidationResult {
+  valid: boolean;
+  message: string;
 }
 
-class GcpHttpError extends Error {
-  constructor(
-    message: string,
-    public readonly statusCode: number,
-    public readonly body: string,
-  ) {
-    super(message);
-  }
+export interface GcpStepRevertResult {
+  stepId: GcpBootstrapPhaseId;
+  reverted: boolean;
+  message: string;
 }
 
-const LOOPBACK_HOST = '127.0.0.1';
-const OAUTH_TIMEOUT_MS = 10 * 60 * 1000;
-const GCP_OAUTH_SCOPES = ['https://www.googleapis.com/auth/cloud-platform'];
-export const GCP_PROVISIONER_SERVICE_ACCOUNT_ID = 'platform-provisioner';
+// ---------------------------------------------------------------------------
+// GcpConnectionService
+// ---------------------------------------------------------------------------
 
-const PROVISIONER_PROJECT_ROLES = [
-  'roles/firebase.admin',
-  'roles/iam.serviceAccountAdmin',
-  'roles/iam.serviceAccountKeyAdmin',
-  'roles/serviceusage.serviceUsageAdmin',
-  'roles/cloudkms.admin',
-] as const;
-
-export function buildStudioGcpProjectId(studioProjectId: string): string {
-  const base = studioProjectId
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-  const hash = crypto
-    .createHash('sha1')
-    .update(studioProjectId)
-    .digest('hex')
-    .slice(0, 6);
-
-  const maxBaseLength = 30 - 'st--'.length - hash.length;
-  const trimmedBase = (base || 'project').slice(0, maxBaseLength).replace(/-+$/g, '');
-  return `st-${trimmedBase}-${hash}`;
-}
-
-export class GcpConnectionService {
-  private readonly sessions = new Map<string, InternalSession>();
+export class GcpConnectionService implements GcpCredentialProvider {
+  private readonly oauthManager: OAuthManager;
+  private readonly gcpProvider: GcpOAuthProvider;
 
   constructor(
     private readonly vaultManager: VaultManager,
     private readonly projectManager: ProjectManager,
-    private readonly oauthClientId: string,
-    private readonly oauthClientSecret: string,
-  ) {}
-
-  getCapability(): {
-    available: boolean;
-    oauthConfigured: boolean;
-    mode: 'project_bootstrap';
-  } {
-    const oauthConfigured =
-      Boolean(this.oauthClientId.trim()) && Boolean(this.oauthClientSecret.trim());
-    return {
-      available: oauthConfigured,
-      oauthConfigured,
-      mode: 'project_bootstrap',
-    };
+    oauthClientId: string,
+    oauthClientSecret: string,
+  ) {
+    this.gcpProvider = new GcpOAuthProvider(oauthClientId, oauthClientSecret);
+    this.oauthManager = new OAuthManager(vaultManager, () => this.getVaultPassphrase());
   }
 
+  // ---------------------------------------------------------------------------
+  // GcpCredentialProvider impl
+  // ---------------------------------------------------------------------------
+
+  async getAccessToken(projectId: string, context?: string): Promise<string> {
+    this.ensureProjectExists(projectId);
+    return this.getAccessTokenForGcpOperations(projectId, context);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Capability
+  // ---------------------------------------------------------------------------
+
+  getCapability(): { available: boolean; oauthConfigured: boolean; mode: 'project_bootstrap' } {
+    const oauthConfigured = this.gcpProvider.isConfigured();
+    return { available: oauthConfigured, oauthConfigured, mode: 'project_bootstrap' };
+  }
+
+  // ---------------------------------------------------------------------------
+  // OAuth session management (delegates to OAuthManager)
+  // ---------------------------------------------------------------------------
+
   async startProjectOAuthFlow(projectId: string): Promise<GcpOAuthSessionStart> {
-    this.ensureOAuthConfigured();
+    if (!this.gcpProvider.isConfigured()) {
+      throw new Error('Google OAuth is not configured. Set PLATFORM_GCP_OAUTH_CLIENT_ID and PLATFORM_GCP_OAUTH_CLIENT_SECRET.');
+    }
     this.ensureProjectExists(projectId);
 
-    const sessionId = crypto.randomUUID();
-    const state = crypto.randomBytes(16).toString('hex');
-
-    const server = http.createServer();
-    await this.listenServer(server);
-
-    const address = server.address();
-    if (!address || typeof address === 'string') {
-      throw new Error('Failed to start OAuth loopback server.');
-    }
-    const redirectUri = `http://${LOOPBACK_HOST}:${address.port}`;
-
-    const client = new OAuth2Client({
-      clientId: this.oauthClientId,
-      clientSecret: this.oauthClientSecret,
-      redirectUri,
-    });
-
-    const authUrl = client.generateAuthUrl({
-      access_type: 'offline',
-      prompt: 'consent',
-      scope: GCP_OAUTH_SCOPES,
-      state,
-    });
-
-    let resolveCode!: (code: string) => void;
-    let rejectCode!: (err: Error) => void;
-    const codePromise = new Promise<string>((resolve, reject) => {
-      resolveCode = resolve;
-      rejectCode = reject;
-    });
-
-    const status: GcpOAuthSessionStatus = {
-      sessionId,
+    const start = await this.oauthManager.startSession(
+      this.gcpProvider,
       projectId,
-      phase: 'awaiting_user',
-      connected: false,
-      steps: [
-        {
-          id: 'oauth_consent',
-          label: 'Sign in with Google and approve access',
-          status: 'in_progress',
-        },
-        {
-          id: 'gcp_project',
-          label: 'Create or resolve GCP project',
-          status: 'pending',
-        },
-        {
-          id: 'service_account',
-          label: 'Create platform-provisioner service account',
-          status: 'pending',
-        },
-        {
-          id: 'iam_binding',
-          label: 'Grant provisioner project-level roles',
-          status: 'pending',
-        },
-        {
-          id: 'vault',
-          label: 'Generate key and save credentials',
-          status: 'pending',
-        },
-      ],
-    };
+      async (accessToken, email) => {
+        const passphrase = this.getVaultPassphrase();
+        this.gcpProvider.storeConnectedEmail(this.vaultManager, passphrase, projectId, email);
+        const discover = await this.discoverStudioGcpProjectWithUserAccessToken(projectId, accessToken);
+        return { gcpProjectDiscover: discover };
+      },
+    );
 
-    const timeout = setTimeout(() => {
-      const active = this.sessions.get(sessionId);
-      if (!active) return;
-      this.failSession(active, 'OAuth session timed out before user authorization.');
-    }, OAUTH_TIMEOUT_MS);
-
-    const session: InternalSession = {
-      sessionId,
-      projectId,
-      state,
-      client,
-      server,
-      codePromise,
-      resolveCode,
-      rejectCode,
-      timeout,
-      status,
-    };
-
-    server.on('request', (req, res) => {
-      this.handleOAuthCallback(session, req, res);
-    });
-
-    this.sessions.set(sessionId, session);
-    void this.runSession(sessionId);
-
+    console.log(`[studio-gcp] OAuth flow started for Studio project "${projectId}" (session ${start.sessionId}).`);
     return {
-      sessionId,
-      authUrl,
-      state,
+      sessionId: start.sessionId,
+      authUrl: start.authUrl,
+      state: start.state,
       phase: 'awaiting_user',
-      steps: this.cloneSteps(status.steps),
+      steps: start.steps as GcpOAuthStep[],
     };
   }
 
   getProjectOAuthStatus(projectId: string, sessionId: string): GcpOAuthSessionStatus {
     this.ensureProjectExists(projectId);
-    const session = this.sessions.get(sessionId);
-    if (!session || session.projectId !== projectId) {
-      throw new Error('OAuth session not found for this project.');
-    }
+    const status = this.oauthManager.getSessionStatus(sessionId, projectId);
+    const passphrase = this.getVaultPassphrase();
+    const details = status.connected
+      ? (getStoredConnectionDetails(this.vaultManager, passphrase, projectId) ??
+        buildOAuthPreviewDetails(projectId, this.vaultManager, passphrase, status.connectedEmail ?? 'unknown'))
+      : undefined;
+
     return {
-      ...session.status,
-      steps: this.cloneSteps(session.status.steps),
+      sessionId: status.sessionId,
+      projectId: status.projectId,
+      phase: status.phase,
+      steps: status.steps as GcpOAuthStep[],
+      connected: status.connected,
+      details,
+      gcpProjectDiscover: status.metadata?.['gcpProjectDiscover'] as GcpOAuthProjectDiscoverResult | undefined,
+      error: status.error,
     };
   }
+
+  // ---------------------------------------------------------------------------
+  // Connection status
+  // ---------------------------------------------------------------------------
 
   getProjectConnectionStatus(projectId: string): GcpProjectConnectionStatus {
     this.ensureProjectExists(projectId);
-    const details = this.getStoredConnectionDetails(projectId);
+    const passphrase = this.getVaultPassphrase();
+    const details = getStoredConnectionDetails(this.vaultManager, passphrase, projectId);
+    const integration = this.projectManager.getProject(projectId).integrations.firebase;
 
-    if (!details) {
-      return { connected: false };
+    if (details) return { connected: true, details, integration };
+
+    if (this.hasStoredUserOAuthRefreshToken(projectId)) {
+      const userEmail = this.gcpProvider.getConnectedEmail(this.vaultManager, passphrase, projectId);
+      return {
+        connected: true,
+        details: buildOAuthPreviewDetails(projectId, this.vaultManager, passphrase, userEmail),
+        integration,
+      };
     }
 
-    const integration = this.projectManager.getProject(projectId).integrations.firebase;
-    return {
-      connected: true,
-      details,
-      integration,
-    };
+    return { connected: false };
   }
 
-  connectProjectWithServiceAccountKey(
-    projectId: string,
+  // ---------------------------------------------------------------------------
+  // GCP project discovery
+  // ---------------------------------------------------------------------------
+
+  async discoverStudioGcpProjectWithStoredOAuth(studioProjectId: string): Promise<GcpOAuthProjectDiscoverResult> {
+    this.ensureProjectExists(studioProjectId);
+    const token = await this.getUserOAuthAccessToken(studioProjectId);
+    if (!token) {
+      const expectedProjectId = buildStudioGcpProjectId(studioProjectId);
+    return {
+        outcome: 'error',
+        expectedProjectId,
+        expectedDisplayName: `Studio ${studioProjectId}`,
+        message: 'No Google OAuth session stored. Run Connect with Google first.',
+      };
+    }
+    return this.discoverStudioGcpProjectWithUserAccessToken(studioProjectId, token);
+  }
+
+  async discoverStudioGcpProjectWithUserAccessToken(
+    studioProjectId: string,
+    userAccessToken: string,
+  ): Promise<GcpOAuthProjectDiscoverResult> {
+    const expectedProjectId = buildStudioGcpProjectId(studioProjectId);
+    const expectedDisplayName = `Studio ${studioProjectId}`;
+    const passphrase = this.getVaultPassphrase();
+    const userEmail = this.gcpProvider.getConnectedEmail(this.vaultManager, passphrase, studioProjectId);
+
+    try {
+      const vaultId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+
+      if (vaultId) {
+        const summary = await fetchGcpProjectSummary(userAccessToken, vaultId);
+        if (!summary.ok) {
+          if (summary.reason === 'inaccessible') {
+        return {
+              outcome: 'inaccessible',
+              gcpProjectId: vaultId,
+              expectedProjectId,
+              expectedDisplayName,
+              message: `Vault lists GCP project "${vaultId}" but it is not accessible with the signed-in Google account (403).`,
+            };
+          }
+        return {
+            outcome: 'not_found',
+            gcpProjectId: vaultId,
+            expectedProjectId,
+            expectedDisplayName,
+            message: `Vault lists GCP project "${vaultId}" but it was not found in GCP.`,
+          };
+        }
+        applyGcpProjectLinked(this.projectManager, studioProjectId, vaultId, userEmail);
+        const nameNote = summary.name === expectedDisplayName
+          ? `Display name matches "${expectedDisplayName}".`
+          : `Note: display name is "${summary.name}" (expected "${expectedDisplayName}").`;
+        return { outcome: 'already_linked', gcpProjectId: vaultId, expectedProjectId, expectedDisplayName, message: `GCP project "${vaultId}" is reachable. ${nameNote}` };
+      }
+
+      const byId = await fetchGcpProjectSummary(userAccessToken, expectedProjectId);
+      if (byId.ok) {
+        storeGcpProjectId(this.vaultManager, passphrase, studioProjectId, expectedProjectId);
+        applyGcpProjectLinked(this.projectManager, studioProjectId, expectedProjectId, userEmail);
+        const nameNote = byId.name === expectedDisplayName
+          ? `Linked project "${expectedProjectId}" (display name "${expectedDisplayName}").`
+          : `Linked project "${expectedProjectId}". Display name is "${byId.name}" (expected "${expectedDisplayName}").`;
+        return { outcome: 'linked', gcpProjectId: expectedProjectId, expectedProjectId, expectedDisplayName, message: nameNote };
+      }
+
+      // 403 could mean "no access" or "doesn't exist" — search by display name
+      const matches = await findGcpProjectsByDisplayName(userAccessToken, expectedDisplayName);
+      if (matches.length === 0) {
+          return {
+          outcome: 'not_found', expectedProjectId, expectedDisplayName,
+          message: `No GCP project with id "${expectedProjectId}" or display name "${expectedDisplayName}". Run "Create GCP Project" provisioning step.`,
+        };
+      }
+      if (matches.length > 1) {
+      return {
+          outcome: 'ambiguous', expectedProjectId, expectedDisplayName,
+          message: `Multiple GCP projects named "${expectedDisplayName}". Rename or delete duplicates in Cloud Console.`,
+        };
+      }
+
+      const chosen = matches[0]!;
+      storeGcpProjectId(this.vaultManager, passphrase, studioProjectId, chosen.projectId);
+      applyGcpProjectLinked(this.projectManager, studioProjectId, chosen.projectId, userEmail);
+      return {
+        outcome: 'linked', gcpProjectId: chosen.projectId, expectedProjectId, expectedDisplayName,
+        message: `Linked GCP project "${chosen.projectId}" (display name "${expectedDisplayName}").`,
+      };
+    } catch (err) {
+      return { outcome: 'error', expectedProjectId, expectedDisplayName, message: (err as Error).message };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stored credentials
+  // ---------------------------------------------------------------------------
+
+  getStoredGcpProjectId(studioProjectId: string): string | null {
+    this.ensureProjectExists(studioProjectId);
+    return getStoredGcpProjectId(this.vaultManager, this.getVaultPassphrase(), studioProjectId);
+  }
+
+  storeGcpProjectIdInVault(studioProjectId: string, gcpProjectId: string): void {
+    this.ensureProjectExists(studioProjectId);
+    storeGcpProjectId(this.vaultManager, this.getVaultPassphrase(), studioProjectId, gcpProjectId);
+  }
+
+  storeProvisionerServiceAccountEmail(studioProjectId: string, email: string): void {
+    this.ensureProjectExists(studioProjectId);
+    storeSaEmail(this.vaultManager, this.getVaultPassphrase(), studioProjectId, email);
+  }
+
+  recordProvisionerServiceAccountKey(
+    studioProjectId: string,
+    gcpProjectId: string,
+    saEmail: string,
     saKeyJson: string,
   ): GcpProjectConnectionStatus {
+    this.ensureProjectExists(studioProjectId);
+    return recordProvisionerServiceAccountKey(
+      this.vaultManager,
+      this.getVaultPassphrase(),
+      this.projectManager,
+      studioProjectId,
+      gcpProjectId,
+      saEmail,
+      saKeyJson,
+    );
+  }
+
+  hasStoredUserOAuthRefreshToken(studioProjectId: string): boolean {
+    return this.oauthManager.hasToken(this.gcpProvider, studioProjectId);
+  }
+
+  async hasGcpOAuthToken(studioProjectId: string): Promise<boolean> {
+    const token = await this.getUserOAuthAccessToken(studioProjectId);
+    return token !== null;
+  }
+
+  async requireUserOAuthAccessToken(studioProjectId: string, context: string): Promise<string> {
+    return this.oauthManager.requireToken(this.gcpProvider, studioProjectId, context);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Manual SA key connect / disconnect
+  // ---------------------------------------------------------------------------
+
+  connectProjectWithServiceAccountKey(projectId: string, saKeyJson: string): GcpProjectConnectionStatus {
     this.ensureProjectExists(projectId);
     let parsed: { project_id?: string; client_email?: string; type?: string };
-    try {
-      parsed = JSON.parse(saKeyJson);
-    } catch {
-      throw new Error('Invalid service account JSON: not valid JSON.');
-    }
+    try { parsed = JSON.parse(saKeyJson); }
+    catch { throw new Error('Invalid service account JSON: not valid JSON.'); }
+    if (parsed.type !== 'service_account') throw new Error('Invalid service account JSON: "type" must be "service_account".');
+    if (!parsed.project_id || !parsed.client_email) throw new Error('Invalid service account JSON: missing project_id or client_email.');
 
-    if (parsed.type !== 'service_account') {
-      throw new Error('Invalid service account JSON: "type" must be "service_account".');
-    }
-    if (!parsed.project_id || !parsed.client_email) {
-      throw new Error('Invalid service account JSON: missing project_id or client_email.');
-    }
-
+    const passphrase = this.getVaultPassphrase();
     const details: GcpConnectionDetails = {
       projectId: parsed.project_id,
       serviceAccountEmail: parsed.client_email,
       userEmail: 'manual',
       connectedAt: new Date().toISOString(),
     };
-
-    this.storeServiceAccountKey(projectId, saKeyJson);
-    this.storeConnectionDetails(projectId, details);
-    return this.syncProjectIntegration(projectId, details);
+    storeSaKeyJson(this.vaultManager, passphrase, projectId, saKeyJson);
+    storeConnectionDetails(this.vaultManager, passphrase, projectId, details);
+    return syncFirebaseIntegration(this.projectManager, projectId, details);
   }
 
   disconnectProject(projectId: string): GcpProjectConnectionStatus & { removed: boolean } {
     this.ensureProjectExists(projectId);
-    const removed = this.deleteStoredCredentials(projectId);
+    const passphrase = this.getVaultPassphrase();
+    const removed = deleteGcpCredentials(this.vaultManager, passphrase, projectId);
 
     const project = this.projectManager.getProject(projectId);
     if (project.integrations.firebase) {
       this.projectManager.updateIntegration(projectId, 'firebase', {
         status: 'pending',
         notes: 'Firebase/GCP connection disabled for this project.',
-        config: {
-          gcp_project_id: '',
-          service_account_email: '',
-          connected_by: '',
-          credential_scope: 'project',
-        },
+        config: { gcp_project_id: '', service_account_email: '', connected_by: '', credential_scope: 'project' },
+      });
+    }
+    return { removed, connected: false, integration: this.projectManager.getProject(projectId).integrations.firebase };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sync / validate / revert (bootstrap phases)
+  // ---------------------------------------------------------------------------
+
+  /** @deprecated Use StepHandlerRegistry for graph-level steps. Kept for OAuthFlowPanel bootstrap phase UI. */
+  async syncOAuthPipelineFromLiveState(studioProjectId: string): Promise<GcpOAuthStep[]> {
+    this.ensureProjectExists(studioProjectId);
+    const result = await this.validateStep(studioProjectId, 'oauth_consent');
+    return [{
+        id: 'oauth_consent',
+      label: 'Sign in with Google and approve access',
+        status: result.valid ? 'completed' : 'failed',
+        message: result.message,
+    }];
+  }
+
+  /**
+   * Reconcile a Firebase provisioning graph step with live GCP + vault.
+   * Called by plan/sync route. Delegates to GCP step handlers for each step key.
+   */
+  async syncProvisioningFirebaseGraphStep(
+    studioProjectId: string,
+    stepKey: string,
+  ): Promise<{ reconciled: boolean; message?: string; resourcesProduced?: Record<string, string>; suggestsReauth?: boolean } | null> {
+    const { globalStepHandlerRegistry } = await import('../provisioning/step-handler-registry.js');
+    const handler = globalStepHandlerRegistry.get(stepKey);
+    if (!handler) return null;
+
+    const context = this.buildStepHandlerContext(studioProjectId);
+    return handler.sync(context);
+  }
+
+  async validateStep(studioProjectId: string, stepId: GcpBootstrapPhaseId): Promise<GcpStepValidationResult> {
+    this.ensureProjectExists(studioProjectId);
+    const passphrase = this.getVaultPassphrase();
+    const hasOAuth = this.hasStoredUserOAuthRefreshToken(studioProjectId);
+
+    switch (stepId) {
+      case 'oauth_consent': {
+        if (hasOAuth) return { valid: true, message: 'Google OAuth refresh token is stored.' };
+        const d = getStoredConnectionDetails(this.vaultManager, passphrase, studioProjectId);
+        if (!d) return { valid: false, message: 'No OAuth refresh token or service account connection. Sign in with Google or upload a service account key.' };
+        return { valid: true, message: `Connection recorded for GCP project ${d.projectId} (${d.serviceAccountEmail}).` };
+      }
+      case 'gcp_project': {
+        const details = getStoredConnectionDetails(this.vaultManager, passphrase, studioProjectId);
+        const projectId = details?.projectId ?? getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+        if (!projectId) return { valid: false, message: 'No GCP project id stored. Complete "Create GCP Project" first.' };
+        try {
+          const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:gcp_project');
+          const status = await getGcpProjectStatus(token, projectId);
+          if (status === 'found') return { valid: true, message: `Project "${projectId}" exists and is reachable.` };
+          if (status === 'not_found') return { valid: false, message: `Project "${projectId}" was not found in GCP.` };
+          return { valid: false, message: `Project "${projectId}" exists but is not accessible with the provisioner key (403).` };
+        } catch (err) {
+          return { valid: false, message: (err as Error).message };
+        }
+      }
+      case 'service_account': {
+        const gcpProjectId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+        const saEmail = getStoredSaEmail(this.vaultManager, passphrase, studioProjectId);
+        if (!gcpProjectId || !saEmail) return { valid: false, message: 'No service account email stored.' };
+        const saPath = `/v1/projects/${gcpProjectId}/serviceAccounts/${encodeURIComponent(saEmail)}`;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:service_account');
+            await gcpRequest('GET', 'iam.googleapis.com', saPath, token);
+            return { valid: true, message: `Service account ${saEmail} exists.` };
+          } catch (err) {
+            if (err instanceof GcpHttpError && err.statusCode === 404) return { valid: false, message: 'Service account not found in project.' };
+            const toEnable = parseDisabledApiServiceName(err);
+            if (toEnable && attempt === 0) {
+              const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:service_account:enable-api');
+              const enabled = await enableProjectService(gcpProjectId, token, toEnable);
+              if (enabled) { await sleep(4500); continue; }
+            }
+            const apiHelp = formatDisabledApiHelp(gcpProjectId, err, hasOAuth);
+            if (apiHelp) return { valid: false, message: apiHelp };
+            return { valid: false, message: (err as Error).message };
+          }
+        }
+        return { valid: false, message: 'Service account check failed after attempting to enable required GCP APIs. Retry sync in a minute.' };
+      }
+      case 'iam_binding': {
+        const gcpProjectId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+        const saEmail = getStoredSaEmail(this.vaultManager, passphrase, studioProjectId);
+        if (!gcpProjectId || !saEmail) return { valid: false, message: 'No connection metadata for IAM check.' };
+        const member = `serviceAccount:${saEmail}`;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:iam_binding');
+            const missing = await findMissingProvisionerRoles(token, gcpProjectId, member);
+            if (missing.length === 0) return { valid: true, message: `All provisioner roles bound for ${member}.` };
+            return { valid: false, message: `Missing IAM bindings: ${missing.join(', ')}` };
+          } catch (err) {
+            const toEnable = parseDisabledApiServiceName(err);
+            if (toEnable && attempt === 0) {
+              const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:iam_binding:enable-api');
+              const enabled = await enableProjectService(gcpProjectId, token, toEnable);
+              if (enabled) { await sleep(4500); continue; }
+            }
+            const apiHelp = formatDisabledApiHelp(gcpProjectId, err, hasOAuth);
+            if (apiHelp) return { valid: false, message: apiHelp };
+            return { valid: false, message: (err as Error).message };
+          }
+        }
+        return { valid: false, message: 'IAM policy check failed after attempting to enable required GCP APIs. Retry sync in a minute.' };
+      }
+      case 'vault': {
+        const raw = getStoredSaKeyJson(this.vaultManager, passphrase, studioProjectId);
+        if (!raw) return { valid: false, message: 'No service_account_json in vault.' };
+        try {
+          const parsed = JSON.parse(raw) as { type?: string };
+          if (parsed.type !== 'service_account') return { valid: false, message: 'Vault payload is not a service account JSON.' };
+          return { valid: true, message: 'Service account key JSON is present and well-formed.' };
+        } catch {
+          return { valid: false, message: 'Vault payload is not valid JSON.' };
+        }
+      }
+      default:
+        return { valid: false, message: `Unknown step: ${String(stepId)}` };
+      }
+    }
+
+  static getCascadeSteps(stepId: GcpBootstrapPhaseId): GcpBootstrapPhaseId[] {
+    const ORDER: GcpBootstrapPhaseId[] = ['oauth_consent', 'gcp_project', 'service_account', 'iam_binding', 'vault'];
+    const idx = ORDER.indexOf(stepId);
+    if (idx === -1) throw new Error(`Unknown bootstrap phase: ${stepId}`);
+    return ORDER.slice(idx);
+  }
+
+  async revertSteps(
+    studioProjectId: string,
+    cascadeStepIds: GcpBootstrapPhaseId[],
+  ): Promise<GcpStepRevertResult[]> {
+    this.ensureProjectExists(studioProjectId);
+    const toRun = new Set(cascadeStepIds);
+    const results: GcpStepRevertResult[] = [];
+    const passphrase = this.getVaultPassphrase();
+
+    let accessToken: string | null = null;
+    let tokenError: string | null = null;
+    const needsGcpToken = toRun.has('iam_binding') || toRun.has('service_account') || toRun.has('gcp_project');
+    if (needsGcpToken) {
+      try {
+        accessToken = await this.getAccessTokenForGcpOperations(studioProjectId, 'revert');
+      } catch (err) {
+        tokenError = (err as Error).message;
+      }
+    }
+
+    const details = getStoredConnectionDetails(this.vaultManager, passphrase, studioProjectId);
+    const revertProjectId = details?.projectId ?? getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+    const revertSaEmail = details?.serviceAccountEmail ?? getStoredSaEmail(this.vaultManager, passphrase, studioProjectId);
+
+    if (toRun.has('iam_binding')) {
+      if (!accessToken) {
+        results.push({ stepId: 'iam_binding', reverted: false, message: tokenError ?? 'No access token for IAM revert.' });
+      } else if (!revertProjectId || !revertSaEmail) {
+        results.push({ stepId: 'iam_binding', reverted: false, message: 'Missing connection metadata.' });
+      } else {
+        try {
+          await removeProvisionerRoles(accessToken, revertProjectId, revertSaEmail);
+          results.push({ stepId: 'iam_binding', reverted: true, message: 'Removed provisioner role bindings from project IAM.' });
+        } catch (err) {
+          results.push({ stepId: 'iam_binding', reverted: false, message: (err as Error).message });
+        }
+      }
+    }
+
+    if (toRun.has('service_account')) {
+      if (!accessToken) {
+        results.push({ stepId: 'service_account', reverted: false, message: tokenError ?? 'No access token for service account revert.' });
+      } else if (!revertProjectId || !revertSaEmail) {
+        results.push({ stepId: 'service_account', reverted: false, message: 'Missing connection metadata.' });
+      } else {
+        try {
+          const result = await deleteServiceAccount(accessToken, revertProjectId, revertSaEmail);
+          results.push({
+            stepId: 'service_account',
+            reverted: true,
+            message: result === 'deleted' ? `Deleted service account ${revertSaEmail}.` : 'Service account already absent.',
+          });
+        } catch (err) {
+            results.push({ stepId: 'service_account', reverted: false, message: (err as Error).message });
+        }
+      }
+    }
+
+    if (toRun.has('gcp_project')) {
+      results.push({
+        stepId: 'gcp_project',
+        reverted: false,
+        message: 'GCP project deletion is not performed via the provisioner. Delete the project in Google Cloud Console or use the teardown flow.',
       });
     }
 
-    return {
-      removed,
-      connected: false,
-      integration: this.projectManager.getProject(projectId).integrations.firebase,
-    };
-  }
+    const gcpApiAttempted = results.filter((r) => r.stepId === 'iam_binding' || r.stepId === 'service_account');
+    const gcpApiAllSucceeded = gcpApiAttempted.every((r) => r.reverted);
+    const needsLocalCleanup = (toRun.has('vault') || toRun.has('oauth_consent')) && gcpApiAllSucceeded;
 
-  private async runSession(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-
-    try {
-      const code = await session.codePromise;
-
-      this.markStep(session, 'oauth_consent', 'completed');
-      session.status.phase = 'processing';
-
-      const { tokens } = await session.client.getToken(code);
-      if (!tokens.access_token) {
-        throw new Error('OAuth token exchange did not return an access token.');
+    if (needsLocalCleanup) {
+      const removed = deleteGcpCredentials(this.vaultManager, passphrase, studioProjectId);
+      const project = this.projectManager.getProject(studioProjectId);
+      if (project.integrations.firebase) {
+        this.projectManager.updateIntegration(studioProjectId, 'firebase', {
+          status: 'pending',
+          notes: 'Firebase/GCP connection disabled for this project.',
+          config: { gcp_project_id: '', service_account_email: '', connected_by: '', credential_scope: 'project' },
+        });
       }
-      session.client.setCredentials(tokens);
-
-      const tokenInfo = await this.fetchTokenInfo(tokens.access_token);
-      const userEmail = tokenInfo.email ?? 'unknown';
-      const grantedScopes = tokenInfo.scope ?? '';
-      console.log(
-        `[studio-gcp] OAuth token for ${userEmail}, granted scopes: ${grantedScopes}`,
-      );
-
-      if (!grantedScopes.includes('cloud-platform')) {
-        throw new Error(
-          'The Google OAuth token was not granted the cloud-platform scope. ' +
-            'Ensure the OAuth consent screen includes this scope and the user approves it.',
-        );
+      const localMsg = removed
+        ? 'Removed credentials from vault and reset Firebase integration.'
+        : 'Reset Firebase integration (vault was already empty).';
+      if (toRun.has('vault')) results.push({ stepId: 'vault', reverted: true, message: localMsg });
+      if (toRun.has('oauth_consent')) results.push({ stepId: 'oauth_consent', reverted: true, message: localMsg });
+    } else if (toRun.has('vault') || toRun.has('oauth_consent')) {
+      for (const stepId of [...(toRun.has('vault') ? ['vault' as const] : []), ...(toRun.has('oauth_consent') ? ['oauth_consent' as const] : [])]) {
+        results.push({
+          stepId,
+          reverted: false,
+          message: 'Credentials kept in vault because GCP resource cleanup did not fully succeed. Fix the errors above, then revert again.',
+        });
       }
-
-      this.markStep(session, 'gcp_project', 'in_progress');
-      const gcpProjectId = await this.ensureProjectForStudioProject(
-        tokens.access_token,
-        session.projectId,
-      );
-      this.markStep(session, 'gcp_project', 'completed', gcpProjectId);
-
-      this.markStep(session, 'service_account', 'in_progress');
-      const saEmail = await this.ensureProvisionerServiceAccount(tokens.access_token, gcpProjectId);
-      this.markStep(session, 'service_account', 'completed', saEmail);
-
-      this.markStep(session, 'iam_binding', 'in_progress');
-      await this.grantProvisionerProjectRoles(tokens.access_token, gcpProjectId, saEmail);
-      this.markStep(session, 'iam_binding', 'completed');
-
-      this.markStep(session, 'vault', 'in_progress');
-      const saKeyJson = await this.createServiceAccountKey(tokens.access_token, gcpProjectId, saEmail);
-      const details: GcpConnectionDetails = {
-        projectId: gcpProjectId,
-        serviceAccountEmail: saEmail,
-        userEmail,
-        connectedAt: new Date().toISOString(),
-      };
-      this.storeServiceAccountKey(session.projectId, saKeyJson);
-      this.storeConnectionDetails(session.projectId, details);
-      this.syncProjectIntegration(session.projectId, details);
-      this.markStep(session, 'vault', 'completed');
-
-      session.status.phase = 'completed';
-      session.status.connected = true;
-      session.status.details = details;
-    } catch (err) {
-      this.failSession(session, (err as Error).message);
-    } finally {
-      clearTimeout(session.timeout);
-      this.closeServer(session.server);
     }
+
+    return results;
   }
 
-  private handleOAuthCallback(session: InternalSession, req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (!req.url) {
-      res.writeHead(400);
-      res.end('Bad request');
-      return;
-    }
+  // ---------------------------------------------------------------------------
+  // GCP API helpers (used by adapters / gate resolvers)
+  // ---------------------------------------------------------------------------
 
-    const parsed = url.parse(req.url, true);
-    const returnedState = parsed.query['state'] as string | undefined;
-    const code = parsed.query['code'] as string | undefined;
-    const error = parsed.query['error'] as string | undefined;
+  async ensureProjectForStudioProject(accessToken: string, studioProjectId: string): Promise<string> {
+    const passphrase = this.getVaultPassphrase();
+    const existingId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+    const gcpProjectId = existingId ?? buildStudioGcpProjectId(studioProjectId);
+    console.log(`[studio-gcp] ensureProjectForStudioProject: studioId="${studioProjectId}" gcpId="${gcpProjectId}" existing=${Boolean(existingId)}`);
 
-    if (session.status.phase !== 'awaiting_user') {
-      res.writeHead(409, { 'Content-Type': 'text/html' });
-      res.end(this.oauthResultPage(false, 'This OAuth session is no longer active.'));
-      return;
-    }
-
-    if (error) {
-      this.failSession(session, `Authorization denied: ${error}`);
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(this.oauthResultPage(false, `Authorization denied: ${error}`));
-      return;
-    }
-
-    if (returnedState !== session.state) {
-      this.failSession(session, 'OAuth state mismatch. Please retry.');
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end(this.oauthResultPage(false, 'Invalid state parameter.'));
-      return;
-    }
-
-    if (!code) {
-      this.failSession(session, 'No authorization code received from Google.');
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end(this.oauthResultPage(false, 'No authorization code received.'));
-      return;
-    }
-
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(this.oauthResultPage(true, 'Authorization successful. You can close this tab.'));
-    session.resolveCode(code);
-  }
-
-  private ensureOAuthConfigured(): void {
-    if (!this.oauthClientId.trim() || !this.oauthClientSecret.trim()) {
+    if (existingId) {
+      const status = await getGcpProjectStatus(accessToken, gcpProjectId);
+      if (status === 'found') return gcpProjectId;
       throw new Error(
-        'Google OAuth is not configured. Set PLATFORM_GCP_OAUTH_CLIENT_ID and PLATFORM_GCP_OAUTH_CLIENT_SECRET.',
+        `Previously connected GCP project "${gcpProjectId}" is no longer accessible (${status}). ` +
+          'Disconnect the Firebase integration and reconnect to create a new project.',
       );
     }
+
+    const createResult = await createGcpProject(accessToken, gcpProjectId, `Studio ${studioProjectId}`);
+    if (createResult === 'created' || createResult === 'already_exists') {
+      await waitForProjectActive(accessToken, gcpProjectId);
+      storeGcpProjectId(this.vaultManager, passphrase, studioProjectId, gcpProjectId);
+      return gcpProjectId;
+    }
+
+    const retryId = buildGcpProjectIdWithEntropy(studioProjectId);
+    await createGcpProject(accessToken, retryId, `Studio ${studioProjectId}`);
+    await waitForProjectActive(accessToken, retryId);
+    storeGcpProjectId(this.vaultManager, passphrase, studioProjectId, retryId);
+    return retryId;
+  }
+
+  async ensureProvisionerServiceAccount(accessToken: string, gcpProjectId: string): Promise<string> {
+    return ensureProvisionerServiceAccount(accessToken, gcpProjectId);
+  }
+
+  async grantProvisionerProjectRoles(accessToken: string, gcpProjectId: string, saEmail: string): Promise<void> {
+    return grantProvisionerRoles(accessToken, gcpProjectId, saEmail);
+  }
+
+  async createServiceAccountKey(accessToken: string, gcpProjectId: string, saEmail: string): Promise<string> {
+    return createServiceAccountKey(accessToken, gcpProjectId, saEmail);
+  }
+
+  async ensureRequiredProjectApis(accessToken: string, gcpProjectId: string): Promise<void> {
+    return ensureRequiredProjectApis(accessToken, gcpProjectId);
+  }
+
+  /**
+   * Deletes the GCP project linked to this studio project using the stored OAuth token.
+   * Useful for cleaning up orphaned projects that were created under a different console account.
+   */
+  async deleteLinkedGcpProject(studioProjectId: string): Promise<{ gcpProjectId: string }> {
+    this.ensureProjectExists(studioProjectId);
+    const passphrase = this.getVaultPassphrase();
+    const gcpProjectId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+    if (!gcpProjectId) {
+      throw new Error(`No GCP project linked to studio project "${studioProjectId}". Nothing to delete.`);
+    }
+    const accessToken = await this.getAccessTokenForGcpOperations(studioProjectId, 'delete-linked-project');
+    await deleteGcpProject(accessToken, gcpProjectId);
+    console.log(`[studio-gcp] Deleted GCP project "${gcpProjectId}" for studio project "${studioProjectId}".`);
+    return { gcpProjectId };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private
+  // ---------------------------------------------------------------------------
+
+  private async getUserOAuthAccessToken(studioProjectId: string): Promise<string | null> {
+    return this.oauthManager.getToken(this.gcpProvider, studioProjectId);
+  }
+
+  private async getServiceAccountAccessToken(studioProjectId: string): Promise<string> {
+    const passphrase = this.getVaultPassphrase();
+    const saJson = getStoredSaKeyJson(this.vaultManager, passphrase, studioProjectId);
+    if (!saJson) throw new Error('No service account key in vault. Cannot call GCP APIs for validate/revert.');
+    let credentials: Record<string, unknown>;
+    try { credentials = JSON.parse(saJson) as Record<string, unknown>; }
+    catch { throw new Error('Stored service account JSON is invalid.'); }
+
+    const auth = new GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    const token = tokenResponse.token;
+    if (!token) throw new Error('Failed to obtain access token from service account credentials.');
+    return token;
+  }
+
+  private async getAccessTokenForGcpOperations(studioProjectId: string, context?: string): Promise<string> {
+    const userToken = await this.getUserOAuthAccessToken(studioProjectId);
+    if (userToken) {
+      if (context) console.log(`[studio-gcp] ${context}: using user OAuth token.`);
+      return userToken;
+    }
+    if (context) console.warn(`[studio-gcp] ${context}: no user OAuth token — falling back to service account key.`);
+    return this.getServiceAccountAccessToken(studioProjectId);
+  }
+
+  private buildStepHandlerContext(studioProjectId: string): import('../provisioning/step-handler-registry.js').StepHandlerContext {
+    const passphrase = this.getVaultPassphrase();
+    return {
+      projectId: studioProjectId,
+      upstreamArtifacts: {},
+      getToken: async (providerId: string) => {
+        if (providerId === 'gcp') return this.getAccessTokenForGcpOperations(studioProjectId, `step-handler:${providerId}`);
+        throw new Error(`No token provider for "${providerId}".`);
+      },
+      hasToken: (providerId: string) => {
+        if (providerId === 'gcp') return this.hasStoredUserOAuthRefreshToken(studioProjectId);
+        return false;
+      },
+      vaultManager: this.vaultManager,
+      passphrase,
+      projectManager: this.projectManager,
+    };
   }
 
   private ensureProjectExists(projectId: string): void {
     this.projectManager.getProject(projectId);
   }
 
-  private syncProjectIntegration(
-    projectId: string,
-    details: GcpConnectionDetails,
-  ): GcpProjectConnectionStatus {
-    const module = this.projectManager.getProject(projectId);
-    if (!module.integrations.firebase) {
-      this.projectManager.addIntegration(projectId, 'firebase');
-    }
-
-    const updated = this.projectManager.updateIntegration(projectId, 'firebase', {
-      status: 'configured',
-      notes: `Connected via project-scoped provisioner SA (${details.serviceAccountEmail}).`,
-      config: {
-        gcp_project_id: details.projectId,
-        service_account_email: details.serviceAccountEmail,
-        connected_by: details.userEmail,
-        connected_at: details.connectedAt,
-        credential_scope: 'project',
-        token_source: 'credential_vault',
-      },
-    });
-
-    return {
-      connected: true,
-      details,
-      integration: updated.integrations.firebase,
-    };
-  }
-
-  private getStoredConnectionDetails(projectId: string): GcpConnectionDetails | null {
-    const passphrase = this.getVaultPassphrase();
-    const gcpProjectId = this.vaultManager.getCredential(passphrase, 'firebase', this.vaultKey(projectId, 'gcp_project_id'));
-    const saEmail = this.vaultManager.getCredential(passphrase, 'firebase', this.vaultKey(projectId, 'service_account_email'));
-    const userEmail = this.vaultManager.getCredential(passphrase, 'firebase', this.vaultKey(projectId, 'connected_by_email'));
-    const connectedAt = this.vaultManager.getCredential(passphrase, 'firebase', this.vaultKey(projectId, 'connected_at'));
-
-    if (!gcpProjectId || !saEmail) {
-      return null;
-    }
-
-    return {
-      projectId: gcpProjectId,
-      serviceAccountEmail: saEmail,
-      userEmail: userEmail ?? 'unknown',
-      connectedAt: connectedAt ?? new Date(0).toISOString(),
-    };
-  }
-
-  private storeConnectionDetails(projectId: string, details: GcpConnectionDetails): void {
-    const passphrase = this.getVaultPassphrase();
-    this.vaultManager.setCredential(passphrase, 'firebase', this.vaultKey(projectId, 'gcp_project_id'), details.projectId);
-    this.vaultManager.setCredential(passphrase, 'firebase', this.vaultKey(projectId, 'service_account_email'), details.serviceAccountEmail);
-    this.vaultManager.setCredential(passphrase, 'firebase', this.vaultKey(projectId, 'connected_by_email'), details.userEmail);
-    this.vaultManager.setCredential(passphrase, 'firebase', this.vaultKey(projectId, 'connected_at'), details.connectedAt);
-  }
-
-  private storeServiceAccountKey(projectId: string, saKeyJson: string): void {
-    this.vaultManager.setCredential(
-      this.getVaultPassphrase(),
-      'firebase',
-      this.vaultKey(projectId, 'service_account_json'),
-      saKeyJson,
-    );
-  }
-
-  private deleteStoredCredentials(projectId: string): boolean {
-    const passphrase = this.getVaultPassphrase();
-    const removed = this.vaultManager.deleteCredential(passphrase, 'firebase', this.vaultKey(projectId, 'service_account_json'));
-    this.vaultManager.deleteCredential(passphrase, 'firebase', this.vaultKey(projectId, 'gcp_project_id'));
-    this.vaultManager.deleteCredential(passphrase, 'firebase', this.vaultKey(projectId, 'service_account_email'));
-    this.vaultManager.deleteCredential(passphrase, 'firebase', this.vaultKey(projectId, 'connected_by_email'));
-    this.vaultManager.deleteCredential(passphrase, 'firebase', this.vaultKey(projectId, 'connected_at'));
-    return removed;
-  }
-
-  private vaultKey(projectId: string, key: string): string {
-    return `${projectId}/${key}`;
-  }
-
   private getVaultPassphrase(): string {
     const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-    if (!passphrase) {
-      throw new Error(
-        'STUDIO_VAULT_PASSPHRASE is required to use Studio credential storage for GCP/Firebase.',
-      );
-    }
+    if (!passphrase) throw new Error('STUDIO_VAULT_PASSPHRASE is required to use Studio credential storage for GCP/Firebase.');
     return passphrase;
-  }
-
-  private markStep(
-    session: InternalSession,
-    id: GcpOAuthStep['id'],
-    status: GcpStepStatus,
-    message?: string,
-  ): void {
-    session.status.steps = session.status.steps.map((step) =>
-      step.id === id ? { ...step, status, ...(message ? { message } : {}) } : step,
-    );
-  }
-
-  private failSession(session: InternalSession, message: string): void {
-    if (session.status.phase === 'completed' || session.status.phase === 'failed') {
-      return;
-    }
-
-    const activeStep = session.status.steps.find((step) => step.status === 'in_progress');
-    if (activeStep) {
-      this.markStep(session, activeStep.id, 'failed');
-    } else if (session.status.steps.every((step) => step.status === 'pending')) {
-      this.markStep(session, 'oauth_consent', 'failed');
-    }
-
-    session.status.phase = 'failed';
-    session.status.error = message;
-    session.status.connected = false;
-
-    clearTimeout(session.timeout);
-    session.rejectCode(new Error(message));
-    this.closeServer(session.server);
-  }
-
-  private cloneSteps(steps: GcpOAuthStep[]): GcpOAuthStep[] {
-    return steps.map((step) => ({ ...step }));
-  }
-
-  private async listenServer(server: http.Server): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, LOOPBACK_HOST, () => {
-        server.off('error', reject);
-        resolve();
-      });
-    });
-  }
-
-  private closeServer(server: http.Server): void {
-    try {
-      server.close();
-    } catch {
-      // ignore close failures
-    }
-  }
-
-  private async ensureProjectForStudioProject(
-    accessToken: string,
-    studioProjectId: string,
-  ): Promise<string> {
-    const existing = this.getStoredConnectionDetails(studioProjectId);
-    const gcpProjectId = existing?.projectId ?? this.generateGcpProjectId(studioProjectId);
-
-    if (existing?.projectId) {
-      const lookupResult = await this.getGcpProject(accessToken, gcpProjectId);
-      if (lookupResult === 'found') {
-        return gcpProjectId;
-      }
-      throw new Error(
-        `Previously connected GCP project "${gcpProjectId}" is no longer accessible (${lookupResult}). ` +
-          'Disconnect the Firebase integration and reconnect to create a new project.',
-      );
-    }
-
-    const createResult = await this.tryCreateGcpProject(accessToken, gcpProjectId, studioProjectId);
-    if (createResult === 'created' || createResult === 'already_exists') {
-      await this.waitForProjectActive(accessToken, gcpProjectId);
-      return gcpProjectId;
-    }
-
-    console.log(
-      `[studio-gcp] Project ID "${gcpProjectId}" is taken (${createResult}), retrying with random suffix.`,
-    );
-    const retryId = this.generateGcpProjectIdWithEntropy(studioProjectId);
-    await this.tryCreateGcpProject(accessToken, retryId, studioProjectId, true);
-    await this.waitForProjectActive(accessToken, retryId);
-    return retryId;
-  }
-
-  private generateGcpProjectId(studioProjectId: string): string {
-    return buildStudioGcpProjectId(studioProjectId);
-  }
-
-  private generateGcpProjectIdWithEntropy(studioProjectId: string): string {
-    const base = studioProjectId
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'project';
-
-    const entropy = crypto.randomBytes(4).toString('hex');
-    const maxBaseLength = 30 - 'st--'.length - entropy.length;
-    const trimmedBase = base.slice(0, maxBaseLength).replace(/-+$/g, '');
-    return `st-${trimmedBase}-${entropy}`;
-  }
-
-  private async getGcpProject(
-    accessToken: string,
-    projectId: string,
-  ): Promise<'found' | 'not_found' | 'inaccessible'> {
-    try {
-      await this.gcpRequest(
-        'GET',
-        'cloudresourcemanager.googleapis.com',
-        `/v1/projects/${projectId}`,
-        accessToken,
-      );
-      return 'found';
-    } catch (err) {
-      if (err instanceof GcpHttpError && err.statusCode === 404) {
-        return 'not_found';
-      }
-      if (err instanceof GcpHttpError && err.statusCode === 403) {
-        return 'inaccessible';
-      }
-      throw err;
-    }
-  }
-
-  private async tryCreateGcpProject(
-    accessToken: string,
-    projectId: string,
-    studioProjectId: string,
-    throwOnConflict = false,
-  ): Promise<'created' | 'already_exists' | 'conflict'> {
-    const payload = JSON.stringify({
-      projectId,
-      name: `Studio ${studioProjectId}`,
-    });
-
-    try {
-      await this.gcpRequest(
-        'POST',
-        'cloudresourcemanager.googleapis.com',
-        '/v1/projects',
-        accessToken,
-        payload,
-      );
-      return 'created';
-    } catch (err) {
-      if (err instanceof GcpHttpError && err.statusCode === 409) {
-        const lookupResult = await this.getGcpProject(accessToken, projectId);
-        if (lookupResult === 'found') {
-          return 'already_exists';
-        }
-        if (throwOnConflict) {
-          throw new Error(
-            `GCP project ID "${projectId}" is already taken by another account. ` +
-              'Try again or use a more unique Studio project name.',
-          );
-        }
-        return 'conflict';
-      }
-      if (err instanceof GcpHttpError && err.statusCode === 403) {
-        throw new Error(
-          `Permission denied while creating GCP project "${projectId}". ` +
-            'Grant the signed-in Google user project creation permissions (Project Creator or equivalent), then retry.',
-        );
-      }
-      throw err;
-    }
-  }
-
-  private async waitForProjectActive(
-    accessToken: string,
-    projectId: string,
-  ): Promise<void> {
-    const maxAttempts = 20;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try {
-        const response = await this.gcpRequest(
-          'GET',
-          'cloudresourcemanager.googleapis.com',
-          `/v1/projects/${projectId}`,
-          accessToken,
-        );
-        const payload = JSON.parse(response.body) as { lifecycleState?: string };
-        if (payload.lifecycleState === 'ACTIVE') {
-          return;
-        }
-      } catch (err) {
-        if (err instanceof GcpHttpError && (err.statusCode === 403 || err.statusCode === 404)) {
-          // 403/404 on a just-created project is expected while permissions propagate
-        } else {
-          throw err;
-        }
-      }
-      await this.sleep(1500);
-    }
-    throw new Error(`Timed out waiting for GCP project "${projectId}" to become ACTIVE.`);
-  }
-
-  private async fetchTokenInfo(accessToken: string): Promise<TokenInfo> {
-    const res = await this.gcpRequest(
-      'GET',
-      'www.googleapis.com',
-      `/oauth2/v1/tokeninfo?access_token=${accessToken}`,
-    );
-    return JSON.parse(res.body) as TokenInfo;
-  }
-
-  private async ensureProvisionerServiceAccount(
-    accessToken: string,
-    gcpProjectId: string,
-  ): Promise<string> {
-    const saId = GCP_PROVISIONER_SERVICE_ACCOUNT_ID;
-    const saEmail = `${saId}@${gcpProjectId}.iam.gserviceaccount.com`;
-
-    try {
-      await this.gcpRequest(
-        'GET',
-        'iam.googleapis.com',
-        `/v1/projects/${gcpProjectId}/serviceAccounts/${encodeURIComponent(saEmail)}`,
-        accessToken,
-      );
-      return saEmail;
-    } catch (err) {
-      if (!(err instanceof GcpHttpError) || err.statusCode !== 404) {
-        throw err;
-      }
-    }
-
-    const createPayload = JSON.stringify({
-      accountId: saId,
-      serviceAccount: {
-        displayName: 'Platform Provisioner',
-        description: 'Auto-created by Studio for project-scoped infrastructure provisioning.',
-      },
-    });
-
-    const res = await this.gcpRequest(
-      'POST',
-      'iam.googleapis.com',
-      `/v1/projects/${gcpProjectId}/serviceAccounts`,
-      accessToken,
-      createPayload,
-    );
-
-    const created = JSON.parse(res.body) as { email?: string };
-    if (!created.email) {
-      throw new Error(`Failed to create provisioner service account: ${res.body}`);
-    }
-
-    return created.email;
-  }
-
-  private async grantProvisionerProjectRoles(
-    accessToken: string,
-    gcpProjectId: string,
-    saEmail: string,
-  ): Promise<void> {
-    const member = `serviceAccount:${saEmail}`;
-
-    let currentPolicy: { bindings?: Array<{ role: string; members: string[] }>; etag?: string };
-    try {
-      const getRes = await this.gcpRequest(
-        'POST',
-        'cloudresourcemanager.googleapis.com',
-        `/v1/projects/${gcpProjectId}:getIamPolicy`,
-        accessToken,
-        JSON.stringify({}),
-      );
-      currentPolicy = JSON.parse(getRes.body) as typeof currentPolicy;
-    } catch (err) {
-      if (err instanceof GcpHttpError && err.statusCode === 403) {
-        throw new Error(
-          `Permission denied while reading IAM policy for project "${gcpProjectId}". ` +
-            'The signed-in user needs resourcemanager.projects.getIamPolicy permission (e.g. Project IAM Admin role).',
-        );
-      }
-      throw err;
-    }
-
-    const bindings = currentPolicy.bindings ?? [];
-    let policyChanged = false;
-
-    for (const role of PROVISIONER_PROJECT_ROLES) {
-      const existing = bindings.find((b) => b.role === role);
-      if (existing) {
-        if (!existing.members.includes(member)) {
-          existing.members.push(member);
-          policyChanged = true;
-        }
-      } else {
-        bindings.push({ role, members: [member] });
-        policyChanged = true;
-      }
-    }
-
-    if (!policyChanged) {
-      return;
-    }
-
-    const setPayload = JSON.stringify({
-      policy: {
-        bindings,
-        etag: currentPolicy.etag,
-      },
-    });
-
-    try {
-      await this.gcpRequest(
-        'POST',
-        'cloudresourcemanager.googleapis.com',
-        `/v1/projects/${gcpProjectId}:setIamPolicy`,
-        accessToken,
-        setPayload,
-      );
-    } catch (err) {
-      if (err instanceof GcpHttpError && err.statusCode === 403) {
-        throw new Error(
-          `Permission denied while setting IAM policy for project "${gcpProjectId}". ` +
-            'The signed-in user needs resourcemanager.projects.setIamPolicy permission (e.g. Project IAM Admin role).',
-        );
-      }
-      throw err;
-    }
-  }
-
-  private async createServiceAccountKey(
-    accessToken: string,
-    gcpProjectId: string,
-    saEmail: string,
-  ): Promise<string> {
-    const res = await this.gcpRequest(
-      'POST',
-      'iam.googleapis.com',
-      `/v1/projects/${gcpProjectId}/serviceAccounts/${encodeURIComponent(saEmail)}/keys`,
-      accessToken,
-      JSON.stringify({ privateKeyType: 'TYPE_GOOGLE_CREDENTIALS_FILE' }),
-    );
-
-    const keyResponse = JSON.parse(res.body) as ServiceAccountKeyResponse;
-    if (!keyResponse.privateKeyData) {
-      throw new Error(`Failed to create service account key: ${res.body}`);
-    }
-
-    return Buffer.from(keyResponse.privateKeyData, 'base64').toString('utf8');
-  }
-
-  private gcpRequest(
-    method: string,
-    hostname: string,
-    path: string,
-    accessToken?: string,
-    body?: string,
-  ): Promise<{ statusCode: number; body: string }> {
-    return new Promise((resolve, reject) => {
-      const headers: Record<string, string> = {
-        'User-Agent': 'platform-studio',
-      };
-      if (accessToken) {
-        headers['Authorization'] = `Bearer ${accessToken}`;
-      }
-      if (body) {
-        headers['Content-Type'] = 'application/json';
-        headers['Content-Length'] = Buffer.byteLength(body).toString();
-      }
-
-      const request = https.request(
-        { method, hostname, path, headers },
-        (response) => {
-          let data = '';
-          response.on('data', (chunk: Buffer) => {
-            data += chunk.toString();
-          });
-          response.on('end', () => {
-            const statusCode = response.statusCode ?? 0;
-            if (statusCode < 200 || statusCode >= 300) {
-              reject(
-                new GcpHttpError(
-                  `GCP API ${method} ${hostname}${path} failed (${statusCode}): ${data.slice(0, 500)}`,
-                  statusCode,
-                  data,
-                ),
-              );
-              return;
-            }
-            resolve({ statusCode, body: data });
-          });
-        },
-      );
-      request.on('error', (error) => {
-        reject(new Error(`GCP API request failed: ${error.message}`));
-      });
-      if (body) {
-        request.write(body);
-      }
-      request.end();
-    });
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private oauthResultPage(success: boolean, message: string): string {
-    const color = success ? '#22c55e' : '#ef4444';
-    const icon = success ? '&#10003;' : '&#10007;';
-    return `<!DOCTYPE html>
-<html>
-<head><title>Studio - GCP Authorization</title></head>
-<body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#fafafa;">
-  <div style="text-align:center;max-width:400px;padding:2rem;">
-    <div style="font-size:3rem;color:${color};margin-bottom:1rem;">${icon}</div>
-    <h1 style="font-size:1.25rem;font-weight:700;margin-bottom:0.5rem;">${success ? 'Connected' : 'Failed'}</h1>
-    <p style="color:#a1a1aa;font-size:0.875rem;">${message}</p>
-  </div>
-</body>
-</html>`;
   }
 }

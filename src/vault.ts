@@ -30,10 +30,12 @@ import { createOperationLogger } from './logger.js';
 export class VaultManager {
   private readonly vaultPath: string;
   private readonly logger: ReturnType<typeof createOperationLogger>;
+  private readonly loggingCallback: LoggingCallback | undefined;
 
   constructor(vaultPath: string, loggingCallback?: LoggingCallback) {
     InputValidator.validateVaultPath(vaultPath);
     this.vaultPath = vaultPath;
+    this.loggingCallback = loggingCallback;
     this.logger = createOperationLogger('VaultManager', loggingCallback);
   }
 
@@ -72,7 +74,7 @@ export class VaultManager {
     }
 
     const key = deriveKey(passphrase, this.vaultPath);
-    const plaintext = decrypt(raw.trim(), key, { logger: undefined });
+    const plaintext = decrypt(raw.trim(), key, { logger: this.loggingCallback });
 
     let data: VaultData;
     try {
@@ -122,7 +124,7 @@ export class VaultManager {
     const updated: VaultData = { ...data, updatedAt: Date.now() };
     const plaintext = JSON.stringify(updated);
     const key = deriveKey(passphrase, this.vaultPath);
-    const ciphertext = encrypt(plaintext, key);
+    const ciphertext = encrypt(plaintext, key, { logger: this.loggingCallback });
 
     this.atomicWrite(ciphertext);
 

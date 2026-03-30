@@ -208,12 +208,46 @@ export type ReconcileDirection = 'manifest→live' | 'live→manifest';
 // Provider adapter interface
 // ---------------------------------------------------------------------------
 
+// Forward-reference the step types to avoid circular imports
+export interface StepContext {
+  projectId: string;
+  environment: string;
+  upstreamResources: Record<string, string>;
+  vaultRead: (key: string) => Promise<string | null>;
+  vaultWrite: (key: string, value: string) => Promise<void>;
+}
+
+export interface StepResult {
+  status: 'completed' | 'failed' | 'waiting-on-user';
+  resourcesProduced: Record<string, string>;
+  error?: string;
+  userPrompt?: string;
+}
+
 export interface ProviderAdapter<T extends ProviderConfig> {
   /**
    * Creates or updates cloud resources to match the given config.
    * Must be idempotent — calling twice should not create duplicate resources.
+   * Retained for backward compatibility with the provider-level orchestrator.
    */
   provision(config: T): Promise<ProviderState>;
+
+  /**
+   * Executes a single named step within this provider.
+   * The step key matches the keys defined in the step catalog (step-registry.ts).
+   * stepContext carries upstream resources from previously completed steps.
+   */
+  executeStep?(stepKey: string, config: T, context: StepContext): Promise<StepResult>;
+
+  /**
+   * Checks whether a previously provisioned step still exists in the live
+   * environment. Returns the same shape as StepResult: status 'completed'
+   * with resourcesProduced when the resource is found, or 'failed' when
+   * it is missing / cannot be verified.
+   *
+   * Adapters that don't implement this fall back to a no-op (assumed not-checked).
+   */
+  checkStep?(stepKey: string, config: T, context: StepContext): Promise<StepResult>;
 
   /**
    * Compares the manifest config against live provider state and

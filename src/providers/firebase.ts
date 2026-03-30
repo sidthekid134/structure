@@ -17,9 +17,12 @@ import {
   DriftDifference,
   ReconcileDirection,
   AdapterError,
+  StepContext,
+  StepResult,
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
+import type { GcpConnectionService } from '../core/gcp-connection.js';
 
 // ---------------------------------------------------------------------------
 // API client interface (injectable for testing)
@@ -76,6 +79,7 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
 
   constructor(
     private readonly apiClient: FirebaseApiClient = new StubFirebaseApiClient(),
+    private readonly studioGcp: GcpConnectionService | undefined = undefined,
     loggingCallback?: LoggingCallback,
   ) {
     this.log = createOperationLogger('FirebaseAdapter', loggingCallback);
@@ -167,6 +171,233 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
         err,
       );
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // executeStep() — step-level dispatch
+  // ---------------------------------------------------------------------------
+
+  async executeStep(
+    stepKey: string,
+    config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    this.log.info('FirebaseAdapter.executeStep()', { stepKey, projectId: context.projectId });
+    switch (stepKey) {
+      case 'firebase:create-gcp-project':
+        return this.stepCreateGcpProject(config, context);
+      case 'firebase:enable-firebase':
+        return this.stepEnableFirebase(config, context);
+      case 'firebase:create-provisioner-sa':
+        return this.stepCreateProvisionerSa(config, context);
+      case 'firebase:bind-provisioner-iam':
+        return this.stepBindProvisionerIam(config, context);
+      case 'firebase:generate-sa-key':
+        return this.stepGenerateSaKey(config, context);
+      case 'firebase:enable-services':
+        return this.stepEnableServices(config, context);
+      case 'firebase:register-ios-app':
+        return this.stepRegisterIosApp(config, context);
+      case 'firebase:register-android-app':
+        return this.stepRegisterAndroidApp(config, context);
+      case 'firebase:configure-firestore-rules':
+        return this.stepConfigureFirestoreRules(config, context);
+      case 'firebase:configure-storage-rules':
+        return this.stepConfigureStorageRules(config, context);
+      default:
+        throw new AdapterError(`Unknown Firebase step: ${stepKey}`, 'firebase', 'executeStep');
+    }
+  }
+
+  private async stepCreateGcpProject(
+    config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    if (this.studioGcp) {
+      const accessToken = await this.studioGcp.getAccessToken(context.projectId, 'step:create-gcp-project');
+      let gcpProjectId: string;
+      if (config.existing_project_id) {
+        gcpProjectId = config.existing_project_id;
+        this.studioGcp.storeGcpProjectIdInVault(context.projectId, gcpProjectId);
+        await this.studioGcp.ensureRequiredProjectApis(accessToken, gcpProjectId);
+      } else {
+        gcpProjectId = await this.studioGcp.ensureProjectForStudioProject(accessToken, context.projectId);
+        await this.studioGcp.ensureRequiredProjectApis(accessToken, gcpProjectId);
+      }
+      return {
+        status: 'completed',
+        resourcesProduced: { gcp_project_id: gcpProjectId },
+      };
+    }
+
+    const existingId = config.existing_project_id;
+    let projectId: string;
+    if (existingId) {
+      projectId = existingId;
+    } else {
+      projectId = await this.apiClient.createProject(
+        config.project_name,
+        config.billing_account_id,
+      );
+    }
+    return {
+      status: 'completed',
+      resourcesProduced: { gcp_project_id: projectId },
+    };
+  }
+
+  private async stepEnableFirebase(
+    _config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['gcp_project_id'];
+    if (!projectId) throw new AdapterError('Missing gcp_project_id', 'firebase', 'enable-firebase');
+    if (this.studioGcp) {
+      const accessToken = await this.studioGcp.getAccessToken(context.projectId, 'step:enable-firebase');
+      await this.studioGcp.ensureRequiredProjectApis(accessToken, projectId);
+    }
+    return {
+      status: 'completed',
+      resourcesProduced: { firebase_project_id: projectId },
+    };
+  }
+
+  private async stepCreateProvisionerSa(
+    _config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['gcp_project_id'] ?? context.upstreamResources['firebase_project_id'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'create-provisioner-sa');
+    if (this.studioGcp) {
+      const accessToken = await this.studioGcp.requireUserOAuthAccessToken(
+        context.projectId,
+        'step:create-provisioner-sa',
+      );
+      const email = await this.studioGcp.ensureProvisionerServiceAccount(accessToken, projectId);
+      this.studioGcp.storeProvisionerServiceAccountEmail(context.projectId, email);
+      return {
+        status: 'completed',
+        resourcesProduced: { provisioner_sa_email: email },
+      };
+    }
+    const email = `platform-provisioner@${projectId}.iam.gserviceaccount.com`;
+    return {
+      status: 'completed',
+      resourcesProduced: { provisioner_sa_email: email },
+    };
+  }
+
+  private async stepBindProvisionerIam(
+    _config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['gcp_project_id'] ?? context.upstreamResources['firebase_project_id'];
+    const saEmail = context.upstreamResources['provisioner_sa_email'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'bind-provisioner-iam');
+    if (!saEmail) {
+      throw new AdapterError('Missing provisioner_sa_email', 'firebase', 'bind-provisioner-iam');
+    }
+    if (!this.studioGcp) {
+      return { status: 'completed', resourcesProduced: {} };
+    }
+    const accessToken = await this.studioGcp.requireUserOAuthAccessToken(
+      context.projectId,
+      'step:bind-provisioner-iam',
+    );
+    await new Promise((r) => setTimeout(r, 4000));
+    await this.studioGcp.grantProvisionerProjectRoles(accessToken, projectId, saEmail);
+    return { status: 'completed', resourcesProduced: {} };
+  }
+
+  private async stepGenerateSaKey(
+    _config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['gcp_project_id'] ?? context.upstreamResources['firebase_project_id'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'generate-sa-key');
+    const saEmail = context.upstreamResources['provisioner_sa_email'];
+    if (!saEmail) {
+      throw new AdapterError('Missing provisioner_sa_email', 'firebase', 'generate-sa-key');
+    }
+    if (this.studioGcp) {
+      const userToken = await this.studioGcp.requireUserOAuthAccessToken(
+        context.projectId,
+        'step:generate-sa-key',
+      );
+      const saJson = await this.studioGcp.createServiceAccountKey(userToken, projectId, saEmail);
+      this.studioGcp.recordProvisionerServiceAccountKey(context.projectId, projectId, saEmail, saJson);
+      return {
+        status: 'completed',
+        resourcesProduced: { service_account_json: 'vaulted' },
+      };
+    }
+    const saJson = await this.apiClient.getServiceAccountJson(projectId);
+    await context.vaultWrite(`${context.projectId}/service_account_json`, saJson);
+    return {
+      status: 'completed',
+      resourcesProduced: { service_account_json: 'vaulted' },
+    };
+  }
+
+  private async stepEnableServices(
+    config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['gcp_project_id'] ?? context.upstreamResources['firebase_project_id'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'enable-services');
+    const enabled: FirebaseService[] = [];
+    for (const svc of config.services) {
+      await this.apiClient.enableService(projectId, svc);
+      enabled.push(svc);
+    }
+    return {
+      status: 'completed',
+      resourcesProduced: { enabled_services: enabled.join(',') },
+    };
+  }
+
+  private async stepRegisterIosApp(
+    config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['firebase_project_id'] ?? context.upstreamResources['gcp_project_id'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'register-ios-app');
+    const appId = `1:${projectId}:ios:stub`;
+    return {
+      status: 'completed',
+      resourcesProduced: { firebase_ios_app_id: appId },
+    };
+  }
+
+  private async stepRegisterAndroidApp(
+    config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['firebase_project_id'] ?? context.upstreamResources['gcp_project_id'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'register-android-app');
+    const appId = `1:${projectId}:android:stub`;
+    return {
+      status: 'completed',
+      resourcesProduced: { firebase_android_app_id: appId },
+    };
+  }
+
+  private async stepConfigureFirestoreRules(
+    _config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['firebase_project_id'] ?? context.upstreamResources['gcp_project_id'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'configure-firestore-rules');
+    return { status: 'completed', resourcesProduced: {} };
+  }
+
+  private async stepConfigureStorageRules(
+    _config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['firebase_project_id'] ?? context.upstreamResources['gcp_project_id'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'configure-storage-rules');
+    return { status: 'completed', resourcesProduced: {} };
   }
 
   // ---------------------------------------------------------------------------
