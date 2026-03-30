@@ -1,0 +1,429 @@
+/**
+ * Provider-agnostic OAuth session manager.
+ *
+ * Any provisioning module that needs elevated user credentials (GCP, GitHub OAuth, etc.)
+ * can plug in an OAuthProvider and call startSession(). The manager owns the loopback
+ * HTTP server lifecycle, session TTL cleanup, and vault-backed token persistence.
+ */
+
+import * as http from 'http';
+import * as url from 'url';
+import * as crypto from 'crypto';
+import type { VaultManager } from '../vault.js';
+
+// ---------------------------------------------------------------------------
+// Provider interface — implement one per OAuth service
+// ---------------------------------------------------------------------------
+
+export interface OAuthTokens {
+  accessToken: string;
+  refreshToken?: string;
+}
+
+export interface TokenValidation {
+  valid: boolean;
+  email?: string;
+  /** Full scope string as returned by the provider token-info endpoint. */
+  scopes?: string;
+}
+
+/**
+ * Pluggable OAuth provider. Each provider knows how to build an auth URL,
+ * exchange an authorization code, validate a token, and persist/retrieve the
+ * refresh token from the vault.
+ */
+export interface OAuthProvider {
+  /** Unique, stable identifier: 'gcp', 'github', 'expo', … */
+  readonly id: string;
+  readonly requiredScopes: string[];
+
+  buildAuthUrl(redirectUri: string, state: string): string;
+  exchangeCode(code: string, redirectUri: string): Promise<OAuthTokens>;
+  validateToken(accessToken: string): Promise<TokenValidation>;
+
+  storeRefreshToken(vaultManager: VaultManager, passphrase: string, projectId: string, refreshToken: string): void;
+  getStoredRefreshToken(vaultManager: VaultManager, passphrase: string, projectId: string): string | null;
+  getAccessToken(vaultManager: VaultManager, passphrase: string, projectId: string): Promise<string | null>;
+  revokeStoredTokens(vaultManager: VaultManager, passphrase: string, projectId: string): void;
+
+  /**
+   * Optional hook called after successful token exchange. Providers can use this to
+   * run post-auth setup (e.g. GCP project discovery). The returned object is merged
+   * into `OAuthSessionStatus.metadata` so the frontend can display provider-specific info.
+   */
+  onAuthComplete?(
+    accessToken: string,
+    projectId: string,
+    vaultManager: VaultManager,
+    passphrase: string,
+  ): Promise<Record<string, unknown>>;
+}
+
+// ---------------------------------------------------------------------------
+// Session types
+// ---------------------------------------------------------------------------
+
+export type OAuthSessionPhase = 'awaiting_user' | 'processing' | 'completed' | 'failed' | 'expired';
+export type OAuthStepStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+
+export interface OAuthSessionStep {
+  id: string;
+  label: string;
+  status: OAuthStepStatus;
+  message?: string;
+}
+
+export interface OAuthSessionStatus {
+  sessionId: string;
+  projectId: string;
+  providerId: string;
+  phase: OAuthSessionPhase;
+  steps: OAuthSessionStep[];
+  connected: boolean;
+  connectedEmail?: string;
+  error?: string;
+  /** Provider-specific post-auth data (e.g. GCP project discover result). */
+  metadata?: Record<string, unknown>;
+}
+
+export interface OAuthSessionStart {
+  sessionId: string;
+  authUrl: string;
+  state: string;
+  phase: 'awaiting_user';
+  steps: OAuthSessionStep[];
+}
+
+// ---------------------------------------------------------------------------
+// Internal session (not exported)
+// ---------------------------------------------------------------------------
+
+interface InternalSession {
+  sessionId: string;
+  projectId: string;
+  providerId: string;
+  state: string;
+  redirectUri: string;
+  server: http.Server;
+  codePromise: Promise<string>;
+  resolveCode: (code: string) => void;
+  rejectCode: (err: Error) => void;
+  timeout: NodeJS.Timeout;
+  status: OAuthSessionStatus;
+  createdAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// OAuthManager
+// ---------------------------------------------------------------------------
+
+const LOOPBACK_HOST = '127.0.0.1';
+const OAUTH_TIMEOUT_MS = 10 * 60 * 1000;  // 10 min for user to complete sign-in
+const SESSION_TTL_MS = 15 * 60 * 1000;    // sessions kept for 15 min post-completion
+
+export class OAuthManager {
+  private readonly sessions = new Map<string, InternalSession>();
+  private readonly cleanupTimer: NodeJS.Timeout;
+
+  constructor(
+    private readonly vaultManager: VaultManager,
+    private readonly getPassphrase: () => string,
+  ) {
+    this.cleanupTimer = setInterval(() => this.cleanupExpired(), 5 * 60 * 1000);
+    this.cleanupTimer.unref?.();
+  }
+
+  /**
+   * Start a new OAuth session for the given provider and project.
+   * Opens a loopback HTTP server, builds the auth URL, and begins async token exchange.
+   */
+  async startSession(
+    provider: OAuthProvider,
+    projectId: string,
+    onComplete?: (accessToken: string, email: string) => Promise<Record<string, unknown>>,
+  ): Promise<OAuthSessionStart> {
+    const sessionId = crypto.randomUUID();
+    const state = crypto.randomBytes(16).toString('hex');
+
+    const server = http.createServer();
+    await this.listenOnFreePort(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Failed to start OAuth loopback server.');
+    }
+    const redirectUri = `http://${LOOPBACK_HOST}:${address.port}`;
+
+    const authUrl = provider.buildAuthUrl(redirectUri, state);
+
+    let resolveCode!: (code: string) => void;
+    let rejectCode!: (err: Error) => void;
+    const codePromise = new Promise<string>((res, rej) => {
+      resolveCode = res;
+      rejectCode = rej;
+    });
+
+    const status: OAuthSessionStatus = {
+      sessionId,
+      projectId,
+      providerId: provider.id,
+      phase: 'awaiting_user',
+      connected: false,
+      steps: [{ id: 'oauth_consent', label: 'Sign in and approve access', status: 'in_progress' }],
+    };
+
+    const timeout = setTimeout(() => {
+      const s = this.sessions.get(sessionId);
+      if (s) this.failSession(s, 'OAuth session timed out before user authorization.');
+    }, OAUTH_TIMEOUT_MS);
+
+    const session: InternalSession = {
+      sessionId,
+      projectId,
+      providerId: provider.id,
+      state,
+      redirectUri,
+      server,
+      codePromise,
+      resolveCode,
+      rejectCode,
+      timeout,
+      status,
+      createdAt: Date.now(),
+    };
+
+    server.on('request', (req, res) => this.handleCallback(session, req, res));
+    this.sessions.set(sessionId, session);
+    void this.runSession(sessionId, provider, onComplete);
+
+    return {
+      sessionId,
+      authUrl,
+      state,
+      phase: 'awaiting_user',
+      steps: this.cloneSteps(status.steps),
+    };
+  }
+
+  getSessionStatus(sessionId: string, projectId: string): OAuthSessionStatus {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.projectId !== projectId) {
+      throw new Error('OAuth session not found for this project.');
+    }
+    return { ...session.status, steps: this.cloneSteps(session.status.steps) };
+  }
+
+  hasToken(provider: OAuthProvider, projectId: string): boolean {
+    try {
+      const passphrase = this.getPassphrase();
+      const t = provider.getStoredRefreshToken(this.vaultManager, passphrase, projectId);
+      return Boolean(t?.trim());
+    } catch {
+      return false;
+    }
+  }
+
+  async getToken(provider: OAuthProvider, projectId: string): Promise<string | null> {
+    try {
+      const passphrase = this.getPassphrase();
+      return await provider.getAccessToken(this.vaultManager, passphrase, projectId);
+    } catch {
+      return null;
+    }
+  }
+
+  async requireToken(provider: OAuthProvider, projectId: string, context: string): Promise<string> {
+    const token = await this.getToken(provider, projectId);
+    if (!token) {
+      throw new Error(
+        `A ${provider.id} OAuth session is required for "${context}" but no stored refresh token was found. ` +
+          'Start an OAuth session first.',
+      );
+    }
+    console.log(`[oauth-manager] ${context}: using ${provider.id} OAuth token for project "${projectId}".`);
+    return token;
+  }
+
+  revokeToken(provider: OAuthProvider, projectId: string): void {
+    const passphrase = this.getPassphrase();
+    provider.revokeStoredTokens(this.vaultManager, passphrase, projectId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private
+  // ---------------------------------------------------------------------------
+
+  private async runSession(
+    sessionId: string,
+    provider: OAuthProvider,
+    onComplete?: (accessToken: string, email: string) => Promise<Record<string, unknown>>,
+  ): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    try {
+      const code = await session.codePromise;
+      session.status.phase = 'processing';
+
+      const tokens = await provider.exchangeCode(code, session.redirectUri);
+      if (!tokens.accessToken) {
+        throw new Error('OAuth token exchange did not return an access token.');
+      }
+
+      const validation = await provider.validateToken(tokens.accessToken);
+      const userEmail = validation.email ?? 'unknown';
+      console.log(`[oauth-manager] ${provider.id} token for ${userEmail}, scopes: ${validation.scopes ?? ''}`);
+
+      if (!validation.valid) {
+        throw new Error(
+          `The ${provider.id} OAuth token was not granted the required scopes (${provider.requiredScopes.join(', ')}). ` +
+            'Ensure the consent screen includes these scopes and the user approves them.',
+        );
+      }
+
+      const passphrase = this.getPassphrase();
+      if (tokens.refreshToken) {
+        provider.storeRefreshToken(this.vaultManager, passphrase, session.projectId, tokens.refreshToken);
+      }
+
+      this.markStep(session, 'oauth_consent', 'completed', `Signed in as ${userEmail}`);
+
+      let metadata: Record<string, unknown> = {};
+      if (onComplete) {
+        try {
+          metadata = await onComplete(tokens.accessToken, userEmail);
+        } catch (err) {
+          console.warn(`[oauth-manager] onComplete hook for ${provider.id} failed:`, (err as Error).message);
+        }
+      } else if (provider.onAuthComplete) {
+        try {
+          metadata = await provider.onAuthComplete(tokens.accessToken, session.projectId, this.vaultManager, passphrase);
+        } catch (err) {
+          console.warn(`[oauth-manager] onAuthComplete for ${provider.id} failed:`, (err as Error).message);
+        }
+      }
+
+      session.status.phase = 'completed';
+      session.status.connected = true;
+      session.status.connectedEmail = userEmail;
+      session.status.metadata = metadata;
+    } catch (err) {
+      this.failSession(session, (err as Error).message);
+    } finally {
+      clearTimeout(session.timeout);
+      this.closeServer(session.server);
+    }
+  }
+
+  private handleCallback(session: InternalSession, req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (!req.url) {
+      res.writeHead(400);
+      res.end('Bad request');
+      return;
+    }
+
+    const parsed = url.parse(req.url, true);
+    const returnedState = parsed.query['state'] as string | undefined;
+    const code = parsed.query['code'] as string | undefined;
+    const error = parsed.query['error'] as string | undefined;
+
+    if (session.status.phase !== 'awaiting_user') {
+      res.writeHead(409, { 'Content-Type': 'text/html' });
+      res.end(this.resultPage(false, 'This OAuth session is no longer active.'));
+      return;
+    }
+
+    if (error) {
+      this.failSession(session, `Authorization denied: ${error}`);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(this.resultPage(false, `Authorization denied: ${error}`));
+      return;
+    }
+
+    if (returnedState !== session.state) {
+      this.failSession(session, 'OAuth state mismatch. Please retry.');
+      res.writeHead(400, { 'Content-Type': 'text/html' });
+      res.end(this.resultPage(false, 'Invalid state parameter.'));
+      return;
+    }
+
+    if (!code) {
+      this.failSession(session, 'No authorization code received.');
+      res.writeHead(400, { 'Content-Type': 'text/html' });
+      res.end(this.resultPage(false, 'No authorization code received.'));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(this.resultPage(true, 'Authorization successful. You can close this tab.'));
+    session.resolveCode(code);
+  }
+
+  private failSession(session: InternalSession, message: string): void {
+    if (session.status.phase === 'completed' || session.status.phase === 'failed') return;
+    const active = session.status.steps.find((s) => s.status === 'in_progress');
+    if (active) this.markStep(session, active.id, 'failed');
+    session.status.phase = 'failed';
+    session.status.error = message;
+    session.status.connected = false;
+    clearTimeout(session.timeout);
+    session.rejectCode(new Error(message));
+    this.closeServer(session.server);
+  }
+
+  private markStep(session: InternalSession, id: string, status: OAuthStepStatus, message?: string): void {
+    session.status.steps = session.status.steps.map((s) =>
+      s.id === id ? { ...s, status, ...(message ? { message } : {}) } : s,
+    );
+  }
+
+  private cloneSteps(steps: OAuthSessionStep[]): OAuthSessionStep[] {
+    return steps.map((s) => ({ ...s }));
+  }
+
+  private cleanupExpired(): void {
+    const now = Date.now();
+    for (const [id, session] of this.sessions) {
+      const terminal =
+        session.status.phase === 'completed' ||
+        session.status.phase === 'failed' ||
+        session.status.phase === 'expired';
+      if (terminal && now - session.createdAt > SESSION_TTL_MS) {
+        this.sessions.delete(id);
+      }
+    }
+  }
+
+  private listenOnFreePort(server: http.Server): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, LOOPBACK_HOST, () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+  }
+
+  private closeServer(server: http.Server): void {
+    try {
+      server.close();
+    } catch {
+      // ignore close failures
+    }
+  }
+
+  private resultPage(success: boolean, message: string): string {
+    const color = success ? '#22c55e' : '#ef4444';
+    const icon = success ? '&#10003;' : '&#10007;';
+    return `<!DOCTYPE html>
+<html>
+<head><title>Studio — Authorization</title></head>
+<body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#fafafa;">
+  <div style="text-align:center;max-width:400px;padding:2rem;">
+    <div style="font-size:3rem;color:${color};margin-bottom:1rem;">${icon}</div>
+    <h1 style="font-size:1.25rem;font-weight:700;margin-bottom:0.5rem;">${success ? 'Connected' : 'Failed'}</h1>
+    <p style="color:#a1a1aa;font-size:0.875rem;">${message}</p>
+  </div>
+</body>
+</html>`;
+  }
+}

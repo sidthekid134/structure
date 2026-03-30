@@ -32,6 +32,7 @@ import type {
 } from './types';
 import { OAuthFlowPanel } from './OAuthFlowPanel';
 import { api } from './helpers';
+import { useOAuthSession } from '../../hooks/useOAuthSession';
 import { effectiveUserActionInteractiveAction } from './user-action-interactive';
 import {
   collectUpstreamResources,
@@ -198,7 +199,7 @@ function statusIcon(status: NodeStatus, size = 14) {
 function statusBadge(status: NodeStatus) {
   const map: Record<NodeStatus, { label: string; className: string }> = {
     completed: { label: 'Done', className: 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
-    'in-progress': { label: 'Running', className: 'text-primary bg-primary/10 border-primary/30 animate-pulse' },
+    'in-progress': { label: 'Running', className: 'text-primary bg-primary/10 border-primary/30' },
     resolving: { label: 'Auto-resolving', className: 'text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 border-cyan-500/30 animate-pulse' },
     'waiting-on-user': { label: 'Action Needed', className: 'text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/30' },
     failed: { label: 'Failed', className: 'text-red-600 dark:text-red-400 bg-red-500/10 border-red-500/30' },
@@ -417,6 +418,25 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
             {node.label}
           </span>
           <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug line-clamp-1">{node.description}</p>
+          {/* Inline resource chips — shown for step nodes before completion */}
+          {node.type === 'step' && node.produces.length > 0 && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {node.produces.map((r) => (
+                <span
+                  key={r.key}
+                  title={r.description}
+                  className={`inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                    effectiveStatus === 'in-progress'
+                      ? 'bg-primary/5 border-primary/20 text-primary/70'
+                      : 'bg-muted border-border text-muted-foreground/60'
+                  }`}
+                >
+                  {effectiveStatus === 'in-progress' && <Loader2 size={8} className="animate-spin shrink-0" />}
+                  {r.key}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0 mt-[1px]">
           {/* Step nodes — RUN button */}
@@ -508,17 +528,8 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               {/* Resources produced */}
               <ResourcesSection node={node} nodeStates={nodeStates} environments={environments} upstream={upstream} />
 
-              {node.type === 'step' &&
-                (node as ProvisioningStepNode).interactiveAction?.type === 'oauth' &&
-                effectiveStatus !== 'completed' &&
-                effectiveStatus !== 'skipped' && (
-                  <OAuthFlowPanel
-                    variant="embedded"
-                    projectId={projectId}
-                    label={(node as ProvisioningStepNode).interactiveAction!.label}
-                    onCompleted={onSyncAndRefresh}
-                  />
-                )}
+              {/* OAuth step nodes: the RUN button triggers the OAuth flow automatically
+                  when no token is stored. No separate sign-in panel is needed here. */}
 
               {/* User action controls — always shown when expanded, not gated by waiting status */}
               {isUserAction && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
@@ -694,7 +705,7 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
               </span>
             )}
             {hasRunning && (
-              <span className="flex items-center gap-1 text-[9px] font-bold text-primary bg-primary/10 border border-primary/30 px-1.5 py-0.5 rounded animate-pulse">
+              <span className="flex items-center gap-1 text-[9px] font-bold text-primary bg-primary/10 border border-primary/30 px-1.5 py-0.5 rounded">
                 <Loader2 size={9} className="animate-spin" />
                 RUNNING
               </span>
@@ -785,6 +796,8 @@ export function ProvisioningGraphView({
   const [isSyncing, setIsSyncing] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
+  const gcpOAuthSession = useOAuthSession({ projectId, providerId: 'gcp' });
+
   const handleSyncStatus = async () => {
     setIsSyncing(true);
     setRunError(null);
@@ -800,28 +813,17 @@ export function ProvisioningGraphView({
         body: JSON.stringify({}),
       });
       if (result.needsReauth && result.authUrl && result.sessionId) {
-        window.open(result.authUrl, '_blank', 'noopener,noreferrer');
-        const sid = result.sessionId;
-        for (let i = 0; i < 300; i++) {
-          await new Promise((r) => setTimeout(r, 1500));
-          try {
-            const status = await api<{ phase: string; connected?: boolean; error?: string }>(
-              `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/connect/oauth/${encodeURIComponent(sid)}`,
-            );
-            if (status.phase === 'completed' && status.connected) {
-              await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-              });
-              break;
-            }
-            if (status.phase === 'failed' || status.phase === 'expired') {
-              setRunError(status.error ?? 'Google re-authentication failed.');
-              setIsSyncing(false);
-              return;
-            }
-          } catch { /* keep polling */ }
+        const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
+        if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
+          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+        } else {
+          setRunError(gcpOAuthSession.error ?? 'Google re-authentication failed.');
+          setIsSyncing(false);
+          return;
         }
         await onRefresh();
         setIsSyncing(false);
@@ -847,29 +849,18 @@ export function ProvisioningGraphView({
         body: JSON.stringify({}),
       });
       if (result.needsReauth && result.authUrl && result.sessionId) {
-        window.open(result.authUrl, '_blank', 'noopener,noreferrer');
-        const sid = result.sessionId;
-        for (let i = 0; i < 300; i++) {
-          await new Promise((r) => setTimeout(r, 1500));
-          try {
-            const status = await api<{ phase: string; connected?: boolean; error?: string }>(
-              `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/connect/oauth/${encodeURIComponent(sid)}`,
-            );
-            if (status.phase === 'completed' && status.connected) {
-              await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-              });
-              break;
-            }
-            if (status.phase === 'failed' || status.phase === 'expired') break;
-          } catch { /* keep polling */ }
+        const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
+        if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
+          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
         }
       }
     } catch { /* sync is best-effort here */ }
     await onRefresh();
-  }, [projectId, onRefresh]);
+  }, [projectId, onRefresh, gcpOAuthSession]);
 
   const handleRunProvisioning = async () => {
     setIsRunning(true);
@@ -891,11 +882,27 @@ export function ProvisioningGraphView({
   const handleRunNodes = async (nodeKeys: string[]) => {
     setRunError(null);
     try {
-      await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nodeKeys }),
-      });
+      const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
+        `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeKeys }) },
+      );
+
+      if (result.needsReauth && result.sessionId && result.authUrl) {
+        // OAuth required before this step can run — authenticate then automatically retry.
+        const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
+        if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
+          // Retry the run now that we have a token.
+          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nodeKeys }),
+          });
+        } else {
+          setRunError(gcpOAuthSession.error ?? 'Google sign-in required before running this step.');
+          return;
+        }
+      }
+
       await onRefresh();
     } catch (err) {
       setRunError((err as Error).message);

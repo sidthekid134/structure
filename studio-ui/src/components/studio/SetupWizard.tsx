@@ -16,6 +16,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { api } from './helpers';
+import { useOAuthSession } from '../../hooks/useOAuthSession';
 import { CompletedStepArtifactsPanel } from './CompletedStepArtifactsPanel';
 import {
   JOURNEY_PHASE_TITLE,
@@ -253,6 +254,8 @@ export function SetupWizard({
   const [error, setError] = useState<string | null>(null);
   const [sidebarFocusIndex, setSidebarFocusIndex] = useState<number | null>(null);
 
+  const gcpOAuthSession = useOAuthSession({ projectId, providerId: 'gcp' });
+
   const syncAndRefresh = useCallback(async () => {
     try {
       await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
@@ -326,11 +329,16 @@ export function SetupWizard({
     return Object.values(plan.nodeStates).some((s) => s.status === 'in-progress');
   }, [plan]);
 
-  const isFirebaseProviderStep =
-    currentNode?.type === 'step' && currentNode.provider === 'firebase';
+  // Auto-poll while any step is in-progress so the UI updates when long-running
+  // operations (e.g. GCP project creation) complete, even without a WebSocket event.
+  useEffect(() => {
+    if (!planHasInProgress) return;
+    const id = setInterval(() => { void onRefresh(); }, 3000);
+    return () => clearInterval(id);
+  }, [planHasInProgress, onRefresh]);
+
   const stepRunnable =
     currentNode?.type === 'step' &&
-    !isFirebaseProviderStep &&
     currentStatus !== 'completed' &&
     currentStatus !== 'skipped' &&
     currentStatus !== 'in-progress' &&
@@ -347,11 +355,26 @@ export function SetupWizard({
     setError(null);
     setIsRunning(true);
     try {
-      await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nodeKeys: [currentNode.key] }),
-      });
+      const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
+        `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeKeys: [currentNode.key] }) },
+      );
+
+      if (result.needsReauth && result.sessionId && result.authUrl) {
+        // OAuth required — authenticate first, then retry the step automatically.
+        const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
+        if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
+          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nodeKeys: [currentNode.key] }),
+          });
+        } else {
+          setError(gcpOAuthSession.error ?? 'Google sign-in required before running this step.');
+          return;
+        }
+      }
+
       await onRefresh();
     } catch (err) {
       setError((err as Error).message);
@@ -435,40 +458,25 @@ export function SetupWizard({
       );
 
       if (result.needsReauth && result.authUrl && result.sessionId) {
-        window.open(result.authUrl, '_blank', 'noopener,noreferrer');
-        const sid = result.sessionId;
-        for (let i = 0; i < 300; i++) {
-          await new Promise((r) => setTimeout(r, 1500));
-          try {
-            const status = await api<{ phase: string; connected?: boolean; error?: string }>(
-              `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/connect/oauth/${encodeURIComponent(sid)}`,
-            );
-            if (status.phase === 'completed' && status.connected) {
-              // Re-authenticated — retry the revert now that we have a token.
-              const retried = await api<ProvisioningPlanResponse & { revertWarnings?: string[] }>(
-                `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/reset`,
-                {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ nodeKey: currentNode!.key }),
-                },
-              );
-              onPlanChange(retried);
-              await onRefresh();
-              if (retried.revertWarnings?.length) {
-                setError(`Partial revert: ${retried.revertWarnings.join('; ')}`);
-              }
-              return;
-            }
-            if (status.phase === 'failed' || status.phase === 'expired') {
-              setError(status.error ?? 'Google re-authentication failed. Please try again.');
-              return;
-            }
-          } catch {
-            // polling error — keep trying
+        const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
+        if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
+          // Re-authenticated — retry the revert now that we have a token.
+          const retried = await api<ProvisioningPlanResponse & { revertWarnings?: string[] }>(
+            `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/reset`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ nodeKey: currentNode!.key }),
+            },
+          );
+          onPlanChange(retried);
+          await onRefresh();
+          if (retried.revertWarnings?.length) {
+            setError(`Partial revert: ${retried.revertWarnings.join('; ')}`);
           }
+        } else {
+          setError(gcpOAuthSession.error ?? 'Google re-authentication failed. Please try again.');
         }
-        setError('Re-authentication timed out. Please try again.');
         return;
       }
 
@@ -542,30 +550,17 @@ export function SetupWizard({
       });
 
       if (result.needsReauth && result.authUrl && result.sessionId) {
-        window.open(result.authUrl, '_blank', 'noopener,noreferrer');
-        const sid = result.sessionId;
-        for (let i = 0; i < 300; i++) {
-          await new Promise((r) => setTimeout(r, 1500));
-          try {
-            const status = await api<{ phase: string; connected?: boolean; error?: string }>(
-              `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/connect/oauth/${encodeURIComponent(sid)}`,
-            );
-            if (status.phase === 'completed' && status.connected) {
-              await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
-              });
-              break;
-            }
-            if (status.phase === 'failed' || status.phase === 'expired') {
-              setError(status.error ?? 'Google re-authentication failed. Please try again.');
-              setIsSyncingPlan(false);
-              return;
-            }
-          } catch {
-            // polling error — keep trying
-          }
+        const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
+        if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
+          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+        } else {
+          setError(gcpOAuthSession.error ?? 'Google re-authentication failed. Please try again.');
+          setIsSyncingPlan(false);
+          return;
         }
         await onRefresh();
         setSidebarFocusIndex(pinnedIndex);
@@ -726,6 +721,13 @@ export function SetupWizard({
             </button>
           )}
 
+          {currentStatus === 'in-progress' && !isRunning && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-primary animate-pulse">
+              <Loader2 size={13} className="animate-spin" />
+              Running — please wait…
+            </span>
+          )}
+
           {currentStatus === 'resolving' && (
             <span className="inline-flex items-center gap-1 text-xs text-cyan-600 dark:text-cyan-400 animate-pulse">
               <Zap size={12} />
@@ -862,18 +864,7 @@ export function SetupWizard({
             </div>
           )}
 
-          {currentNode.type === 'step' &&
-            !isTeardown &&
-            (currentNode as ProvisioningStepNode).interactiveAction?.type === 'oauth' &&
-            currentStatus !== 'completed' &&
-            currentStatus !== 'skipped' && (
-              <OAuthFlowPanel
-                variant="embedded"
-                projectId={projectId}
-                label={(currentNode as ProvisioningStepNode).interactiveAction!.label}
-                onCompleted={syncAndRefresh}
-              />
-            )}
+          {/* OAuth step nodes: the RUN button triggers OAuth automatically when needed. */}
 
           {(currentStatus === 'completed' || currentStatus === 'skipped') && (
             <CompletedStepArtifactsPanel
@@ -960,14 +951,28 @@ export function SetupWizard({
             currentStatus !== 'skipped' && (
             <div className="rounded-lg border border-border p-3">
               <p className="text-xs font-semibold mb-2">Environment progress</p>
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 {plan.environments.map((env) => {
                   const key = getStateKey(currentNode, env);
                   const status = plan.nodeStates[key]?.status ?? 'not-started';
+                  const icon = status === 'completed'
+                    ? <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />
+                    : status === 'in-progress'
+                      ? <Loader2 size={12} className="text-primary animate-spin shrink-0" />
+                      : status === 'failed'
+                        ? <AlertTriangle size={12} className="text-red-500 shrink-0" />
+                        : status === 'skipped'
+                          ? <SkipForward size={12} className="text-muted-foreground shrink-0" />
+                          : <span className="w-2 h-2 rounded-full bg-muted-foreground/30 block shrink-0" />;
+                  const labelColor = status === 'completed' ? 'text-emerald-600 dark:text-emerald-400'
+                    : status === 'in-progress' ? 'text-primary'
+                    : status === 'failed' ? 'text-red-600 dark:text-red-400'
+                    : 'text-muted-foreground';
                   return (
-                    <div key={env} className="flex items-center justify-between text-xs">
-                      <span className="font-mono">{env}</span>
-                      <span className="text-muted-foreground">{status}</span>
+                    <div key={env} className="flex items-center gap-2 text-xs">
+                      {icon}
+                      <span className="font-mono flex-1">{env}</span>
+                      <span className={`text-[10px] font-medium ${labelColor}`}>{humanizeStatus(status)}</span>
                     </div>
                   );
                 })}

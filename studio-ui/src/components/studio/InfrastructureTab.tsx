@@ -33,6 +33,17 @@ export function InfrastructureTab({ projectId }: InfrastructureTabProps) {
     void loadPlan();
   }, [loadPlan]);
 
+  // Auto-poll while any step is in-progress so long-running operations (e.g. GCP
+  // project creation) surface their results even when WebSocket is unavailable.
+  const hasInProgress = plan
+    ? Object.values(plan.nodeStates).some((s) => s.status === 'in-progress')
+    : false;
+  useEffect(() => {
+    if (!hasInProgress) return;
+    const id = setInterval(() => { void loadPlan(); }, 3000);
+    return () => clearInterval(id);
+  }, [hasInProgress, loadPlan]);
+
   // WebSocket for live step progress updates
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';

@@ -360,7 +360,7 @@ export function ProjectProvidersTab({
                           <div className="rounded-lg border border-dashed border-border bg-muted/15 p-3">
                             <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Start</p>
                             <pre className="text-[10px] font-mono whitespace-pre-wrap">
-                              POST /api/projects/&lt;id&gt;/integrations/firebase/connect/oauth/start
+                              POST /api/projects/&lt;id&gt;/oauth/gcp/start
                             </pre>
                           </div>
                           {gcpOauthStatus !== 'idle' && gcpOauthProgress && (

@@ -41,6 +41,7 @@ export default function PlatformStudio() {
   const [view, setView] = useState<StudioView>('overview');
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [wsStatus, setWsStatus] = useState<'offline' | 'connecting' | 'live' | 'error'>('offline');
@@ -216,25 +217,18 @@ export default function PlatformStudio() {
       authUrl: string;
       state: string;
       phase: 'awaiting_user';
-      steps: GcpOAuthStepStatus[];
     }>(
-      `/api/projects/${encodeURIComponent(activeProjectId)}/integrations/firebase/connect/oauth/start`,
+      `/api/projects/${encodeURIComponent(activeProjectId)}/oauth/gcp/start`,
       { method: 'POST' },
     );
 
-    onProgress({
-      sessionId: session.sessionId,
-      phase: session.phase,
-      connected: false,
-      steps: session.steps,
-    });
-
+    onProgress({ sessionId: session.sessionId, phase: session.phase, connected: false, steps: [] });
     window.open(session.authUrl, '_blank', 'noopener,noreferrer');
 
     const maxAttempts = 300;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const status = await api<GcpOAuthSessionStatus>(
-        `/api/projects/${encodeURIComponent(activeProjectId)}/integrations/firebase/connect/oauth/${encodeURIComponent(session.sessionId)}`,
+        `/api/projects/${encodeURIComponent(activeProjectId)}/oauth/gcp/sessions/${encodeURIComponent(session.sessionId)}`,
       );
       onProgress(status);
       if (status.phase === 'completed' && status.connected) {

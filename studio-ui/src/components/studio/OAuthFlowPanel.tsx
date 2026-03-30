@@ -12,9 +12,9 @@ import {
   Zap,
 } from 'lucide-react';
 import { api } from './helpers';
+import { useOAuthSession } from '../../hooks/useOAuthSession';
 import type {
   GcpOAuthProjectDiscoverResult,
-  GcpOAuthSessionStatus,
   GcpOAuthStepStatus,
 } from './types';
 
@@ -76,7 +76,7 @@ function StepCard({ step, index, isLast, projectId, flowComplete, syncBusy, onSy
     setValidateResult(null);
     try {
       const res = await api<{ valid: boolean; message: string }>(
-        `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/steps/${encodeURIComponent(step.id)}/validate`,
+        `/api/projects/${encodeURIComponent(projectId)}/oauth/gcp/validate`,
         { method: 'POST' },
       );
       setValidateResult(res);
@@ -348,9 +348,8 @@ interface OAuthFlowPanelProps {
 
 export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'standalone' }: OAuthFlowPanelProps) {
   const embedded = variant === 'embedded';
-  const [phase, setPhase] = useState<'idle' | 'starting' | 'polling' | 'completed' | 'failed'>('idle');
   const [steps, setSteps] = useState<GcpOAuthStepStatus[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [embeddedHydrated, setEmbeddedHydrated] = useState(!embedded);
 
   const [revertTarget, setRevertTarget] = useState<OAuthStepId | null>(null);
@@ -358,6 +357,34 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
   const [syncBusy, setSyncBusy] = useState(false);
   const [discoverHint, setDiscoverHint] = useState<string | null>(null);
   const [discoverOutcome, setDiscoverOutcome] = useState<GcpOAuthProjectDiscoverResult['outcome'] | null>(null);
+
+  const oauthSession = useOAuthSession({
+    projectId,
+    providerId: 'gcp',
+    pollIntervalMs: 1200,
+    onComplete: async (status) => {
+      const d = status.gcpProjectDiscover as GcpOAuthProjectDiscoverResult | undefined;
+      if (d) {
+        setDiscoverHint(d.message);
+        setDiscoverOutcome(d.outcome);
+        if (d.outcome === 'linked' || d.outcome === 'already_linked') {
+          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, { method: 'POST' });
+        }
+      }
+      setSteps([{ id: 'oauth_consent', label: STEP_META.oauth_consent.title, status: 'completed' }]);
+      await onCompleted();
+    },
+    onError: (msg) => setLocalError(msg),
+  });
+
+  // Derive a simplified phase for rendering from the hook's phase
+  const phase = oauthSession.phase === 'idle' ? 'idle'
+    : oauthSession.phase === 'completed' ? 'completed'
+    : oauthSession.phase === 'failed' || oauthSession.phase === 'expired' ? 'failed'
+    : oauthSession.phase === 'starting' ? 'starting'
+    : 'polling';
+
+  const error = oauthSession.error ?? localError;
 
   useEffect(() => {
     if (!embedded) {
@@ -369,140 +396,61 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
     (async () => {
       try {
         const v = await api<{ valid: boolean; message: string }>(
-          `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/steps/oauth_consent/validate`,
+          `/api/projects/${encodeURIComponent(projectId)}/oauth/gcp/validate`,
           { method: 'POST' },
         );
         if (cancelled) return;
         if (v.valid) {
-          setPhase('completed');
-          setSteps([
-            {
-              id: 'oauth_consent',
-              label: STEP_META.oauth_consent.title,
-              status: 'completed',
-              message: v.message,
-            },
-          ]);
-          setError(null);
+          oauthSession.reset();
+          setSteps([{ id: 'oauth_consent', label: STEP_META.oauth_consent.title, status: 'completed', message: v.message }]);
+          // Force phase to 'completed' so embedded variant shows the signed-in state
+          // (reset() puts us back to 'idle'; we handle this below via oauthComplete)
         } else {
-          setPhase('idle');
           setSteps([]);
         }
       } catch {
-        if (!cancelled) {
-          setPhase('idle');
-          setSteps([]);
-        }
+        if (!cancelled) setSteps([]);
       } finally {
         if (!cancelled) setEmbeddedHydrated(true);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [embedded, projectId]);
+    return () => { cancelled = true; };
+  }, [embedded, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startFlow = useCallback(async () => {
-    setPhase('starting');
-    setError(null);
+    setLocalError(null);
     setDiscoverHint(null);
     setDiscoverOutcome(null);
     setSteps(STEP_ORDER.map((id) => ({ id, label: STEP_META[id].title, status: 'pending' as const })));
-
-    try {
-      const session = await api<{
-        sessionId: string;
-        authUrl: string;
-        state: string;
-        phase: 'awaiting_user';
-        steps: GcpOAuthStepStatus[];
-      }>(
-        `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/connect/oauth/start`,
-        { method: 'POST' },
-      );
-
-      setSteps(session.steps);
-      setPhase('polling');
-      window.open(session.authUrl, '_blank', 'noopener,noreferrer');
-
-      for (let attempt = 0; attempt < 300; attempt++) {
-        const status = await api<GcpOAuthSessionStatus>(
-          `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/connect/oauth/${encodeURIComponent(session.sessionId)}`,
-        );
-        setSteps(status.steps);
-
-        if (status.phase === 'completed' && status.connected) {
-          try {
-            const d = status.gcpProjectDiscover;
-            if (d) {
-              setDiscoverHint(d.message);
-              setDiscoverOutcome(d.outcome);
-              if (d.outcome === 'linked' || d.outcome === 'already_linked') {
-                await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
-                  method: 'POST',
-                });
-              }
-            } else {
-              setDiscoverHint(null);
-              setDiscoverOutcome(null);
-            }
-            setPhase('completed');
-            await onCompleted();
-          } catch (err) {
-            setPhase('failed');
-            setError((err as Error).message);
-          }
-          return;
-        }
-        if (status.phase === 'failed' || status.phase === 'expired') {
-          setPhase('failed');
-          setError(status.error ?? 'OAuth session failed.');
-          return;
-        }
-        await new Promise((r) => setTimeout(r, 1200));
-      }
-      setPhase('failed');
-      setError('Timed out waiting for OAuth.');
-    } catch (err) {
-      setPhase('failed');
-      setError((err as Error).message);
-    }
-  }, [projectId, onCompleted]);
+    await oauthSession.start();
+  }, [oauthSession]);
 
   const confirmRevert = useCallback(async () => {
     if (!revertTarget) return;
     setRevertBusy(true);
-    setError(null);
+    setLocalError(null);
     try {
-      const body = await api<{
-        results: Array<{ stepId: string; reverted: boolean; message: string }>;
-        cascadedSteps: string[];
-      }>(
-        `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/steps/${encodeURIComponent(revertTarget)}/revert`,
-        { method: 'POST' },
+      await api(
+        `/api/projects/${encodeURIComponent(projectId)}/oauth/gcp/connection`,
+        { method: 'DELETE' },
       );
       setRevertTarget(null);
-      await onCompleted();
-      const failed = body.results.filter((r) => !r.reverted && r.stepId !== 'gcp_project');
-      if (failed.length > 0) {
-        setError(`Revert incomplete: ${failed.map((f) => `${f.stepId}: ${f.message}`).join('; ')}`);
-        return;
-      }
-      setPhase('idle');
+      oauthSession.reset();
       setSteps([]);
+      await onCompleted();
     } catch (err) {
-      setError((err as Error).message);
+      setLocalError((err as Error).message);
     } finally {
       setRevertBusy(false);
     }
-  }, [projectId, revertTarget, onCompleted]);
+  }, [projectId, revertTarget, onCompleted, oauthSession]);
 
   const runSyncProvisioningPlan = useCallback(async () => {
     setSyncBusy(true);
     try {
       // Discover project first so the project ID is in vault before plan sync runs.
       const discover = await api<GcpOAuthProjectDiscoverResult>(
-        `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/connect/discover-gcp-project`,
+        `/api/projects/${encodeURIComponent(projectId)}/oauth/gcp/discover`,
         { method: 'POST' },
       );
       setDiscoverHint(discover.message);
@@ -523,39 +471,35 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
         authUrl?: string;
       }>(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, { method: 'POST' });
 
-      // If plan/sync detected stale credentials, start a fresh OAuth flow.
+      // If plan/sync detected stale credentials, poll that session then re-start sync.
       if (syncResult.needsReauth && syncResult.authUrl && syncResult.sessionId) {
         setSyncBusy(false);
-        void startFlow();
+        await oauthSession.pollExternal(syncResult.sessionId, syncResult.authUrl);
         return;
       }
 
       const v = await api<{ valid: boolean; message: string }>(
-        `/api/projects/${encodeURIComponent(projectId)}/integrations/firebase/steps/oauth_consent/validate`,
+        `/api/projects/${encodeURIComponent(projectId)}/oauth/gcp/validate`,
         { method: 'POST' },
       );
-      setSteps([
-        {
-          id: 'oauth_consent',
-          label: STEP_META.oauth_consent.title,
-          status: v.valid ? 'completed' : 'failed',
-          message: v.message,
-        },
-      ]);
+      setSteps([{
+        id: 'oauth_consent',
+        label: STEP_META.oauth_consent.title,
+        status: v.valid ? 'completed' : 'failed',
+        message: v.message,
+      }]);
       if (v.valid) {
-        setPhase('completed');
-        setError(null);
+        setLocalError(null);
         await onCompleted();
       } else {
-        setPhase('failed');
-        setError(v.message);
+        setLocalError(v.message);
       }
     } catch (err) {
-      setError((err as Error).message);
+      setLocalError((err as Error).message);
     } finally {
       setSyncBusy(false);
     }
-  }, [projectId, onCompleted, startFlow]);
+  }, [projectId, onCompleted, startFlow, oauthSession]);
 
   const oauthStep = steps.find((s) => s.id === 'oauth_consent');
   const oauthSignedIn = oauthStep?.status === 'completed';
@@ -651,7 +595,7 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
             {oauthStep?.message ? (
               <p className="text-xs text-muted-foreground pl-[22px]">{oauthStep.message}</p>
             ) : null}
-            {discoverHint ? (
+            {discoverHint && discoverOutcome !== 'not_found' ? (
               <p
                 className={`text-[11px] leading-relaxed pl-[22px] rounded-md border px-2 py-1.5 mt-1 ${
                   discoverOutcome === 'linked' || discoverOutcome === 'already_linked'
@@ -736,16 +680,15 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
           className={`text-xs rounded-lg border px-3 py-2 leading-relaxed ${
             discoverOutcome === 'linked' || discoverOutcome === 'already_linked'
               ? 'border-emerald-500/35 bg-emerald-500/5 text-emerald-900 dark:text-emerald-100'
-              : discoverOutcome === 'not_found' ||
-                  discoverOutcome === 'error' ||
-                  discoverOutcome === 'ambiguous' ||
-                  discoverOutcome === 'inaccessible'
+              : discoverOutcome === 'error' || discoverOutcome === 'ambiguous' || discoverOutcome === 'inaccessible'
                 ? 'border-amber-500/35 bg-amber-500/5 text-amber-950 dark:text-amber-100'
                 : 'border-border bg-muted/30 text-muted-foreground'
           }`}
         >
           <span className="font-semibold text-foreground">GCP project: </span>
-          {discoverHint}
+          {discoverOutcome === 'not_found'
+            ? 'No existing project found — the provisioning step will create one.'
+            : discoverHint}
         </div>
       ) : null}
 

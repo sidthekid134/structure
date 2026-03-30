@@ -46,7 +46,7 @@ export type VerificationMethod =
   | { type: 'manual-confirm' };
 
 export type InteractiveAction =
-  | { type: 'oauth'; provider: 'firebase'; label: string };
+  | { type: 'oauth'; provider: string; label: string };
 
 // ---------------------------------------------------------------------------
 // Dependency reference — points to any node in the graph

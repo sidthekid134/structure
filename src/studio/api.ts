@@ -1,15 +1,20 @@
 /**
  * Studio UI REST API routes.
  *
- * Endpoints:
- *   GET  /api/health                        — liveness check
- *   GET  /api/provisioning                  — list all provisioning runs
- *   GET  /api/provisioning/:runId           — run detail with events
- *   POST /api/provisioning/:runId/resume    — resume a partial run
- *   GET  /api/secrets                       — secret schema by provider
- *   GET  /api/drift                         — drift status (placeholder)
- *   POST /api/drift/reconcile               — trigger reconciliation
- *   GET  /api/architecture                  — provider dependency graph
+ * Core provisioning endpoints:
+ *   POST /api/projects/:projectId/oauth/:providerId/start         — start unified OAuth session
+ *   GET  /api/projects/:projectId/oauth/:providerId/sessions/:sid — poll OAuth session status
+ *   POST /api/projects/:projectId/oauth/:providerId/discover      — GCP project discovery
+ *   POST /api/projects/:projectId/oauth/:providerId/validate      — validate provider connection
+ *   DELETE /api/projects/:projectId/oauth/:providerId/connection  — revoke provider connection
+ *   GET  /api/projects/:projectId/provisioning/plan               — get/create provisioning plan
+ *   POST /api/projects/:projectId/provisioning/plan/sync          — reconcile plan with real-world state
+ *   POST /api/projects/:projectId/provisioning/plan/run           — execute full plan
+ *   POST /api/projects/:projectId/provisioning/plan/run/nodes     — execute specific nodes
+ *   POST /api/projects/:projectId/provisioning/plan/node/reset    — revert a node (with real cleanup)
+ *   POST /api/projects/:projectId/provisioning/plan/node/revalidate — re-check a completed node
+ *   POST /api/projects/:projectId/provisioning/teardown           — build teardown plan
+ *   POST /api/projects/:projectId/provisioning/teardown/run       — execute teardown
  */
 
 import { Router, Request, Response } from 'express';
@@ -66,6 +71,12 @@ import { Orchestrator } from '../orchestration/orchestrator.js';
 import type { ModuleId } from '../provisioning/module-catalog.js';
 import { getProvidersForModules, resolveModuleDependencies } from '../provisioning/module-catalog.js';
 import { buildProvisioningGateResolver } from '../provisioning/gate-resolvers.js';
+import { globalStepHandlerRegistry } from '../provisioning/step-handler-registry.js';
+import { FIREBASE_STEP_HANDLERS } from '../core/gcp/gcp-step-handlers.js';
+import { createVaultReader } from './api-helpers.js';
+
+// Register all step handlers at startup
+globalStepHandlerRegistry.registerAll(FIREBASE_STEP_HANDLERS);
 
 const GCP_BOOTSTRAP_PHASE_IDS: readonly GcpBootstrapPhaseId[] = [
   'oauth_consent',
@@ -90,8 +101,9 @@ export function createApiRouter(
   devMode = false,
 ): Router {
   const router = Router();
+  const SERVER_STARTED_AT = Date.now();
   const projectManager = new ProjectManager(storeDir);
-  const vaultManager = new VaultManager(path.join(storeDir, 'credentials.enc'));
+  const vaultManager = new VaultManager(path.join(storeDir, 'credentials.enc'), () => { /* vault logs suppressed */ });
   const easConnectionService = new EasConnectionService(vaultManager, projectManager);
   const gitHubConnectionService = new GitHubConnectionService(vaultManager, projectManager);
   const gcpConnectionService = new GcpConnectionService(
@@ -459,29 +471,136 @@ export function createApiRouter(
     },
   );
 
-  // -------------------------------------------------------------------------
-  // POST /api/projects/:projectId/integrations/firebase/steps/sync
-  // OAuth session UI: refresh `oauth_consent` from vault (use plan/sync for infra graph).
-  // Must be registered before /steps/:stepId/* so "sync" is not captured as stepId.
-  // -------------------------------------------------------------------------
-  router.post(
-    '/projects/:projectId/integrations/firebase/steps/sync',
-    async (req: Request, res: Response) => {
-      try {
-        const { projectId } = req.params;
-        const steps = await gcpConnectionService.syncOAuthPipelineFromLiveState(projectId);
-        const connected = steps.length > 0 && steps.every((s) => s.status === 'completed');
-        res.json({ steps, connected });
-      } catch (err) {
-        const message = (err as Error).message;
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-          res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
-          return;
-        }
-        res.status(502).json({ error: `Pipeline sync failed: ${message}` });
+  // NOTE: POST /firebase/steps/sync was removed (redundant — oauth_consent status is
+  // available via /oauth/gcp/validate and /provisioning/plan/sync handles infra steps).
+
+  // =========================================================================
+  // Unified OAuth session routes (provider-agnostic)
+  // Frontend should prefer these over the firebase-specific paths above.
+  // =========================================================================
+
+  // POST /api/projects/:projectId/oauth/:providerId/start
+  router.post('/projects/:projectId/oauth/:providerId/start', async (req: Request, res: Response) => {
+    try {
+      const { projectId, providerId } = req.params;
+      if (providerId !== 'gcp') {
+        res.status(400).json({ error: `Unsupported OAuth provider: "${providerId}". Currently only "gcp" is supported.` });
+        return;
       }
-    },
-  );
+      const session = await gcpConnectionService.startProjectOAuthFlow(projectId);
+      res.json(session);
+    } catch (err) {
+      const message = (err as Error).message;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(502).json({ error: `Failed to start ${req.params.providerId} OAuth flow: ${message}` });
+    }
+  });
+
+  // GET /api/projects/:projectId/oauth/:providerId/sessions/:sessionId
+  router.get('/projects/:projectId/oauth/:providerId/sessions/:sessionId', (req: Request, res: Response) => {
+    try {
+      const { projectId, providerId, sessionId } = req.params;
+      if (providerId !== 'gcp') {
+        res.status(400).json({ error: `Unsupported OAuth provider: "${providerId}".` });
+        return;
+      }
+      const status = gcpConnectionService.getProjectOAuthStatus(projectId, sessionId);
+      res.json(status);
+    } catch (err) {
+      const message = (err as Error).message;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      if (message.includes('not found')) {
+        res.status(404).json({ error: message });
+        return;
+      }
+      res.status(400).json({ error: message });
+    }
+  });
+
+  // POST /api/projects/:projectId/oauth/:providerId/discover
+  router.post('/projects/:projectId/oauth/:providerId/discover', async (req: Request, res: Response) => {
+    try {
+      const { projectId, providerId } = req.params;
+      if (providerId !== 'gcp') {
+        res.status(400).json({ error: `Unsupported OAuth provider: "${providerId}".` });
+        return;
+      }
+      const result = await gcpConnectionService.discoverStudioGcpProjectWithStoredOAuth(projectId);
+      res.json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(502).json({ error: `GCP project discover failed: ${message}` });
+    }
+  });
+
+  // POST /api/projects/:projectId/oauth/:providerId/validate
+  router.post('/projects/:projectId/oauth/:providerId/validate', async (req: Request, res: Response) => {
+    try {
+      const { projectId, providerId } = req.params;
+      if (providerId !== 'gcp') {
+        res.status(400).json({ error: `Unsupported OAuth provider: "${providerId}".` });
+        return;
+      }
+      const result = await gcpConnectionService.validateStep(projectId, 'oauth_consent');
+      res.json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(502).json({ error: `Validation failed: ${message}` });
+    }
+  });
+
+  // DELETE /api/projects/:projectId/oauth/:providerId/connection — revoke tokens + disconnect
+  router.delete('/projects/:projectId/oauth/:providerId/connection', (req: Request, res: Response) => {
+    try {
+      const { projectId, providerId } = req.params;
+      if (providerId !== 'gcp') {
+        res.status(400).json({ error: `Unsupported OAuth provider: "${providerId}".` });
+        return;
+      }
+      const result = gcpConnectionService.disconnectProject(projectId);
+      console.log(`[studio-api] OAuth/GCP disconnected for Studio project "${projectId}".`);
+      res.json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(502).json({ error: `Failed to disconnect ${req.params.providerId}: ${message}` });
+    }
+  });
+
+  // POST /api/projects/:projectId/oauth/gcp/delete-linked-project
+  // Deletes the GCP project linked to this studio project using the stored OAuth token.
+  // Useful for cleaning up orphaned GCP projects (e.g. created under a different console account).
+  router.post('/projects/:projectId/oauth/gcp/delete-linked-project', async (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const result = await gcpConnectionService.deleteLinkedGcpProject(projectId);
+      res.json({ deleted: true, ...result });
+    } catch (err) {
+      const message = (err as Error).message;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(502).json({ error: message });
+    }
+  });
 
   // -------------------------------------------------------------------------
   // POST /api/projects/:projectId/integrations/firebase/steps/:stepId/validate
@@ -1125,21 +1244,7 @@ export function createApiRouter(
         registry.register('firebase', new FirebaseAdapter(new StubFirebaseApiClient(), gcpConnectionService));
       }
       const orchestrator = new Orchestrator(registry, eventLog);
-
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-      const vaultRead = async (key: string): Promise<string | null> => {
-        if (!vaultPassphrase) return null;
-        try {
-          const firebaseValue = vaultManager.getCredential(vaultPassphrase, 'firebase', key);
-          if (firebaseValue) return firebaseValue;
-          const githubValue = vaultManager.getCredential(vaultPassphrase, 'github', key);
-          if (githubValue) return githubValue;
-          const easValue = vaultManager.getCredential(vaultPassphrase, 'eas', key);
-          return easValue ?? null;
-        } catch {
-          return null;
-        }
-      };
+      const vaultRead = createVaultReader(vaultManager);
 
       void (async () => {
         const currentPlan = loadPersistedPlan(projectId);
@@ -1343,22 +1448,7 @@ export function createApiRouter(
         registry.register('firebase', new FirebaseAdapter(new StubFirebaseApiClient(), gcpConnectionService));
       }
 
-      // Build a real vaultRead that reads from VaultManager
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-      const vaultRead = async (key: string): Promise<string | null> => {
-        if (!vaultPassphrase) return null;
-        try {
-          // Firebase SA JSON is stored as provider='firebase', key='${projectId}/service_account_json'
-          const firebaseValue = vaultManager.getCredential(vaultPassphrase, 'firebase', key);
-          if (firebaseValue) return firebaseValue;
-          const githubValue = vaultManager.getCredential(vaultPassphrase, 'github', key);
-          if (githubValue) return githubValue;
-          const easValue = vaultManager.getCredential(vaultPassphrase, 'eas', key);
-          return easValue ?? null;
-        } catch {
-          return null;
-        }
-      };
+      const vaultRead = createVaultReader(vaultManager);
 
       const orchestrator = new Orchestrator(registry, eventLog);
 
@@ -1436,7 +1526,14 @@ export function createApiRouter(
 
   // -------------------------------------------------------------------------
   // POST /api/projects/:projectId/provisioning/plan/run/nodes
-  // Runs only the specified node keys. Does NOT reset the plan.
+  // Runs specific node keys from the plan.  Does NOT reset the plan.
+  //
+  // Steps with a registered StepHandler (firebase/* steps) are executed
+  // directly via handler.create(context) — this calls the real GCP APIs.
+  //
+  // Steps without a registered handler (github/*, eas/*) are forwarded to
+  // the orchestrator which uses its provider adapter system.
+  //
   // Body: { nodeKeys: string[] }
   // -------------------------------------------------------------------------
   router.post('/projects/:projectId/provisioning/plan/run/nodes', async (req: Request, res: Response) => {
@@ -1454,137 +1551,307 @@ export function createApiRouter(
         return;
       }
 
+      // Expand per-environment steps sent as base keys (e.g. "firebase:enable-services")
+      // into their env-specific variants ("firebase:enable-services@dev", etc.) so state
+      // is written to the correct per-env keys that the UI reads.
+      const expandedNodeKeys: string[] = [];
+      for (const nk of nodeKeys) {
+        if (nk.includes('@')) {
+          expandedNodeKeys.push(nk);
+          continue;
+        }
+        const planNode = plan.nodes.find((n) => n.key === nk);
+        if (planNode?.type === 'step' && (planNode as any).environmentScope === 'per-environment' && plan.environments.length > 0) {
+          for (const env of plan.environments) {
+            expandedNodeKeys.push(`${nk}@${env}`);
+          }
+        } else {
+          expandedNodeKeys.push(nk);
+        }
+      }
+      const effectiveNodeKeys = expandedNodeKeys;
+
+      // Clear any in-progress states that are definitively stuck:
+      //   1. Started before this server process launched (can't survive a restart), or
+      //   2. Older than 10 minutes (handler crash / no handler registered).
+      const STALE_THRESHOLD_MS = 10 * 60 * 1000;
+      const now = Date.now();
+      let clearedStale = false;
+      for (const [key, state] of plan.nodeStates.entries()) {
+        if (state.status === 'in-progress') {
+          const startedAt = state.startedAt ?? 0;
+          const preStartup = startedAt < SERVER_STARTED_AT;
+          const age = now - startedAt;
+          if (preStartup || age > STALE_THRESHOLD_MS) {
+            const reason = preStartup
+              ? 'Step was in-progress when the server last restarted.'
+              : `Step timed out (stuck in-progress for ${Math.round(age / 1000)}s).`;
+            console.warn(
+              `[plan/run/nodes] studio="${projectId}" | Clearing stale in-progress node "${key}" — ${reason}`,
+            );
+            plan.nodeStates.set(key, { ...state, status: 'failed', error: reason });
+            clearedStale = true;
+          }
+        }
+      }
+      if (clearedStale) savePersistedPlan(projectId, plan);
+
       const isAlreadyRunning = Array.from(plan.nodeStates.values()).some((s) => s.status === 'in-progress');
       if (isAlreadyRunning) {
         res.status(409).json({ error: 'Provisioning is already running. Wait for it to finish before starting a targeted run.' });
         return;
       }
 
+      // Separate handler-backed keys (firebase/*) from orchestrator-backed keys (github/*, eas/*).
+      // Strip any "@env" suffix to look up the base handler key.
+      const handlerBacked = effectiveNodeKeys.filter((k) => {
+        const base = k.includes('@') ? k.split('@')[0]! : k;
+        return globalStepHandlerRegistry.has(base);
+      });
+      const orchestratorBacked = effectiveNodeKeys.filter((k) => {
+        const base = k.includes('@') ? k.split('@')[0]! : k;
+        return !globalStepHandlerRegistry.has(base);
+      });
+
+      // Pre-flight GCP token check for any handler-backed GCP steps.
+      // Try to obtain an actual token (not just check if a refresh token exists in vault)
+      // to catch expired/revoked credentials before work starts.
+      const gcpHandlerKeys = handlerBacked.filter((k) => {
+        const base = k.includes('@') ? k.split('@')[0]! : k;
+        return globalStepHandlerRegistry.get(base)?.requiredAuth === 'gcp';
+      });
+      if (gcpHandlerKeys.length > 0) {
+        try {
+          await gcpConnectionService.getAccessToken(projectId, 'pre-flight');
+          console.log(`[plan/run/nodes] studio="${projectId}" | Pre-flight GCP token check passed.`);
+        } catch {
+          // Neither OAuth refresh nor SA key produced a valid token — prompt re-auth.
+          const oauthResult = await gcpConnectionService.startProjectOAuthFlow(projectId);
+          console.log(
+            `[plan/run/nodes] studio="${projectId}" | Pre-flight failed — no valid GCP credentials. ` +
+            `Returning needsReauth (session ${oauthResult.sessionId}).`,
+          );
+          res.json({ needsReauth: true, sessionId: oauthResult.sessionId, authUrl: oauthResult.authUrl, projectId });
+          return;
+        }
+      }
+
+      // Require GitHub token only when the requested nodes include GitHub steps.
       const githubToken = gitHubConnectionService.getStoredGitHubToken();
-      if (!githubToken) {
+      if (orchestratorBacked.some((k) => k.startsWith('github:')) && !githubToken) {
         res.status(400).json({
-          error: 'GitHub is not connected. Connect a GitHub PAT via the organization settings before running provisioning.',
+          error: 'GitHub is not connected. Connect a GitHub PAT via the organization settings before running GitHub provisioning steps.',
         });
         return;
       }
 
-      const nodesGateResolver = buildProvisioningGateResolver({
-        gcpConnectionService,
-        easConnectionService,
-        getGitHubToken: () => gitHubConnectionService.getStoredGitHubToken(),
-      });
+      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim() ?? '';
 
-      const module = projectManager.getProject(projectId);
-      const org = projectManager.getOrganization();
-      const orgGithubConfig = org.integrations.github?.config ?? {};
-      const githubOwner =
-        module.project.githubOrg?.trim() ||
-        orgGithubConfig['owner_default']?.trim() ||
-        orgGithubConfig['username']?.trim() ||
-        module.project.slug;
-
-      const defaultBranchRules: BranchProtectionRule[] = [
-        { branch: 'main', require_reviews: true, dismiss_stale_reviews: true, require_status_checks: true },
-        { branch: 'develop', require_reviews: false, dismiss_stale_reviews: false, require_status_checks: true },
-      ];
-      const githubManifestConfig: GitHubManifestConfig = {
-        provider: 'github',
-        owner: githubOwner,
-        repo_name: module.project.slug,
-        branch_protection_rules: defaultBranchRules,
-        environments: (plan.environments as Array<'dev' | 'preview' | 'prod'>),
-        workflow_templates: ['build', 'deploy'],
-      };
-      const manifestProviders: ProviderConfig[] = [githubManifestConfig];
-      if (planUsesFirebaseProvider(plan)) {
-        manifestProviders.push(buildFirebaseManifestConfig(projectId));
-      }
-      const manifest: ProviderManifest = {
-        version: PLATFORM_CORE_VERSION,
-        app_id: projectId,
-        providers: manifestProviders,
-      };
-
-      const registry = new ProviderRegistry();
-      const httpClient = new HttpGitHubApiClient(githubToken);
-      registry.register('github', new GitHubAdapter(httpClient));
-      if (planUsesFirebaseProvider(plan)) {
-        registry.register('firebase', new FirebaseAdapter(new StubFirebaseApiClient(), gcpConnectionService));
-      }
-
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-      const vaultRead = async (key: string): Promise<string | null> => {
-        if (!vaultPassphrase) return null;
-        try {
-          const firebaseValue = vaultManager.getCredential(vaultPassphrase, 'firebase', key);
-          if (firebaseValue) return firebaseValue;
-          const githubValue = vaultManager.getCredential(vaultPassphrase, 'github', key);
-          if (githubValue) return githubValue;
-          const easValue = vaultManager.getCredential(vaultPassphrase, 'eas', key);
-          return easValue ?? null;
-        } catch {
-          return null;
-        }
-      };
-
-      const orchestrator = new Orchestrator(registry, eventLog);
-      const nodeKeysFilter = new Set(nodeKeys);
-
-      void (async () => {
-        try {
-          wsHandler.broadcastStepProgress(projectId, 'run', 'step', 'running');
-
-          const currentPlan = loadPersistedPlan(projectId);
-          if (!currentPlan) return;
-          for await (const event of orchestrator.provisionBySteps(
-            currentPlan,
-            manifest,
-            {},
-            vaultRead,
-            undefined,
-            nodeKeysFilter,
-            nodesGateResolver,
-          )) {
-            const stateKey = event.environment ? `${event.nodeKey}@${event.environment}` : event.nodeKey;
-            currentPlan.nodeStates.set(stateKey, {
-              nodeKey: event.nodeKey,
-              status: event.status === 'success'
-                ? 'completed'
-                : event.status === 'failure'
-                  ? 'failed'
-                  : event.status === 'waiting-on-user'
-                    ? 'waiting-on-user'
-                    : event.status === 'resolving'
-                      ? 'resolving'
-                      : event.status === 'skipped'
-                        ? 'skipped'
-                        : event.status === 'blocked'
-                          ? 'blocked'
-                          : 'in-progress',
-              environment: event.environment,
-              error: event.error,
-              resourcesProduced: event.resourcesProduced,
-              completedAt: event.status === 'success' || event.status === 'skipped' ? Date.now() : undefined,
-            });
-
+      // Pre-mark ALL requested step nodes as in-progress immediately so the
+      // frontend reflects activity the moment this request returns.
+      for (const nk of effectiveNodeKeys) {
+        const baseKey = nk.includes('@') ? nk.split('@')[0]! : nk;
+        const planNode = plan.nodes.find((n) => n.key === baseKey || n.key === nk);
+        if (planNode?.type === 'step') {
+          const existing = plan.nodeStates.get(nk);
+          if (existing?.status !== 'completed' && existing?.status !== 'skipped') {
+            plan.nodeStates.set(nk, { nodeKey: baseKey, status: 'in-progress', startedAt: Date.now() });
             wsHandler.broadcastStepProgress(
               projectId,
-              event.nodeKey,
-              event.nodeType,
-              event.status,
-              event.environment,
-              event.resourcesProduced,
-              event.error,
-              event.userPrompt,
+              baseKey,
+              'step',
+              'running',
+              nk.includes('@') ? nk.split('@')[1] : undefined,
             );
+          }
+        }
+      }
+      savePersistedPlan(projectId, plan);
+      res.json({ started: true, projectId, nodeKeys: effectiveNodeKeys });
+
+      // ── Background execution ───────────────────────────────────────────────
+      void (async () => {
+        const currentPlan = loadPersistedPlan(projectId);
+        if (!currentPlan) return;
+
+        wsHandler.broadcastStepProgress(projectId, 'run', 'step', 'running');
+
+        // Collect upstream artifacts from all currently-completed nodes so each
+        // handler context has access to resources produced by earlier steps.
+        const upstreamArtifacts: Record<string, string> = {};
+        for (const state of currentPlan.nodeStates.values()) {
+          if (state.status === 'completed' && state.resourcesProduced) {
+            Object.assign(upstreamArtifacts, state.resourcesProduced);
+          }
+        }
+
+        // ── Handler-direct execution for firebase/* steps ──────────────────
+        for (const nk of handlerBacked) {
+          const baseKey = nk.includes('@') ? nk.split('@')[0]! : nk;
+          const environment = nk.includes('@') ? nk.split('@')[1] : undefined;
+          const handler = globalStepHandlerRegistry.get(baseKey);
+          if (!handler) continue;
+
+          const stateKey = environment ? `${baseKey}@${environment}` : baseKey;
+
+          // Per-step token cache: avoids multiple OAuth refresh round-trips
+          // within a single handler call.  The access token is valid for 1h.
+          const tokenCache = new Map<string, string>();
+
+          const context = {
+            projectId,
+            upstreamArtifacts: { ...upstreamArtifacts },
+            async getToken(providerId: string): Promise<string> {
+              const cached = tokenCache.get(providerId);
+              if (cached) return cached;
+              if (providerId === 'gcp') {
+                const token = await gcpConnectionService.getAccessToken(projectId, `run:${baseKey}`);
+                tokenCache.set(providerId, token);
+                return token;
+              }
+              throw new Error(`No token provider for "${providerId}" in step "${baseKey}".`);
+            },
+            hasToken: (providerId: string) =>
+              providerId === 'gcp' ? gcpConnectionService.hasStoredUserOAuthRefreshToken(projectId) : false,
+            vaultManager,
+            passphrase: vaultPassphrase,
+            projectManager,
+          };
+
+          console.log(
+            `[plan/run/nodes] studio="${projectId}" | → Executing handler "${baseKey}"` +
+            (environment ? ` env="${environment}"` : '') + '...',
+          );
+
+          try {
+            const result = await handler.create(context);
+
+            if (result.reconciled) {
+              const resources = result.resourcesProduced ?? {};
+              Object.assign(upstreamArtifacts, resources);
+              currentPlan.nodeStates.set(stateKey, {
+                nodeKey: baseKey,
+                status: 'completed',
+                environment,
+                completedAt: Date.now(),
+                resourcesProduced: resources,
+              });
+              wsHandler.broadcastStepProgress(projectId, baseKey, 'step', 'success', environment, resources);
+              console.log(`[plan/run/nodes] studio="${projectId}" | ✓ "${baseKey}" completed.`);
+            } else {
+              // reconciled=false, suggestsReauth=true means the GCP token is invalid.
+              // Since we are in an async background block we cannot return needsReauth
+              // over HTTP — mark the step failed with a clear message so the UI can
+              // detect it and show the re-auth button.
+              const errMsg = result.suggestsReauth
+                ? `Re-authentication required: ${result.message ?? 'GCP OAuth token invalid or expired.'}`
+                : (result.message ?? 'Step failed without a specific error message.');
+              currentPlan.nodeStates.set(stateKey, {
+                nodeKey: baseKey,
+                status: 'failed',
+                environment,
+                error: errMsg,
+              });
+              wsHandler.broadcastStepProgress(projectId, baseKey, 'step', 'failure', environment, undefined, errMsg);
+              console.log(`[plan/run/nodes] studio="${projectId}" | ✗ "${baseKey}" failed: ${errMsg}`);
+            }
+          } catch (err) {
+            const errMsg = (err as Error).message;
+            currentPlan.nodeStates.set(stateKey, { nodeKey: baseKey, status: 'failed', environment, error: errMsg });
+            wsHandler.broadcastStepProgress(projectId, baseKey, 'step', 'failure', environment, undefined, errMsg);
+            console.error(`[plan/run/nodes] studio="${projectId}" | ✗ "${baseKey}" threw: ${errMsg}`);
+          }
+
+          savePersistedPlan(projectId, currentPlan);
+        }
+
+        // ── Orchestrator path for github/*, eas/* steps ────────────────────
+        if (orchestratorBacked.length > 0 && githubToken) {
+          const nodesGateResolver = buildProvisioningGateResolver({
+            gcpConnectionService,
+            easConnectionService,
+            getGitHubToken: () => gitHubConnectionService.getStoredGitHubToken(),
+          });
+
+          const module = projectManager.getProject(projectId);
+          const org = projectManager.getOrganization();
+          const orgGithubConfig = org.integrations.github?.config ?? {};
+          const githubOwner =
+            module.project.githubOrg?.trim() ||
+            orgGithubConfig['owner_default']?.trim() ||
+            orgGithubConfig['username']?.trim() ||
+            module.project.slug;
+
+          const githubManifestConfig: GitHubManifestConfig = {
+            provider: 'github',
+            owner: githubOwner,
+            repo_name: module.project.slug,
+            branch_protection_rules: [
+              { branch: 'main', require_reviews: true, dismiss_stale_reviews: true, require_status_checks: true },
+              { branch: 'develop', require_reviews: false, dismiss_stale_reviews: false, require_status_checks: true },
+            ],
+            environments: currentPlan.environments as Array<'dev' | 'preview' | 'prod'>,
+            workflow_templates: ['build', 'deploy'],
+          };
+
+          const manifest: ProviderManifest = {
+            version: PLATFORM_CORE_VERSION,
+            app_id: projectId,
+            providers: [githubManifestConfig],
+          };
+
+          const registry = new ProviderRegistry();
+          registry.register('github', new GitHubAdapter(new HttpGitHubApiClient(githubToken)));
+
+          const orchestrator = new Orchestrator(registry, eventLog);
+          const vaultRead = createVaultReader(vaultManager);
+          const nodeKeysFilter = new Set(orchestratorBacked);
+
+          try {
+            for await (const event of orchestrator.provisionBySteps(
+              currentPlan,
+              manifest,
+              {},
+              vaultRead,
+              undefined,
+              nodeKeysFilter,
+              nodesGateResolver,
+            )) {
+              const stateKey = event.environment ? `${event.nodeKey}@${event.environment}` : event.nodeKey;
+              currentPlan.nodeStates.set(stateKey, {
+                nodeKey: event.nodeKey,
+                status:
+                  event.status === 'success' ? 'completed' :
+                  event.status === 'failure' ? 'failed' :
+                  event.status === 'waiting-on-user' ? 'waiting-on-user' :
+                  event.status === 'resolving' ? 'resolving' :
+                  event.status === 'skipped' ? 'skipped' :
+                  event.status === 'blocked' ? 'blocked' : 'in-progress',
+                environment: event.environment,
+                error: event.error,
+                resourcesProduced: event.resourcesProduced,
+                completedAt: event.status === 'success' || event.status === 'skipped' ? Date.now() : undefined,
+              });
+              wsHandler.broadcastStepProgress(
+                projectId, event.nodeKey, event.nodeType, event.status,
+                event.environment, event.resourcesProduced, event.error, event.userPrompt,
+              );
+              savePersistedPlan(projectId, currentPlan);
+            }
+          } catch (err) {
+            const errMsg = (err as Error).message;
+            console.error(`[plan/run/nodes] studio="${projectId}" | Orchestrator error: ${errMsg}`);
+            for (const nk of orchestratorBacked) {
+              const s = currentPlan.nodeStates.get(nk);
+              if (s?.status === 'in-progress') {
+                currentPlan.nodeStates.set(nk, { nodeKey: nk, status: 'failed', error: errMsg });
+                wsHandler.broadcastStepProgress(projectId, nk, 'step', 'failure', undefined, undefined, errMsg);
+              }
+            }
             savePersistedPlan(projectId, currentPlan);
           }
-        } catch (err) {
-          console.error(`[plan/run/nodes] Error for ${projectId}:`, (err as Error).message);
         }
       })();
-
-      res.json({ started: true, projectId, nodeKeys });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
@@ -1636,68 +1903,75 @@ export function createApiRouter(
       const dependents = collectDependentNodeKeys(nodeKey, plan.nodes);
       const allKeysToReset = [nodeKey, ...dependents];
 
-      const GRAPH_TO_BOOTSTRAP: Record<string, GcpBootstrapPhaseId> = {
-        'firebase:create-gcp-project': 'gcp_project',
-        'firebase:enable-firebase': 'gcp_project',
-        'firebase:create-provisioner-sa': 'service_account',
-        'firebase:bind-provisioner-iam': 'iam_binding',
-        'firebase:generate-sa-key': 'vault',
-      };
+      // Determine which nodes have registered StepHandlers (e.g. firebase:*)
+      // and require GCP API calls for deletion (need a live OAuth token).
+      const GCP_DELETE_STEPS = new Set([
+        'firebase:bind-provisioner-iam',
+        'firebase:create-provisioner-sa',
+      ]);
+      const handlerKeysToDelete = allKeysToReset.filter(
+        (k) => globalStepHandlerRegistry.has(k),
+      );
+      const needsGcpApiCalls = handlerKeysToDelete.some((k) => GCP_DELETE_STEPS.has(k));
 
-      const BOOTSTRAP_REVERT_ORDER: GcpBootstrapPhaseId[] = [
-        'oauth_consent',
-        'gcp_project',
-        'service_account',
-        'iam_binding',
-        'vault',
-      ];
-
-      const oauthStepsToRevert = new Set<GcpBootstrapPhaseId>();
-      for (const key of allKeysToReset) {
-        const mapped = GRAPH_TO_BOOTSTRAP[key];
-        if (!mapped) continue;
-        for (const stepId of GcpConnectionService.getCascadeSteps(mapped)) {
-          oauthStepsToRevert.add(stepId);
-        }
+      // Gate: if GCP API calls are needed and we have no OAuth token, prompt re-auth first.
+      if (needsGcpApiCalls && !gcpConnectionService.hasStoredUserOAuthRefreshToken(projectId)) {
+        const oauthResult = await gcpConnectionService.startProjectOAuthFlow(projectId);
+        console.log(
+          `[studio-api] node/reset: no GCP OAuth token for ${projectId} — returning needsReauth (session ${oauthResult.sessionId})`,
+        );
+        res.json({
+          needsReauth: true,
+          sessionId: oauthResult.sessionId,
+          authUrl: oauthResult.authUrl,
+        });
+        return;
       }
 
+      // Execute delete() on each registered handler in reverse provisioning order
+      // (dependents were collected in dependency order so reversing is correct).
+      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim() ?? '';
       let revertWarnings: string[] = [];
-      if (oauthStepsToRevert.size > 0) {
-        const cascadeIds = BOOTSTRAP_REVERT_ORDER.filter((id) => oauthStepsToRevert.has(id));
 
-        // iam_binding and service_account require a live OAuth token to call GCP APIs.
-        // If we don't have one, return needsReauth so the UI can re-authenticate before retrying.
-        const needsGcpApiCalls = cascadeIds.some((id) => id === 'iam_binding' || id === 'service_account');
-        if (needsGcpApiCalls) {
-          const hasToken = await gcpConnectionService.hasGcpOAuthToken(projectId);
-          if (!hasToken) {
-            const oauthResult = await gcpConnectionService.startProjectOAuthFlow(projectId);
-            console.log(
-              `[studio-api] node/reset: no GCP OAuth token for ${projectId} — returning needsReauth (session ${oauthResult.sessionId})`,
-            );
-            res.json({
-              needsReauth: true,
-              sessionId: oauthResult.sessionId,
-              authUrl: oauthResult.authUrl,
-            });
-            return;
+      if (handlerKeysToDelete.length > 0) {
+        // Delete from leaf to root (reverse order so dependents are torn down first)
+        const deleteOrder = [...handlerKeysToDelete].reverse();
+        console.log(`[studio-api] node/reset: deleting GCP resources for ${projectId}: ${deleteOrder.join(', ')}`);
+
+        for (const stepKey of deleteOrder) {
+          const handler = globalStepHandlerRegistry.get(stepKey);
+          if (!handler) continue;
+
+          const handlerContext = {
+            projectId,
+            upstreamArtifacts: {},
+            getToken: async (providerId: string) => {
+              if (providerId === 'gcp') return gcpConnectionService.getAccessToken(projectId, `reset:${stepKey}`);
+              throw new Error(`No token provider for "${providerId}".`);
+            },
+            hasToken: (providerId: string) =>
+              providerId === 'gcp' ? gcpConnectionService.hasStoredUserOAuthRefreshToken(projectId) : false,
+            vaultManager,
+            passphrase: vaultPassphrase,
+            projectManager,
+          };
+
+          try {
+            const result = await handler.delete(handlerContext);
+            if (!result.reconciled && result.message) {
+              // gcp_project and enable-firebase deletion are intentionally not automated.
+              const INFORMATIONAL = new Set(['firebase:create-gcp-project', 'firebase:enable-firebase']);
+              if (!INFORMATIONAL.has(stepKey)) {
+                revertWarnings.push(`${stepKey}: ${result.message}`);
+              }
+            }
+          } catch (err) {
+            revertWarnings.push(`${stepKey}: ${(err as Error).message}`);
           }
         }
 
-        console.log(
-          `[studio-api] node/reset: reverting GCP resources for ${projectId}: ${cascadeIds.join(', ')}`,
-        );
-        const results = await gcpConnectionService.revertSteps(projectId, cascadeIds);
-        // gcp_project: intentionally never deleted via provisioner — informational, not a failure.
-        // vault/oauth_consent: "kept for retry" is a secondary consequence of GCP failures already reported above.
-        const INFORMATIONAL_STEP_IDS = new Set(['gcp_project', 'vault', 'oauth_consent']);
-        revertWarnings = results
-          .filter((r) => !r.reverted && !INFORMATIONAL_STEP_IDS.has(r.stepId))
-          .map((r) => `${r.stepId}: ${r.message}`);
         if (revertWarnings.length > 0) {
-          console.warn(
-            `[studio-api] node/reset: partial GCP revert for ${projectId}: ${revertWarnings.join('; ')}`,
-          );
+          console.warn(`[studio-api] node/reset: partial revert for ${projectId}: ${revertWarnings.join('; ')}`);
         }
       }
 
@@ -1851,12 +2125,15 @@ export function createApiRouter(
         return;
       }
 
+      // Check StepHandlerRegistry first (Firebase and any other registered handlers)
+      const stepHandler = globalStepHandlerRegistry.get(nodeKey);
+
       const registry = new ProviderRegistry();
       if (githubToken) {
         registry.register('github', new GitHubAdapter(new HttpGitHubApiClient(githubToken)));
       }
 
-      if (!registry.hasAdapter(node.provider)) {
+      if (!stepHandler && !registry.hasAdapter(node.provider)) {
         res.json({
           supported: false,
           message: `Provider "${node.provider}" has no revalidation hook in Studio yet.`,
@@ -1865,8 +2142,8 @@ export function createApiRouter(
         return;
       }
 
-      const adapter = registry.getAdapter(node.provider);
-      if (!adapter.checkStep) {
+      const adapter = stepHandler ? null : registry.getAdapter(node.provider);
+      if (!stepHandler && (!adapter || !adapter.checkStep)) {
         res.json({
           supported: false,
           message: `Step checks are not implemented for provider "${node.provider}".`,
@@ -1875,20 +2152,7 @@ export function createApiRouter(
         return;
       }
 
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-      const vaultRead = async (key: string): Promise<string | null> => {
-        if (!vaultPassphrase) return null;
-        try {
-          const firebaseValue = vaultManager.getCredential(vaultPassphrase, 'firebase', key);
-          if (firebaseValue) return firebaseValue;
-          const githubValue = vaultManager.getCredential(vaultPassphrase, 'github', key);
-          if (githubValue) return githubValue;
-          const easValue = vaultManager.getCredential(vaultPassphrase, 'eas', key);
-          return easValue ?? null;
-        } catch {
-          return null;
-        }
-      };
+      const vaultRead = createVaultReader(vaultManager);
 
       const { sequentialExecutionItems } = buildPlanViewModel(plan.nodes, plan.environments);
       const upstream: Record<string, string> = {};
@@ -1902,6 +2166,8 @@ export function createApiRouter(
       const results: Array<{ environment?: string; stillValid: boolean }> = [];
       const targetItems = sequentialExecutionItems.filter((i) => i.nodeKey === nodeKey);
       let checked = 0;
+
+      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim() ?? '';
 
       for (const item of targetItems) {
         const stateKey = item.environment ? `${nodeKey}@${item.environment}` : nodeKey;
@@ -1920,33 +2186,50 @@ export function createApiRouter(
           node.provider === 'github' ? githubManifestConfig : ({} as GitHubManifestConfig);
 
         try {
-          const result = await adapter.checkStep(nodeKey, configForProvider, context);
+          let stillValid = false;
+          let resourcesProduced: Record<string, string> | undefined;
+
+          if (stepHandler) {
+            // Use StepHandlerRegistry for Firebase and other registered steps
+            const handlerContext = {
+              projectId,
+              upstreamArtifacts: { ...upstream },
+              getToken: async (providerId: string) => {
+                if (providerId === 'gcp') return gcpConnectionService.getAccessToken(projectId, `revalidate:${nodeKey}`);
+                throw new Error(`No token provider for "${providerId}".`);
+              },
+              hasToken: (providerId: string) => providerId === 'gcp' ? gcpConnectionService.hasStoredUserOAuthRefreshToken(projectId) : false,
+              vaultManager,
+              passphrase: vaultPassphrase,
+              projectManager,
+            };
+            const handlerResult = await stepHandler.validate(handlerContext);
+            stillValid = handlerResult.reconciled;
+            resourcesProduced = handlerResult.resourcesProduced;
+          } else if (adapter?.checkStep) {
+            const result = await adapter.checkStep(nodeKey, configForProvider, context);
+            stillValid = result.status === 'completed';
+            resourcesProduced = result.resourcesProduced;
+          }
+
           checked++;
-          if (result.status === 'completed') {
+          if (stillValid) {
             plan.nodeStates.set(stateKey, {
               nodeKey,
               status: 'completed',
               environment: item.environment,
               completedAt: Date.now(),
-              resourcesProduced: result.resourcesProduced ?? existing?.resourcesProduced,
+              resourcesProduced: resourcesProduced ?? existing?.resourcesProduced,
             });
-            if (result.resourcesProduced) Object.assign(upstream, result.resourcesProduced);
+            if (resourcesProduced) Object.assign(upstream, resourcesProduced);
             results.push({ environment: item.environment, stillValid: true });
           } else {
-            plan.nodeStates.set(stateKey, {
-              nodeKey,
-              status: 'not-started',
-              environment: item.environment,
-            });
+            plan.nodeStates.set(stateKey, { nodeKey, status: 'not-started', environment: item.environment });
             results.push({ environment: item.environment, stillValid: false });
           }
         } catch {
           checked++;
-          plan.nodeStates.set(stateKey, {
-            nodeKey,
-            status: 'not-started',
-            environment: item.environment,
-          });
+          plan.nodeStates.set(stateKey, { nodeKey, status: 'not-started', environment: item.environment });
           results.push({ environment: item.environment, stillValid: false });
         }
       }
@@ -2007,54 +2290,36 @@ export function createApiRouter(
         return;
       }
 
+      // GitHub is optional for sync — Firebase steps sync independently of GitHub.
+      // Register the GitHub adapter only when a token is available so GitHub steps
+      // can also be checked; if not available, GitHub steps are left as-is.
       const githubToken = gitHubConnectionService.getStoredGitHubToken();
-      if (!githubToken) {
-        res.status(400).json({
-          error: 'GitHub is not connected. Connect a GitHub PAT before syncing.',
-        });
-        return;
-      }
-
-      const org = projectManager.getOrganization();
-      const orgGithubConfig = org.integrations.github?.config ?? {};
-      const githubOwner =
-        _module.project.githubOrg?.trim() ||
-        orgGithubConfig['owner_default']?.trim() ||
-        orgGithubConfig['username']?.trim() ||
-        _module.project.slug;
-      const repoName = _module.project.slug;
-
-      const defaultBranchRules: BranchProtectionRule[] = [
-        { branch: 'main', require_reviews: true, dismiss_stale_reviews: true, require_status_checks: true },
-        { branch: 'develop', require_reviews: false, dismiss_stale_reviews: false, require_status_checks: true },
-      ];
-      const githubManifestConfig: GitHubManifestConfig = {
-        provider: 'github',
-        owner: githubOwner,
-        repo_name: repoName,
-        branch_protection_rules: defaultBranchRules,
-        environments: (plan.environments as Array<'dev' | 'preview' | 'prod'>),
-        workflow_templates: ['build', 'deploy'],
-      };
 
       const registry = new ProviderRegistry();
-      const httpClient = new HttpGitHubApiClient(githubToken);
-      registry.register('github', new GitHubAdapter(httpClient));
+      if (githubToken) {
+        const org = projectManager.getOrganization();
+        const orgGithubConfig = org.integrations.github?.config ?? {};
+        const githubOwner =
+          _module.project.githubOrg?.trim() ||
+          orgGithubConfig['owner_default']?.trim() ||
+          orgGithubConfig['username']?.trim() ||
+          _module.project.slug;
 
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-      const vaultRead = async (key: string): Promise<string | null> => {
-        if (!vaultPassphrase) return null;
-        try {
-          const firebaseValue = vaultManager.getCredential(vaultPassphrase, 'firebase', key);
-          if (firebaseValue) return firebaseValue;
-          const githubValue = vaultManager.getCredential(vaultPassphrase, 'github', key);
-          if (githubValue) return githubValue;
-          const easValue = vaultManager.getCredential(vaultPassphrase, 'eas', key);
-          return easValue ?? null;
-        } catch {
-          return null;
-        }
-      };
+        const githubManifestConfig: GitHubManifestConfig = {
+          provider: 'github',
+          owner: githubOwner,
+          repo_name: _module.project.slug,
+          branch_protection_rules: [
+            { branch: 'main', require_reviews: true, dismiss_stale_reviews: true, require_status_checks: true },
+            { branch: 'develop', require_reviews: false, dismiss_stale_reviews: false, require_status_checks: true },
+          ],
+          environments: plan.environments as Array<'dev' | 'preview' | 'prod'>,
+          workflow_templates: ['build', 'deploy'],
+        };
+        registry.register('github', new GitHubAdapter(new HttpGitHubApiClient(githubToken)));
+      }
+
+      const vaultRead = createVaultReader(vaultManager);
 
       // Resolve credential gates before sync — uses the same resolver the
       // orchestrator would use so gate resolution logic lives in one place.
@@ -2141,23 +2406,33 @@ export function createApiRouter(
               continue;
             }
 
-            const hasFailedDep = node.dependencies.some(
-              (dep) => dep.required && failedNodeKeys.has(dep.nodeKey),
-            );
-            if (hasFailedDep) {
-              // Propagate transitively: mark this node as failed too so its own
-              // dependents are also skipped in subsequent iterations.
-              failedNodeKeys.add(item.nodeKey);
-              currentPlan.nodeStates.set(stateKey, {
-                nodeKey: item.nodeKey,
-                status: 'not-started',
-                environment: item.environment,
-              });
-              wsHandler.broadcastStepProgress(
-                projectId, item.nodeKey, 'step', 'ready',
-                item.environment,
+            // Firebase steps with registered handlers always attempt sync regardless of
+            // upstream gate status — sync's purpose is to discover real-world state,
+            // not to enforce logical prerequisites like billing setup gates.
+            const isHandlerBacked =
+              node.provider === 'firebase' &&
+              node.type === 'step' &&
+              globalStepHandlerRegistry.has(item.nodeKey.includes('@') ? item.nodeKey.split('@')[0]! : item.nodeKey);
+
+            if (!isHandlerBacked) {
+              const hasFailedDep = node.dependencies.some(
+                (dep) => dep.required && failedNodeKeys.has(dep.nodeKey),
               );
-              continue;
+              if (hasFailedDep) {
+                // Propagate transitively: mark this node as failed too so its own
+                // dependents are also skipped in subsequent iterations.
+                failedNodeKeys.add(item.nodeKey);
+                currentPlan.nodeStates.set(stateKey, {
+                  nodeKey: item.nodeKey,
+                  status: 'not-started',
+                  environment: item.environment,
+                });
+                wsHandler.broadcastStepProgress(
+                  projectId, item.nodeKey, 'step', 'ready',
+                  item.environment,
+                );
+                continue;
+              }
             }
 
             if (node.provider === 'firebase' && node.type === 'step') {
@@ -2241,8 +2516,8 @@ export function createApiRouter(
               item.environment,
             );
 
-            const configForProvider =
-              node.provider === 'github' ? githubManifestConfig : ({} as any);
+            // configForProvider is provider-specific manifest config.
+            const configForProvider = {} as ProviderConfig;
 
             const context: StepContext = {
               projectId: currentPlan.projectId,
