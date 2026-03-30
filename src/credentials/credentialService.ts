@@ -527,6 +527,34 @@ export class CredentialService {
     return count;
   }
 
+  /**
+   * Returns true if an active (non-deleted) credential of the given type exists
+   * for the specified project. Used by dependency checking logic.
+   */
+  hasCredential(projectId: string, type: CredentialType): boolean {
+    const row = this.db
+      .prepare(
+        'SELECT id FROM credentials WHERE project_id = ? AND credential_type = ? AND deleted_at IS NULL',
+      )
+      .get(projectId, type);
+    return row !== undefined;
+  }
+
+  /**
+   * Returns the credential ID for an active credential of the given type, or
+   * undefined if none exists. Used for file-hash duplicate detection.
+   */
+  findCredentialMetadata(
+    projectId: string,
+    type: CredentialType,
+  ): { id: string; metadata: string } | undefined {
+    return this.db
+      .prepare(
+        'SELECT id, metadata FROM credentials WHERE project_id = ? AND credential_type = ? AND deleted_at IS NULL',
+      )
+      .get(projectId, type) as { id: string; metadata: string } | undefined;
+  }
+
   /** Closes the underlying SQLite connection. */
   close(): void {
     this.db.close();

@@ -74,6 +74,8 @@ import { buildProvisioningGateResolver } from '../provisioning/gate-resolvers.js
 import { globalStepHandlerRegistry } from '../provisioning/step-handler-registry.js';
 import { FIREBASE_STEP_HANDLERS } from '../core/gcp/gcp-step-handlers.js';
 import { createVaultReader } from './api-helpers.js';
+import { CredentialService } from '../credentials/credentialService.js';
+import { createCredentialRouter } from '../credentials/credentialRouter.js';
 
 // Register all step handlers at startup
 globalStepHandlerRegistry.registerAll(FIREBASE_STEP_HANDLERS);
@@ -112,6 +114,17 @@ export function createApiRouter(
     process.env['PLATFORM_GCP_OAUTH_CLIENT_ID'] ?? '',
     process.env['PLATFORM_GCP_OAUTH_CLIENT_SECRET'] ?? '',
   );
+  // Credential service: encrypted SQLite store for provider tokens and files
+  const credentialPassphrase =
+    process.env['STUDIO_VAULT_PASSPHRASE'] ?? process.env['CREDENTIAL_MASTER_PASSPHRASE'] ?? 'default-dev-passphrase';
+  const credentialService = new CredentialService(
+    path.join(storeDir, 'encrypted-credentials.sqlite'),
+    credentialPassphrase,
+  );
+
+  // Mount credential endpoints
+  router.use('/', createCredentialRouter(credentialService));
+
   const validProjectIntegrationProviders = new Set<IntegrationProvider>(
     Object.keys(PROVIDER_SECRET_SCHEMAS) as IntegrationProvider[],
   );
