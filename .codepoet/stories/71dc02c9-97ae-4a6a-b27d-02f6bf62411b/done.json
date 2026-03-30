@@ -1,0 +1,9 @@
+{
+  "status": "completed",
+  "summary": "Implemented encrypted credential storage using AES-256-GCM with SQLite (better-sqlite3). Created a migration SQL file defining the credentials table with a UNIQUE(project_id, credential_type) constraint, soft-delete via deleted_at, and indexes for fast lookups. Built CredentialService with: per-credential key derivation (master key × project × type), encrypt/decrypt methods that store IV and auth tag in the metadata JSON column (ciphertext kept separate in a BLOB column), type-specific validators for all 7 credential types, storeCredential (upsert with validation), retrieveCredential (on-demand decrypt with audit logging), deleteCredential (ciphertext overwritten with random bytes before soft-delete), and purgeExpiredCredentials for 30-day hard-delete policy. Added 39 tests covering all methods and security invariants (plaintext never in DB, tamper detection, UNIQUE enforcement, soft-delete lifecycle).",
+  "files_changed": [
+    "src/credentials/migrations/001_create_credentials_table.sql",
+    "src/credentials/credentialService.ts",
+    "src/__tests__/credential-service.test.ts"
+  ]
+}
