@@ -735,6 +735,259 @@ export async function getActiveStorageRulesetName(accessToken: string, gcpProjec
 }
 
 // ---------------------------------------------------------------------------
+// Firebase Identity Toolkit — Auth provider configuration
+// ---------------------------------------------------------------------------
+
+export interface FirebaseAuthProviderConfig {
+  name?: string;
+  enabled?: boolean;
+  clientId?: string;
+  clientSecret?: string;
+}
+
+/**
+ * Enables Firebase Identity Toolkit (Firebase Auth) on a GCP project.
+ * Calls the Identity Toolkit REST API to set up the Firebase Auth configuration.
+ */
+export async function enableIdentityToolkit(
+  accessToken: string,
+  gcpProjectId: string,
+): Promise<void> {
+  await gcpRequest(
+    'PATCH',
+    'identitytoolkit.googleapis.com',
+    `/v2/projects/${gcpProjectId}/config?updateMask=signIn`,
+    accessToken,
+    JSON.stringify({
+      signIn: {
+        allowDuplicateEmails: false,
+        anonymous: { enabled: false },
+        email: { enabled: true, passwordRequired: true },
+      },
+    }),
+  );
+  console.log(`[gcp-api] Firebase Identity Toolkit configured for project "${gcpProjectId}".`);
+}
+
+/**
+ * Retrieves the current Firebase Auth configuration for a project.
+ */
+export async function getFirebaseAuthConfig(
+  accessToken: string,
+  gcpProjectId: string,
+): Promise<Record<string, unknown>> {
+  const res = await gcpRequest(
+    'GET',
+    'identitytoolkit.googleapis.com',
+    `/v2/projects/${gcpProjectId}/config`,
+    accessToken,
+  );
+  return JSON.parse(res.body) as Record<string, unknown>;
+}
+
+/**
+ * Configures an OAuth provider (Google / Apple) in Firebase Identity Toolkit.
+ * Uses the Firebase Auth v2 OAuth IdP config API.
+ */
+export async function configureFirebaseOAuthProvider(
+  accessToken: string,
+  gcpProjectId: string,
+  provider: 'google.com' | 'apple.com',
+  clientId: string,
+  clientSecret: string,
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    enabled: true,
+    clientId,
+    clientSecret,
+    displayName: provider === 'google.com' ? 'Google' : 'Apple',
+  };
+
+  const idpConfigId = provider === 'google.com' ? 'google.com' : 'apple.com';
+
+  try {
+    await gcpRequest(
+      'PATCH',
+      'identitytoolkit.googleapis.com',
+      `/v2/projects/${gcpProjectId}/oauthIdpConfigs/${idpConfigId}?updateMask=enabled,clientId,clientSecret`,
+      accessToken,
+      JSON.stringify(body),
+    );
+  } catch (err) {
+    if (err instanceof GcpHttpError && err.statusCode === 404) {
+      await gcpRequest(
+        'POST',
+        'identitytoolkit.googleapis.com',
+        `/v2/projects/${gcpProjectId}/oauthIdpConfigs?oauthIdpConfigId=${idpConfigId}`,
+        accessToken,
+        JSON.stringify(body),
+      );
+    } else {
+      throw err;
+    }
+  }
+  console.log(`[gcp-api] Configured Firebase OAuth provider "${provider}" for project "${gcpProjectId}".`);
+}
+
+/**
+ * Adds a redirect URI to the Firebase Auth authorized domains list.
+ */
+export async function addFirebaseAuthorizedDomain(
+  accessToken: string,
+  gcpProjectId: string,
+  domain: string,
+): Promise<void> {
+  const configRes = await gcpRequest(
+    'GET',
+    'identitytoolkit.googleapis.com',
+    `/v2/projects/${gcpProjectId}/config`,
+    accessToken,
+  );
+  const config = JSON.parse(configRes.body) as { authorizedDomains?: string[] };
+  const current = config.authorizedDomains ?? [];
+  if (current.includes(domain)) return;
+
+  await gcpRequest(
+    'PATCH',
+    'identitytoolkit.googleapis.com',
+    `/v2/projects/${gcpProjectId}/config?updateMask=authorizedDomains`,
+    accessToken,
+    JSON.stringify({ authorizedDomains: [...current, domain] }),
+  );
+  console.log(`[gcp-api] Added authorized domain "${domain}" to Firebase Auth for project "${gcpProjectId}".`);
+}
+
+/**
+ * Configures Apple Sign-In as a Firebase Auth OIDC provider.
+ */
+export async function configureAppleSignInProvider(
+  accessToken: string,
+  gcpProjectId: string,
+  teamId: string,
+  keyId: string,
+  serviceId: string,
+): Promise<void> {
+  const body = {
+    enabled: true,
+    displayName: 'Apple',
+    issuer: 'https://appleid.apple.com',
+    clientId: serviceId,
+    responseType: { idToken: true },
+    extraParams: {
+      team_id: teamId,
+      key_id: keyId,
+    },
+  };
+
+  const oidcId = 'oidc.apple';
+  try {
+    await gcpRequest(
+      'PATCH',
+      'identitytoolkit.googleapis.com',
+      `/v2/projects/${gcpProjectId}/oauthIdpConfigs/${oidcId}?updateMask=enabled,displayName,issuer,clientId,responseType,extraParams`,
+      accessToken,
+      JSON.stringify(body),
+    );
+  } catch (err) {
+    if (err instanceof GcpHttpError && err.statusCode === 404) {
+      await gcpRequest(
+        'POST',
+        'identitytoolkit.googleapis.com',
+        `/v2/projects/${gcpProjectId}/oauthIdpConfigs?oauthIdpConfigId=${oidcId}`,
+        accessToken,
+        JSON.stringify(body),
+      );
+    } else {
+      throw err;
+    }
+  }
+  console.log(`[gcp-api] Configured Apple Sign-In for Firebase project "${gcpProjectId}".`);
+}
+
+/**
+ * Uploads an APNs key to Firebase Cloud Messaging for iOS push notifications.
+ */
+export async function uploadApnsKeyToFirebase(
+  accessToken: string,
+  gcpProjectId: string,
+  apnsKeyP8: string,
+  keyId: string,
+  teamId: string,
+): Promise<void> {
+  await gcpRequest(
+    'PATCH',
+    'fcm.googleapis.com',
+    `/v1/projects/${gcpProjectId}/androidConfig`,
+    accessToken,
+    JSON.stringify({
+      apnsConfig: {
+        fcmOptions: {},
+      },
+    }),
+  );
+
+  await gcpRequest(
+    'PATCH',
+    'firebase.googleapis.com',
+    `/v1beta1/projects/${gcpProjectId}:addFirebaseToGoogleProject`,
+    accessToken,
+    JSON.stringify({
+      iosApnsCertificate: {
+        certificate: apnsKeyP8,
+        certType: 1,
+      },
+    }),
+  );
+  console.log(`[gcp-api] Uploaded APNs key (keyId=${keyId}, teamId=${teamId}) to Firebase project "${gcpProjectId}".`);
+}
+
+/**
+ * Adds a SHA-1 fingerprint (from Google Play signing) to a Firebase Android app.
+ */
+export async function addSha1FingerprintToFirebase(
+  accessToken: string,
+  gcpProjectId: string,
+  androidAppId: string,
+  sha1Fingerprint: string,
+): Promise<void> {
+  await gcpRequest(
+    'POST',
+    'firebase.googleapis.com',
+    `/v1beta1/projects/${gcpProjectId}/androidApps/${androidAppId}:addShaCertificate`,
+    accessToken,
+    JSON.stringify({
+      certType: 'SHA_1',
+      shaHash: sha1Fingerprint.replace(/:/g, ''),
+    }),
+  );
+  console.log(`[gcp-api] Added SHA-1 fingerprint to Firebase Android app "${androidAppId}" on project "${gcpProjectId}".`);
+}
+
+// ---------------------------------------------------------------------------
+// Cloud Billing API
+// ---------------------------------------------------------------------------
+
+/**
+ * Checks whether billing is enabled on a GCP project.
+ */
+export async function checkBillingEnabled(
+  accessToken: string,
+  gcpProjectId: string,
+): Promise<{ enabled: boolean; billingAccountName: string | null }> {
+  const res = await gcpRequest(
+    'GET',
+    'cloudbilling.googleapis.com',
+    `/v1/projects/${gcpProjectId}/billingInfo`,
+    accessToken,
+  );
+  const info = JSON.parse(res.body) as { billingEnabled?: boolean; billingAccountName?: string };
+  return {
+    enabled: info.billingEnabled === true,
+    billingAccountName: info.billingAccountName ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 

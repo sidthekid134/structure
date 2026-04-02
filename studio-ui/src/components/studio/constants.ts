@@ -26,7 +26,7 @@ import type {
 } from './types';
 
 /** @deprecated Import DEFAULT_ENVIRONMENTS from CreateProjectModal instead */
-export const DEFAULT_ENVIRONMENTS = ['qa', 'production'];
+export const DEFAULT_ENVIRONMENTS = ['preview', 'production'];
 export const SLUG_MAX = 25;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -281,13 +281,13 @@ export const INFRA_CATEGORIES: InfraPluginCategory[] = [
         provider: 'Expo',
         description: 'Managed cloud builds for iOS and Android with environment profiles and build caching.',
         configFields: [
-          { key: 'defaultProfile', label: 'Default Build Profile', placeholder: 'development', type: 'select', options: ['development', 'staging', 'production'] },
+          { key: 'defaultProfile', label: 'Default Build Profile', placeholder: 'development', type: 'select', options: ['development', 'preview', 'production'] },
           { key: 'node', label: 'Node Version', placeholder: '20', type: 'select', options: ['18', '20', '22'] },
         ],
         setupTasks: [
           { id: 'eas-1', title: 'Authenticate with Expo', description: 'Validate robot token and resolve account slug', duration: 1000 },
           { id: 'eas-2', title: 'Create EAS project', description: 'Initialize EAS project linked to bundle ID', duration: 1500 },
-          { id: 'eas-3', title: 'Generate eas.json', description: 'Create build profiles: development, staging, production', duration: 700 },
+          { id: 'eas-3', title: 'Generate eas.json', description: 'Create build profiles: development, preview, production', duration: 700 },
           { id: 'eas-4', title: 'Configure environment secrets', description: 'Upload API keys and secrets to EAS secret store', duration: 900 },
         ],
       },

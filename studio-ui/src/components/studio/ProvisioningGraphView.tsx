@@ -31,7 +31,7 @@ import type {
   ProvisioningStepNode,
 } from './types';
 import { OAuthFlowPanel } from './OAuthFlowPanel';
-import { api } from './helpers';
+import { api, provisioningNodeDescription } from './helpers';
 import { useOAuthSession } from '../../hooks/useOAuthSession';
 import { effectiveUserActionInteractiveAction } from './user-action-interactive';
 import {
@@ -39,6 +39,7 @@ import {
   getPrimaryHref,
   isVaultPlaceholder,
   mergeResourcePresentation,
+  resolvedNodePortalLinks,
 } from './provisioning-display-registry';
 
 // ---------------------------------------------------------------------------
@@ -342,7 +343,7 @@ interface NodeCardProps {
   nodeStates: Record<string, NodeState>;
   environments: string[];
   projectId: string;
-  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void;
+  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
   onRunNode: (nodeKey: string) => void;
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
@@ -351,8 +352,19 @@ interface NodeCardProps {
 function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onSyncAndRefresh, isGloballyRunning }: NodeCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [credentialInput, setCredentialInput] = useState('');
+  const [userActionBusy, setUserActionBusy] = useState(false);
+
+  const completeUserAction = async () => {
+    setUserActionBusy(true);
+    try {
+      await Promise.resolve(onUserActionComplete(node.key));
+    } finally {
+      setUserActionBusy(false);
+    }
+  };
 
   const upstream = useMemo(() => collectUpstreamResources(nodeStates), [nodeStates]);
+  const portalLinks = useMemo(() => resolvedNodePortalLinks(node, upstream), [node, upstream]);
 
   const effectiveStatus = getEffectiveStatus(node, nodeStates, environments);
   const meta = getProviderMeta(node);
@@ -417,7 +429,9 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
           <span className={`text-sm font-semibold ${effectiveStatus === 'blocked' || effectiveStatus === 'not-started' ? 'text-muted-foreground' : 'text-foreground'}`}>
             {node.label}
           </span>
-          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug line-clamp-1">{node.description}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug line-clamp-1">
+            {provisioningNodeDescription(node, environments)}
+          </p>
           {/* Inline resource chips — shown for step nodes before completion */}
           {node.type === 'step' && node.produces.length > 0 && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
             <div className="flex flex-wrap gap-1 mt-1.5">
@@ -445,11 +459,11 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               type="button"
               onClick={(e) => { e.stopPropagation(); onRunNode(node.key); }}
               disabled={isGloballyRunning}
-              title="Run this step"
+              title={effectiveStatus === 'waiting-on-user' ? 'Verify this step' : 'Run this step'}
               className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-primary bg-primary/10 border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Play size={9} />
-              RUN
+              {effectiveStatus === 'waiting-on-user' ? 'VERIFY' : 'RUN'}
             </button>
           )}
           {/* User-action nodes — interactive action (e.g. OAuth) — expand to use */}
@@ -471,12 +485,27 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               return (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); onUserActionComplete(node.key); }}
+                  onClick={(e) => { e.stopPropagation(); void completeUserAction(); }}
+                  disabled={userActionBusy}
                   title="Mark as completed"
-                  className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20 transition-colors"
+                  className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20 transition-colors disabled:opacity-40"
                 >
-                  <CheckCircle2 size={9} />
+                  {userActionBusy ? <Loader2 size={9} className="animate-spin" /> : <CheckCircle2 size={9} />}
                   DONE
+                </button>
+              );
+            }
+            if (ua.verification.type === 'api-check') {
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); void completeUserAction(); }}
+                  disabled={userActionBusy}
+                  title="Verify with Expo that the GitHub App is installed for this repo owner"
+                  className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 border-indigo-500/30 hover:bg-indigo-500/20 transition-colors disabled:opacity-40"
+                >
+                  {userActionBusy ? <Loader2 size={9} className="animate-spin" /> : <ScanSearch size={9} />}
+                  VERIFY
                 </button>
               );
             }
@@ -511,7 +540,9 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
             className="overflow-hidden"
           >
             <div className="border-t border-border px-3 pb-3 pt-2.5 space-y-3">
-              <p className="text-[11px] text-muted-foreground leading-relaxed">{node.description}</p>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                {provisioningNodeDescription(node, environments)}
+              </p>
 
               {/* Per-env status breakdown */}
               {perEnvInstances && (
@@ -527,6 +558,25 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
 
               {/* Resources produced */}
               <ResourcesSection node={node} nodeStates={nodeStates} environments={environments} upstream={upstream} />
+
+              {/* Node-level portal links (docs, dashboards, settings) */}
+              {portalLinks.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {portalLinks.map((link) => (
+                    <a
+                      key={`${node.key}:${link.label}:${link.href}`}
+                      href={link.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-primary bg-primary/10 border border-primary/30 px-2 py-1 rounded-md hover:bg-primary/15 transition-colors"
+                    >
+                      <ExternalLink size={10} />
+                      {link.label}
+                    </a>
+                  ))}
+                </div>
+              )}
 
               {/* OAuth step nodes: the RUN button triggers the OAuth flow automatically
                   when no token is stored. No separate sign-in panel is needed here. */}
@@ -588,18 +638,30 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
                   {(node as UserActionNode).verification.type === 'manual-confirm' && (
                     <button
                       type="button"
-                      onClick={() => onUserActionComplete(node.key)}
-                      className="flex items-center gap-1.5 bg-amber-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-amber-600 transition-colors"
+                      disabled={userActionBusy}
+                      onClick={() => void completeUserAction()}
+                      className="flex items-center gap-1.5 bg-amber-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-50"
                     >
-                      <CheckCircle2 size={11} />
+                      {userActionBusy ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
                       Mark as Completed
                     </button>
                   )}
 
                   {(node as UserActionNode).verification.type === 'api-check' && (
-                    <p className="text-[11px] text-muted-foreground italic">
-                      Verification: {((node as UserActionNode).verification as { type: 'api-check'; description: string }).description}
-                    </p>
+                    <div className="space-y-2">
+                      <p className="text-[11px] text-muted-foreground">
+                        {((node as UserActionNode).verification as { type: 'api-check'; description: string }).description}
+                      </p>
+                      <button
+                        type="button"
+                        disabled={userActionBusy}
+                        onClick={() => void completeUserAction()}
+                        className="flex items-center gap-1.5 bg-indigo-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                      >
+                        {userActionBusy ? <Loader2 size={11} className="animate-spin" /> : <ScanSearch size={11} />}
+                        Verify installation
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -636,7 +698,7 @@ interface PhaseGroupProps {
   nodeStates: Record<string, NodeState>;
   environments: string[];
   projectId: string;
-  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void;
+  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
   onRunNodes: (nodeKeys: string[]) => void;
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
@@ -780,7 +842,7 @@ interface ProvisioningGraphViewProps {
   projectId: string;
   plan: ProvisioningPlanResponse | null;
   onPlanChange: (plan: ProvisioningPlanResponse) => void;
-  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => Promise<void>;
+  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
   onRefresh: () => Promise<void>;
 }
 
@@ -929,22 +991,27 @@ export function ProvisioningGraphView({
   };
 
   const handleUserActionComplete = async (nodeKey: string, resources?: Record<string, string>) => {
-    await onUserActionComplete(nodeKey, resources);
-    if (plan) {
-      const updated = {
-        ...plan,
-        nodeStates: {
-          ...plan.nodeStates,
-          [nodeKey]: {
-            ...plan.nodeStates[nodeKey],
-            nodeKey,
-            status: 'completed' as const,
-            completedAt: Date.now(),
-            resourcesProduced: resources ?? {},
+    setRunError(null);
+    try {
+      await onUserActionComplete(nodeKey, resources);
+      if (plan) {
+        const updated = {
+          ...plan,
+          nodeStates: {
+            ...plan.nodeStates,
+            [nodeKey]: {
+              ...plan.nodeStates[nodeKey],
+              nodeKey,
+              status: 'completed' as const,
+              completedAt: Date.now(),
+              resourcesProduced: resources ?? {},
+            },
           },
-        },
-      };
-      onPlanChange(updated);
+        };
+        onPlanChange(updated);
+      }
+    } catch (err) {
+      setRunError((err as Error).message);
     }
   };
 
@@ -1070,7 +1137,7 @@ export function ProvisioningGraphView({
         {runError && (
           <div className="mt-3 pt-3 border-t border-border flex items-start gap-2 text-xs text-red-600 dark:text-red-400">
             <AlertCircle size={13} className="shrink-0 mt-0.5" />
-            <span>Failed to start: {runError}</span>
+            <span>Error: {runError}</span>
           </div>
         )}
 

@@ -8,6 +8,7 @@ import type {
   ProvisioningStepNode,
   UserActionNode,
 } from './graph.types.js';
+import { MODULE_CATALOG } from './module-catalog.js';
 
 // ---------------------------------------------------------------------------
 // Phase ids (fixed journey order for UX + tie-breaking)
@@ -94,7 +95,6 @@ export function semanticJourneyPhase(node: ProvisioningNode): JourneyPhaseId {
     if (
       k.includes('inject-secrets') ||
       k.includes('deploy-workflows') ||
-      k.includes('webhook') ||
       k.includes('workflow')
     ) {
       return 'cicd';
@@ -300,6 +300,30 @@ export interface PlanViewModel {
   journeyPhaseByNodeKey: Record<string, JourneyPhaseId>;
   journeyPhaseOrder: JourneyPhaseId[];
   sequentialExecutionItems: ExecutionPlanItem[];
+  /** Maps node key → module id for attribution in the UI. */
+  moduleByNodeKey: Record<string, string>;
+  /** Maps module id → human-readable label. */
+  moduleLabelById: Record<string, string>;
+}
+
+function buildModuleByNodeKey(): { moduleByNodeKey: Record<string, string>; moduleLabelById: Record<string, string> } {
+  const moduleByNodeKey: Record<string, string> = {};
+  const moduleLabelById: Record<string, string> = {};
+
+  for (const mod of Object.values(MODULE_CATALOG)) {
+    moduleLabelById[mod.id] = mod.label;
+    for (const key of mod.stepKeys) {
+      if (!(key in moduleByNodeKey)) moduleByNodeKey[key] = mod.id;
+    }
+    for (const key of mod.teardownStepKeys) {
+      if (!(key in moduleByNodeKey)) moduleByNodeKey[key] = mod.id;
+    }
+    for (const key of mod.userActionKeys ?? []) {
+      if (!(key in moduleByNodeKey)) moduleByNodeKey[key] = mod.id;
+    }
+  }
+
+  return { moduleByNodeKey, moduleLabelById };
 }
 
 export function buildPlanViewModel(
@@ -324,11 +348,15 @@ export function buildPlanViewModel(
     journeyPhaseOrder.push(phase);
   }
 
+  const { moduleByNodeKey, moduleLabelById } = buildModuleByNodeKey();
+
   return {
     canonicalNodeOrder,
     journeyPhaseByNodeKey,
     journeyPhaseOrder,
     sequentialExecutionItems,
+    moduleByNodeKey,
+    moduleLabelById,
   };
 }
 

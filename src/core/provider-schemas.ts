@@ -13,7 +13,7 @@ import {
 
 export const PROVIDER_SECRET_SCHEMAS: Readonly<Record<ProviderType, string[]>> = {
   firebase: ['service_account_json', 'api_key', 'fcm_key'],
-  github: ['token', 'webhook_secret'],
+  github: ['token'],
   eas: ['eas_token', 'expo_token'],
   apple: ['certificate_pem', 'apns_key', 'p12_password'],
   'google-play': ['service_account_json', 'keystore_password'],
@@ -128,7 +128,14 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
         label: 'Project Slug',
         required: true,
         source: 'project',
-        description: 'Used to standardize generated GCP project naming.',
+        description: 'Short identifier for GCP project IDs and other systems that do not allow hostnames.',
+      },
+      {
+        key: 'project_domain',
+        label: 'App Domain',
+        required: true,
+        source: 'project',
+        description: 'Hostname from project creation (deep links, auth authorized domains, Cloudflare).',
       },
       {
         key: 'gcp_auth_method',
@@ -191,6 +198,13 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
         source: 'integration',
         description: 'Token used to authenticate EAS build and submit workflows.',
       },
+      {
+        key: 'project_slug',
+        label: 'Project Slug',
+        required: true,
+        source: 'project',
+        description: 'Used as the EAS / Expo project name (hostnames are not valid there).',
+      },
     ],
     plannedResources: [
       {
@@ -216,13 +230,43 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
   cloudflare: {
     provider: 'cloudflare',
     scope: 'project',
-    dependencies: [],
+    dependencies: [
+      {
+        key: 'project_domain',
+        label: 'App Domain',
+        required: true,
+        source: 'project',
+        description: 'Zone and DNS records use the hostname from project creation.',
+      },
+      {
+        key: 'project_slug',
+        label: 'Project Slug',
+        required: true,
+        source: 'project',
+        description: 'Short identifier for resource names that cannot use the full domain.',
+      },
+    ],
     plannedResources: [],
   },
   oauth: {
     provider: 'oauth',
     scope: 'project',
-    dependencies: [],
+    dependencies: [
+      {
+        key: 'project_domain',
+        label: 'App Domain',
+        required: true,
+        source: 'project',
+        description: 'Redirect URIs and Firebase authorized domains use this hostname.',
+      },
+      {
+        key: 'project_slug',
+        label: 'Project Slug',
+        required: true,
+        source: 'project',
+        description: 'Fallback naming where a hostname is not allowed.',
+      },
+    ],
     plannedResources: [],
   },
 };

@@ -6,7 +6,7 @@ import {
   PROVIDER_PLUGIN_MAP,
   REGISTRY_CATEGORIES,
 } from './constants';
-import { api, bundleFromSlug, formatDate, providerToBackendKey, slugify } from './helpers';
+import { api, bundleIdFromAppDomain, formatDate, isValidAppHostname, providerToBackendKey, slugify } from './helpers';
 import {
   CreateProjectModal,
   DEFAULT_ENVIRONMENTS,
@@ -49,10 +49,8 @@ export default function PlatformStudio() {
   const [createForm, setCreateForm] = useState<CreateProjectForm>({
     name: '',
     slug: '',
-    bundleId: 'com.example',
+    domain: '',
     description: '',
-    githubOrg: '',
-    easAccount: '',
     environments: DEFAULT_ENVIRONMENTS,
     templateId: 'mobile-app',
     modules: DEFAULT_MODULE_IDS,
@@ -398,18 +396,24 @@ export default function PlatformStudio() {
   async function createProject(): Promise<void> {
     if (!createForm.name.trim()) throw new Error('Project name is required.');
     if (!createForm.slug.trim()) throw new Error('Project slug is required.');
-    if (!createForm.bundleId.trim()) throw new Error('Bundle ID is required.');
+    if (!isValidAppHostname(createForm.domain)) {
+      throw new Error('Enter a valid app domain (e.g. app.example.com).');
+    }
+    const domain = createForm.domain.trim().toLowerCase();
+    const bundleId = bundleIdFromAppDomain(domain);
+    if (!bundleId) {
+      throw new Error('Could not derive a bundle ID from that domain.');
+    }
     const payload = await api<{ project: { id: string } }>('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: createForm.name.trim(),
         slug: createForm.slug.trim(),
-        bundleId: createForm.bundleId.trim(),
+        domain,
+        bundleId,
         description: createForm.description.trim(),
-        githubOrg: createForm.githubOrg.trim() || undefined,
-        easAccount: createForm.easAccount.trim() || undefined,
-        environments: createForm.environments.filter((e) => e.trim().length > 0),
+        environments: createForm.environments,
         modules: createForm.modules,
       }),
     });
@@ -417,10 +421,8 @@ export default function PlatformStudio() {
     setCreateForm({
       name: '',
       slug: '',
-      bundleId: 'com.example',
+      domain: '',
       description: '',
-      githubOrg: '',
-      easAccount: '',
       environments: DEFAULT_ENVIRONMENTS,
       templateId: 'mobile-app',
       modules: DEFAULT_MODULE_IDS,
@@ -502,7 +504,9 @@ export default function PlatformStudio() {
                 : view === 'overview'
                   ? 'Manage projects and infrastructure across the organization'
                   : projectDetail
-                    ? `${projectDetail.project.slug} · updated ${formatDate(projectDetail.project.updatedAt)}`
+                    ? `${projectDetail.project.slug}${
+                        projectDetail.project.domain ? ` · ${projectDetail.project.domain}` : ''
+                      } · updated ${formatDate(projectDetail.project.updatedAt)}`
                     : 'Select a project to continue'
             }
             isDark={isDark}
@@ -593,7 +597,7 @@ export default function PlatformStudio() {
           onChange={(next: CreateProjectForm) => {
             const nameChanged = next.name !== createForm.name;
             const slugChangedByUser = next.slug !== createForm.slug;
-            const bundleChangedByUser = next.bundleId !== createForm.bundleId;
+            const domainNorm = next.domain.trim().toLowerCase();
 
             const prevAutoSlug = slugify(createForm.name);
             const slugWasAuto = createForm.slug === prevAutoSlug || createForm.slug === '';
@@ -607,19 +611,7 @@ export default function PlatformStudio() {
               slug = next.slug;
             }
 
-            const prevAutoBundleId = bundleFromSlug(prevAutoSlug);
-            const bundleWasAuto = createForm.bundleId === prevAutoBundleId || createForm.bundleId === 'com.example';
-
-            let bundleId: string;
-            if (bundleChangedByUser) {
-              bundleId = next.bundleId.trim().toLowerCase();
-            } else if (bundleWasAuto) {
-              bundleId = bundleFromSlug(slug);
-            } else {
-              bundleId = next.bundleId;
-            }
-
-            setCreateForm({ ...next, slug, bundleId });
+            setCreateForm({ ...next, slug, domain: domainNorm });
           }}
           onCreate={() => void createProject().catch((error: Error) => notify(error.message, 'error'))}
         />

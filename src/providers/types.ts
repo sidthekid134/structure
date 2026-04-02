@@ -47,7 +47,7 @@ export const PROVIDER_DEPENDENCY_ORDER: readonly ProviderType[] = [
 // Shared supporting types
 // ---------------------------------------------------------------------------
 
-export type Environment = 'dev' | 'preview' | 'prod';
+export type Environment = 'development' | 'preview' | 'production';
 
 export interface BranchProtectionRule {
   branch: string;
@@ -95,6 +95,10 @@ export interface EasManifestConfig {
   project_name: string;
   organization?: string;
   environments: Environment[];
+  /** iOS bundle id from the Studio project — used when wiring App Store Connect API key in Expo for EAS Submit. */
+  bundle_id?: string;
+  /** Android application id — defaults to bundle_id when not set separately. */
+  android_package?: string;
 }
 
 export interface AppleManifestConfig {

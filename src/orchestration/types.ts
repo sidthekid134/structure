@@ -95,6 +95,8 @@ export interface OrchestrationOptions {
    * @default 'sequential'
    */
   stepExecutionMode?: 'parallel' | 'sequential';
+  /** Merged into step `upstreamResources` before execution (e.g. app domain from project settings). */
+  initialUpstreamResources?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------

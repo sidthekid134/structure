@@ -1,6 +1,6 @@
 /**
  * EAS (Expo Application Services) adapter — initializes EAS projects and
- * manages environment variables scoped to dev, preview, and production.
+ * manages environment variables scoped to development, preview, and production.
  */
 
 import * as crypto from 'crypto';
@@ -18,6 +18,8 @@ import {
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
+import type { GitHubApiClient } from './github.js';
+import { ExpoGraphqlEasApiClient } from './expo-graphql-eas-client.js';
 
 // ---------------------------------------------------------------------------
 // API client interface
@@ -26,6 +28,8 @@ import type { LoggingCallback } from '../types.js';
 export interface EasApiClient {
   createProject(projectName: string, organization?: string): Promise<string>;
   getProject(projectName: string, organization?: string): Promise<string | null>;
+  /** Permanently remove the Expo app / EAS project (async on Expo's side). */
+  deleteProject(projectId: string): Promise<void>;
   uploadEnvFile(
     projectId: string,
     environment: Environment,
@@ -42,6 +46,8 @@ export class StubEasApiClient implements EasApiClient {
   async getProject(_projectName: string, _organization?: string): Promise<string | null> {
     return null;
   }
+
+  async deleteProject(_projectId: string): Promise<void> {}
 
   async uploadEnvFile(
     _projectId: string,
@@ -61,12 +67,26 @@ export class StubEasApiClient implements EasApiClient {
 // EAS adapter
 // ---------------------------------------------------------------------------
 
+function parseGithubHttpsRepo(url: string): { owner: string; repo: string } {
+  const u = url.trim().replace(/\.git$/i, '');
+  const m = u.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\/|$)/i);
+  if (!m) {
+    throw new AdapterError(
+      `Expected a github.com repository URL (https://github.com/owner/repo), got: ${url}`,
+      'eas',
+      'executeStep',
+    );
+  }
+  return { owner: m[1]!, repo: m[2]! };
+}
+
 export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
   private readonly log: ReturnType<typeof createOperationLogger>;
 
   constructor(
     private readonly apiClient: EasApiClient = new StubEasApiClient(),
     loggingCallback?: LoggingCallback,
+    private readonly githubClient?: GitHubApiClient,
   ) {
     this.log = createOperationLogger('EasAdapter', loggingCallback);
   }
@@ -106,11 +126,14 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
       state.resource_ids['project_id'] = projectId;
       state.completed_steps.push('create_project');
 
-      // Step 2: Initialize env var slots for each environment
+      // Step 2: Mark each Studio environment on the Expo app (EAS env-var slots).
       for (const env of config.environments) {
         try {
-          // Upload empty env file initially; credentials will be added via secret management
-          await this.apiClient.uploadEnvFile(projectId, env, {});
+          if (this.apiClient instanceof ExpoGraphqlEasApiClient) {
+            await this.apiClient.ensureStudioEasEnvironmentMarkerOnApp(projectId, env);
+          } else {
+            await this.apiClient.uploadEnvFile(projectId, env, {});
+          }
           state.resource_ids[`env_${env}`] = 'initialized';
           state.completed_steps.push(`init_env_${env}`);
           this.log.info('EAS environment initialized', { env, projectId });
@@ -149,18 +172,159 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
         return { status: 'completed', resourcesProduced: { eas_project_id: projectId } };
       }
       case 'eas:configure-build-profiles': {
-        const env = (context.environment ?? config.environments[0] ?? 'dev') as Environment;
-        await this.apiClient.uploadEnvFile(context.upstreamResources['eas_project_id'] ?? '', env, {});
-        return { status: 'completed', resourcesProduced: {} };
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          throw new AdapterError(
+            'Configure build profiles requires the real Expo GraphQL client (Expo token).',
+            'eas',
+            'executeStep',
+          );
+        }
+        const env = (context.environment ?? config.environments[0] ?? 'development') as Environment;
+        const appId = context.upstreamResources['eas_project_id'] ?? '';
+        if (!appId) {
+          throw new AdapterError('Create the EAS project first (missing eas_project_id).', 'eas', 'executeStep');
+        }
+        await expo.ensureStudioEasEnvironmentMarkerOnApp(appId, env);
+        return {
+          status: 'completed',
+          resourcesProduced: {},
+          userPrompt:
+            'Studio recorded which EAS environment slot matches this Studio environment. You must still maintain `eas.json` build profiles (development / preview / production) in your app repository — Expo builds read that file, not Studio.',
+        };
       }
-      case 'eas:link-github':
-        return { status: 'completed', resourcesProduced: {} };
-      case 'eas:store-token-in-github':
-        return { status: 'completed', resourcesProduced: {} };
-      case 'eas:configure-submit-apple':
-        return { status: 'completed', resourcesProduced: {} };
-      case 'eas:configure-submit-android':
-        return { status: 'completed', resourcesProduced: {} };
+      case 'eas:store-token-in-github': {
+        if (!this.githubClient) {
+          throw new AdapterError(
+            'Storing the Expo token in GitHub requires a GitHub PAT (organization settings).',
+            'eas',
+            'executeStep',
+          );
+        }
+        const repoUrl = context.upstreamResources['github_repo_url'] ?? '';
+        if (!repoUrl) {
+          throw new AdapterError('Missing github_repo_url — create the GitHub repository first.', 'eas', 'executeStep');
+        }
+        const { owner, repo } = parseGithubHttpsRepo(repoUrl);
+        const token =
+          context.upstreamResources['expo_token']?.trim() ||
+          (await context.vaultRead('eas/expo_token'))?.trim();
+        if (!token) {
+          throw new AdapterError(
+            'No Expo robot token available. Connect EAS under organization settings so the token is stored in the vault.',
+            'eas',
+            'executeStep',
+          );
+        }
+        await this.githubClient.setRepositorySecret(owner, repo, 'EXPO_TOKEN', token);
+        return {
+          status: 'completed',
+          resourcesProduced: {},
+          userPrompt:
+            'GitHub Actions can use secret EXPO_TOKEN. Reference it in workflow env (e.g. EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}).',
+        };
+      }
+      case 'eas:configure-submit-apple': {
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          throw new AdapterError('Configure EAS Submit (Apple) requires the real Expo GraphQL client.', 'eas', 'executeStep');
+        }
+        const appId = context.upstreamResources['eas_project_id'] ?? '';
+        const bundleId = config.bundle_id?.trim();
+        if (!appId || !bundleId) {
+          throw new AdapterError(
+            'Missing eas_project_id or bundle_id. Ensure the Studio project has a bundle id and the EAS project exists.',
+            'eas',
+            'executeStep',
+          );
+        }
+        const issuer =
+          (await context.vaultRead(`${context.projectId}/asc_issuer_id`))?.trim() ||
+          (await context.vaultRead(`${context.projectId}/app_store_connect_issuer_id`))?.trim();
+        const keyId = context.upstreamResources['asc_api_key_id']?.trim();
+        let p8 =
+          context.upstreamResources['asc_api_key_p8'] === 'vaulted'
+            ? null
+            : context.upstreamResources['asc_api_key_p8']?.trim();
+        if (!p8) p8 = (await context.vaultRead(`${context.projectId}/asc_api_key_p8`))?.trim() ?? null;
+        if (!issuer || !keyId || !p8) {
+          throw new AdapterError(
+            'App Store Connect API key material is incomplete. Store: (1) Issuer ID in vault as ' +
+              `${context.projectId}/asc_issuer_id, (2) Key ID from Apple (asc_api_key_id from the Apple step or vault), ` +
+              '(3) The .p8 private key contents in vault as ' +
+              `${context.projectId}/asc_api_key_p8. ` +
+              'Generate the key in App Store Connect → Users and Access → Keys.',
+            'eas',
+            'executeStep',
+          );
+        }
+        await expo.configureIosEasSubmit({
+          expoAppId: appId,
+          organization: config.organization,
+          bundleId,
+          issuerIdentifier: issuer,
+          keyIdentifier: keyId,
+          keyP8: p8,
+        });
+        return {
+          status: 'completed',
+          resourcesProduced: {},
+          userPrompt:
+            'Expo is configured to use this ASC API key for iOS submissions. You still need valid `eas.json` submit profile(s) and matching credentials in the repo or EAS.',
+        };
+      }
+      case 'eas:configure-submit-android': {
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          throw new AdapterError(
+            'Configure EAS Submit (Android) requires the real Expo GraphQL client.',
+            'eas',
+            'executeStep',
+          );
+        }
+        const appId = context.upstreamResources['eas_project_id'] ?? '';
+        const pkg = (config.android_package ?? config.bundle_id)?.trim();
+        if (!appId || !pkg) {
+          throw new AdapterError(
+            'Missing eas_project_id or Android application id. Set the Studio project bundle / package id.',
+            'eas',
+            'executeStep',
+          );
+        }
+        const jsonRaw =
+          (await context.vaultRead(`${context.projectId}/google_play_service_account_json`)) ??
+          (await context.vaultRead(`${context.projectId}/play_service_account_json`));
+        if (!jsonRaw?.trim()) {
+          throw new AdapterError(
+            'Google Play service account JSON not found. Upload it to the vault as ' +
+              `${context.projectId}/google_play_service_account_json (JSON key with Play Console API access).`,
+            'eas',
+            'executeStep',
+          );
+        }
+        let jsonKey: Record<string, unknown>;
+        try {
+          jsonKey = JSON.parse(jsonRaw) as Record<string, unknown>;
+        } catch {
+          throw new AdapterError(
+            'google_play_service_account_json in the vault is not valid JSON.',
+            'eas',
+            'executeStep',
+          );
+        }
+        await expo.configureAndroidEasSubmit({
+          expoAppId: appId,
+          organization: config.organization,
+          androidApplicationId: pkg,
+          googleServiceAccountJson: jsonKey,
+        });
+        return {
+          status: 'completed',
+          resourcesProduced: {},
+          userPrompt:
+            'Expo stores a Google Play service account key for Android submissions. Confirm `eas.json` submit config and Play Console API access for that service account.',
+        };
+      }
       default:
         throw new AdapterError(`Unknown EAS step: ${stepKey}`, 'eas', 'executeStep');
     }
@@ -239,7 +403,11 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
         for (const diff of report.differences) {
           if (diff.conflict_type === 'missing_in_live' && diff.field.startsWith('environment.')) {
             const env = diff.field.replace('environment.', '') as Environment;
-            await this.apiClient.uploadEnvFile(projectId, env, {});
+            if (this.apiClient instanceof ExpoGraphqlEasApiClient) {
+              await this.apiClient.ensureStudioEasEnvironmentMarkerOnApp(projectId, env);
+            } else {
+              await this.apiClient.uploadEnvFile(projectId, env, {});
+            }
             report.live_state.resource_ids[`env_${env}`] = 'initialized';
           }
         }

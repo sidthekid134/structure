@@ -6,8 +6,8 @@
  *   SHA-256(masterPassphrase + providerId + environment + secretName)
  *
  * Scoping rules:
- *   - dev and preview environments SHARE secrets (same vault entry)
- *   - prod is ISOLATED — a secret cannot exist in both prod and dev/preview
+ *   - development and preview environments SHARE secrets (same vault entry)
+ *   - production is ISOLATED — a secret cannot exist in both production and development/preview
  *
  * Authorization:
  *   - Each operation requires an appId and ownerId/collaborators check
@@ -24,11 +24,11 @@ import type { Environment, ProviderType } from '../providers/types.js';
 import { PROVIDER_SECRET_SCHEMAS } from '../core/provider-schemas.js';
 
 // ---------------------------------------------------------------------------
-// Scoping rule: dev and preview share the same scope key
+// Scoping rule: development and preview share the same scope key
 // ---------------------------------------------------------------------------
 
 function scopeKey(environment: Environment): 'shared' | 'prod' {
-  return environment === 'prod' ? 'prod' : 'shared';
+  return environment === 'production' ? 'prod' : 'shared';
 }
 
 // ---------------------------------------------------------------------------

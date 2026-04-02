@@ -46,10 +46,10 @@ describe('pruneNodesWithUnresolvedDependencies', () => {
 describe('buildProvisioningPlan default providers', () => {
   it('does not fail when EAS is selected without Apple / Google Play (cross-provider submit steps pruned)', () => {
     expect(() =>
-      buildProvisioningPlan('proj', ['firebase', 'github', 'eas'], ['qa', 'production']),
+      buildProvisioningPlan('proj', ['firebase', 'github', 'eas'], ['development', 'production']),
     ).not.toThrow();
 
-    const plan = buildProvisioningPlan('proj', ['firebase', 'github', 'eas'], ['qa', 'production']);
+    const plan = buildProvisioningPlan('proj', ['firebase', 'github', 'eas'], ['development', 'production']);
     const keys = new Set(plan.nodes.map((n) => n.key));
     expect(keys.has('eas:configure-submit-apple')).toBe(false);
     expect(keys.has('eas:configure-submit-android')).toBe(false);
@@ -59,7 +59,7 @@ describe('buildProvisioningPlan default providers', () => {
     const plan = buildProvisioningPlan(
       'proj',
       ['firebase', 'github', 'eas', 'apple', 'google-play'],
-      ['qa', 'production'],
+      ['development', 'production'],
     );
     const keys = new Set(plan.nodes.map((n) => n.key));
     expect(keys.has('eas:configure-submit-apple')).toBe(true);

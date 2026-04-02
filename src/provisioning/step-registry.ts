@@ -94,20 +94,6 @@ export const USER_ACTIONS: UserActionNode[] = [
   },
   {
     type: 'user-action',
-    key: 'user:acquire-domain',
-    label: 'Domain Name',
-    description:
-      'Purchase or verify ownership of a domain for deep links, universal links, and web presence.',
-    category: 'external-configuration',
-    provider: 'cloudflare',
-    verification: { type: 'manual-confirm' },
-    dependencies: [],
-    produces: [
-      { key: 'domain_name', label: 'Domain', description: 'The registered domain name' },
-    ],
-  },
-  {
-    type: 'user-action',
     key: 'user:confirm-dns-nameservers',
     label: 'Update DNS Nameservers',
     description: "Point your domain's nameservers to Cloudflare at your registrar.",
@@ -148,6 +134,26 @@ export const USER_ACTIONS: UserActionNode[] = [
     produces: [
       { key: 'expo_token', label: 'Expo Token', description: 'Robot token for EAS API' },
     ],
+  },
+  {
+    type: 'user-action',
+    key: 'user:install-expo-github-app',
+    label: 'Install Expo GitHub App',
+    description:
+      'In Expo account settings, install/activate the Expo GitHub App for your GitHub user/org and grant it access to this repository.',
+    category: 'external-configuration',
+    provider: 'eas',
+    verification: {
+      type: 'api-check',
+      description:
+        'Expo GraphQL: this Expo project must show the same GitHub repo linked as in Studio (owner + repo from your created repository)',
+    },
+    helpUrl: 'https://docs.expo.dev/eas-update/github-integration/',
+    dependencies: [
+      { nodeKey: 'eas:create-project', required: true },
+      { nodeKey: 'github:create-repository', required: true },
+    ],
+    produces: [],
   },
   {
     type: 'user-action',
@@ -352,7 +358,7 @@ export const CLOUDFLARE_STEPS: ProvisioningStepNode[] = [
     provider: 'cloudflare',
     environmentScope: 'global',
     automationLevel: 'full',
-    dependencies: [{ nodeKey: 'user:acquire-domain', required: true }],
+    dependencies: [],
     produces: [
       {
         key: 'cloudflare_zone_id',
@@ -474,45 +480,6 @@ export const GITHUB_STEPS: ProvisioningStepNode[] = [
   },
   {
     type: 'step',
-    key: 'github:create-environments',
-    label: 'Create GitHub Environments',
-    description: 'Create deployment environments with protection rules.',
-    provider: 'github',
-    environmentScope: 'per-environment',
-    automationLevel: 'full',
-    dependencies: [{ nodeKey: 'github:create-repository', required: true }],
-    produces: [
-      {
-        key: 'github_environment_id',
-        label: 'Environment ID',
-        description: 'GitHub environment identifier',
-      },
-    ],
-    estimatedDurationMs: 3000,
-  },
-  {
-    type: 'step',
-    key: 'github:inject-secrets',
-    label: 'Inject Environment Secrets',
-    description:
-      'Store Firebase SA key, API keys, and provider tokens as GitHub environment secrets.',
-    provider: 'github',
-    environmentScope: 'per-environment',
-    automationLevel: 'full',
-    bridgeTarget: 'firebase',
-    dependencies: [
-      { nodeKey: 'github:create-environments', required: true },
-      {
-        nodeKey: 'firebase:generate-sa-key',
-        required: true,
-        description: 'Firebase service account key to inject',
-      },
-    ],
-    produces: [],
-    estimatedDurationMs: 5000,
-  },
-  {
-    type: 'step',
     key: 'github:deploy-workflows',
     label: 'Deploy CI/CD Workflows',
     description: 'Create build, test, and deploy workflow YAML files.',
@@ -522,24 +489,6 @@ export const GITHUB_STEPS: ProvisioningStepNode[] = [
     dependencies: [{ nodeKey: 'github:create-repository', required: true }],
     produces: [],
     estimatedDurationMs: 5000,
-  },
-  {
-    type: 'step',
-    key: 'github:configure-webhook',
-    label: 'Configure Webhook',
-    description: 'Set up webhook for drift detection and event triggers.',
-    provider: 'github',
-    environmentScope: 'global',
-    automationLevel: 'full',
-    dependencies: [{ nodeKey: 'github:create-repository', required: true }],
-    produces: [
-      {
-        key: 'github_webhook_id',
-        label: 'Webhook ID',
-        description: 'GitHub webhook identifier',
-      },
-    ],
-    estimatedDurationMs: 3000,
   },
 ];
 
@@ -731,7 +680,7 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
     key: 'eas:configure-build-profiles',
     label: 'Configure Build Profiles',
     description:
-      'Set up EAS build profiles for each environment (development, preview, production).',
+      'Registers each Studio environment on the Expo app as an EAS env-var slot (marker variable). You must still edit eas.json in your repository for real build profile names, settings, and credentials.',
     provider: 'eas',
     environmentScope: 'per-environment',
     automationLevel: 'full',
@@ -741,25 +690,10 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
   },
   {
     type: 'step',
-    key: 'eas:link-github',
-    label: 'Link GitHub Repository',
-    description: 'Connect the EAS project to the GitHub repository for automated builds.',
-    provider: 'eas',
-    environmentScope: 'global',
-    automationLevel: 'full',
-    bridgeTarget: 'github',
-    dependencies: [
-      { nodeKey: 'eas:create-project', required: true },
-      { nodeKey: 'github:create-repository', required: true },
-    ],
-    produces: [],
-    estimatedDurationMs: 5000,
-  },
-  {
-    type: 'step',
     key: 'eas:store-token-in-github',
     label: 'Store EAS Token in GitHub',
-    description: 'Add the Expo robot token as a GitHub Actions secret.',
+    description:
+      'Creates or updates repository secret EXPO_TOKEN on the linked GitHub repo for GitHub Actions (use ${{ secrets.EXPO_TOKEN }} in workflows).',
     provider: 'eas',
     environmentScope: 'global',
     automationLevel: 'full',
@@ -775,7 +709,8 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
     type: 'step',
     key: 'eas:configure-submit-apple',
     label: 'Configure EAS Submit (Apple)',
-    description: 'Link the ASC API key to EAS for automated iOS submission.',
+    description:
+      'Uploads the App Store Connect API key to Expo and attaches it to this app for EAS Submit. Requires Issuer ID, Key ID, and .p8 in the vault; you still need eas.json submit config and valid iOS app identifiers in Expo.',
     provider: 'eas',
     environmentScope: 'global',
     automationLevel: 'full',
@@ -791,7 +726,8 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
     type: 'step',
     key: 'eas:configure-submit-android',
     label: 'Configure EAS Submit (Android)',
-    description: 'Link the Google Play service account to EAS for automated Android submission.',
+    description:
+      'Uploads the Play Console service account JSON to Expo and wires it for EAS Submit. Store the JSON in the project vault; confirm eas.json submit and Play API access separately.',
     provider: 'eas',
     environmentScope: 'global',
     automationLevel: 'full',
@@ -1112,19 +1048,6 @@ export const GITHUB_TEARDOWN_STEPS: ProvisioningStepNode[] = [
   },
   {
     type: 'step',
-    key: 'github:delete-environments',
-    label: 'Delete GitHub Environments',
-    description: 'Delete project environments and associated secrets.',
-    provider: 'github',
-    environmentScope: 'global',
-    automationLevel: 'full',
-    direction: 'teardown',
-    teardownOf: 'github:create-environments',
-    dependencies: [{ nodeKey: 'github:delete-workflows', required: true }],
-    produces: [],
-  },
-  {
-    type: 'step',
     key: 'github:delete-repository',
     label: 'Delete GitHub Repository',
     description: 'Delete the GitHub repository for this project.',
@@ -1133,7 +1056,7 @@ export const GITHUB_TEARDOWN_STEPS: ProvisioningStepNode[] = [
     automationLevel: 'assisted',
     direction: 'teardown',
     teardownOf: 'github:create-repository',
-    dependencies: [{ nodeKey: 'github:delete-environments', required: true }],
+    dependencies: [{ nodeKey: 'github:delete-workflows', required: true }],
     produces: [],
   },
 ];

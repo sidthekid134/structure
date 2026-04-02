@@ -160,6 +160,15 @@ export interface SequentialExecutionItem {
   environment?: string;
 }
 
+/** Returned with plan JSON from POST .../provisioning/plan/node/reset when automated cleanup needs a human step. */
+export interface RevertManualAction {
+  stepKey: string;
+  title: string;
+  body: string;
+  primaryUrl: string;
+  primaryLabel: string;
+}
+
 export interface ProvisioningPlanResponse {
   projectId: string;
   environments: string[];
@@ -172,6 +181,12 @@ export interface ProvisioningPlanResponse {
   /** Phases that appear in this plan, in sidebar order. */
   journeyPhaseOrder: JourneyPhaseId[];
   sequentialExecutionItems: SequentialExecutionItem[];
+  /** Maps node key → module id for attribution in the step detail view. */
+  moduleByNodeKey?: Record<string, string>;
+  /** Maps module id → human-readable label. */
+  moduleLabelById?: Record<string, string>;
+  /** nodeKey → resourceKey → human-readable name/identifier this step is expected to produce. */
+  plannedOutputPreviewByNodeKey?: Record<string, Record<string, string>>;
 }
 
 export type ModuleId =
@@ -383,6 +398,7 @@ export interface ProjectSummary {
   name: string;
   slug: string;
   bundleId: string;
+  domain: string;
   updatedAt: string;
   integration_progress: { configured: number; total: number };
 }
@@ -393,6 +409,7 @@ export interface ProjectDetail {
     name: string;
     slug: string;
     bundleId: string;
+    domain: string;
     updatedAt: string;
   };
   integrations: Record<string, unknown>;

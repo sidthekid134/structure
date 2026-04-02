@@ -111,7 +111,7 @@ function validateFirebase(
     errors.push(err(p, 'services', '"services" must be a non-empty array'));
   }
 
-  const validEnvs = ['dev', 'preview', 'prod'];
+  const validEnvs = ['development', 'preview', 'production'];
   if (!validEnvs.includes(config.environment)) {
     errors.push(err(p, 'environment', `"environment" must be one of: ${validEnvs.join(', ')}`));
   }

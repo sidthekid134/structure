@@ -35,8 +35,8 @@ export interface GitHubRateLimitError {
 }
 
 export interface GitHubApiClient {
-  createRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string }>;
-  getRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string } | null>;
+  createRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string; defaultBranch: string }>;
+  getRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string; defaultBranch: string } | null>;
   setBranchProtection(owner: string, repo: string, rule: BranchProtectionRule): Promise<void>;
   getBranchProtection(
     owner: string,
@@ -54,24 +54,30 @@ export interface GitHubApiClient {
   listEnvironmentSecrets(owner: string, repo: string, env: string): Promise<string[]>;
   deployWorkflow(owner: string, repo: string, filename: string, content: string): Promise<void>;
   listWorkflows(owner: string, repo: string): Promise<string[]>;
-  createWebhook(owner: string, repo: string, url: string, secret: string): Promise<{ id: number }>;
+  /** Repository-level Actions secret (not environment-scoped). */
+  setRepositorySecret(owner: string, repo: string, secretName: string, secretValue: string): Promise<void>;
+  /** Returns true if the named repository-level secret exists, false if absent. */
+  hasRepositorySecret(owner: string, repo: string, secretName: string): Promise<boolean>;
+  /** Deletes a repository-level Actions secret. Resolves without error if already absent. */
+  deleteRepositorySecret(owner: string, repo: string, secretName: string): Promise<void>;
 }
 
 export class StubGitHubApiClient implements GitHubApiClient {
   async createRepo(
     owner: string,
     name: string,
-  ): Promise<{ id: number; cloneUrl: string }> {
+  ): Promise<{ id: number; cloneUrl: string; defaultBranch: string }> {
     return {
       id: Math.floor(Math.random() * 1_000_000),
       cloneUrl: `https://github.com/${owner}/${name}.git`,
+      defaultBranch: 'main',
     };
   }
 
   async getRepo(
     _owner: string,
     _name: string,
-  ): Promise<{ id: number; cloneUrl: string } | null> {
+  ): Promise<{ id: number; cloneUrl: string; defaultBranch: string } | null> {
     return null;
   }
 
@@ -124,14 +130,26 @@ export class StubGitHubApiClient implements GitHubApiClient {
     return [];
   }
 
-  async createWebhook(
+  async setRepositorySecret(
     _owner: string,
     _repo: string,
-    _url: string,
-    _secret: string,
-  ): Promise<{ id: number }> {
-    return { id: Math.floor(Math.random() * 1_000_000) };
+    _secretName: string,
+    _secretValue: string,
+  ): Promise<void> {}
+
+  async hasRepositorySecret(
+    _owner: string,
+    _repo: string,
+    _secretName: string,
+  ): Promise<boolean> {
+    return false;
   }
+
+  async deleteRepositorySecret(
+    _owner: string,
+    _repo: string,
+    _secretName: string,
+  ): Promise<void> {}
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +173,7 @@ export class HttpGitHubApiClient implements GitHubApiClient {
     return data.id;
   }
 
-  async createRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string }> {
+  async createRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string; defaultBranch: string }> {
     const existing = await this.getRepo(owner, name);
     if (existing) return existing;
 
@@ -165,13 +183,21 @@ export class HttpGitHubApiClient implements GitHubApiClient {
     } catch {
       response = await this.octokit.repos.createForAuthenticatedUser({ name, auto_init: true, private: true });
     }
-    return { id: response.data.id, cloneUrl: response.data.clone_url };
+    return {
+      id: response.data.id,
+      cloneUrl: response.data.clone_url,
+      defaultBranch: response.data.default_branch ?? 'main',
+    };
   }
 
-  async getRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string } | null> {
+  async getRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string; defaultBranch: string } | null> {
     try {
       const { data } = await this.octokit.repos.get({ owner, repo: name });
-      return { id: data.id, cloneUrl: data.clone_url };
+      return {
+        id: data.id,
+        cloneUrl: data.clone_url,
+        defaultBranch: data.default_branch ?? 'main',
+      };
     } catch {
       return null;
     }
@@ -313,15 +339,43 @@ export class HttpGitHubApiClient implements GitHubApiClient {
     return [];
   }
 
-  async createWebhook(owner: string, repo: string, url: string, secret: string): Promise<{ id: number }> {
-    const { data } = await this.octokit.repos.createWebhook({
+  async setRepositorySecret(
+    owner: string,
+    repo: string,
+    secretName: string,
+    secretValue: string,
+  ): Promise<void> {
+    const { data: keyData } = await this.octokit.actions.getRepoPublicKey({
       owner,
       repo,
-      config: { url, content_type: 'json', secret },
-      events: ['push', 'pull_request', 'workflow_run'],
-      active: true,
     });
-    return { id: data.id };
+    const encryptedValue = await this.encryptSecret(keyData.key, secretValue);
+    await this.octokit.actions.createOrUpdateRepoSecret({
+      owner,
+      repo,
+      secret_name: secretName,
+      encrypted_value: encryptedValue,
+      key_id: keyData.key_id,
+    });
+  }
+
+  async hasRepositorySecret(owner: string, repo: string, secretName: string): Promise<boolean> {
+    try {
+      await this.octokit.actions.getRepoSecret({ owner, repo, secret_name: secretName });
+      return true;
+    } catch (err) {
+      if ((err as { status?: number })?.status === 404) return false;
+      throw err;
+    }
+  }
+
+  async deleteRepositorySecret(owner: string, repo: string, secretName: string): Promise<void> {
+    try {
+      await this.octokit.actions.deleteRepoSecret({ owner, repo, secret_name: secretName });
+    } catch (err) {
+      if ((err as { status?: number })?.status === 404) return;
+      throw err;
+    }
   }
 
   /**
@@ -352,7 +406,7 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment: \${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+    environment: \${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
     # Environments: ${envList}
     steps:
       - uses: actions/checkout@v4
@@ -368,7 +422,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: \${{ github.ref == 'refs/heads/main' && 'prod' || 'preview' }}
+    environment: \${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
     # Environments: ${envList}
     steps:
       - uses: actions/checkout@v4
@@ -526,8 +580,6 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
         return this.stepInjectSecrets(config, context);
       case 'github:deploy-workflows':
         return this.stepDeployWorkflows(config, context);
-      case 'github:configure-webhook':
-        return this.stepConfigureWebhook(config, context);
       default:
         throw new AdapterError(`Unknown GitHub step: ${stepKey}`, 'github', 'executeStep');
     }
@@ -541,19 +593,23 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
       ? await this.apiClient.getRepo(config.owner, config.repo_name)
       : null;
     let cloneUrl: string;
+    let repoId: number;
     if (existing) {
       cloneUrl = existing.cloneUrl;
+      repoId = existing.id;
     } else {
       const repo = await this.withRateLimit(() =>
         this.apiClient.createRepo(config.owner, config.repo_name),
       );
       cloneUrl = repo.cloneUrl;
+      repoId = repo.id;
     }
     const github_repo_url = cloneUrl.replace(/\.git$/i, '');
     return {
       status: 'completed',
       resourcesProduced: {
         github_repo_url,
+        github_repo_id: String(repoId),
       },
     };
   }
@@ -562,7 +618,7 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
     config: GitHubManifestConfig,
     context: StepContext,
   ): Promise<StepResult> {
-    const env = context.environment ?? config.environments[0] ?? 'dev';
+    const env = context.environment ?? config.environments[0] ?? 'development';
     const result = await this.withRateLimit(() =>
       this.apiClient.createEnvironment(config.owner, config.repo_name, env),
     );
@@ -576,7 +632,7 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
     config: GitHubManifestConfig,
     context: StepContext,
   ): Promise<StepResult> {
-    const env = context.environment ?? config.environments[0] ?? 'dev';
+    const env = context.environment ?? config.environments[0] ?? 'development';
     const injected: string[] = [];
 
     // Firebase service account key → FIREBASE_SERVICE_ACCOUNT
@@ -627,29 +683,6 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
     return { status: 'completed', resourcesProduced: {} };
   }
 
-  private async stepConfigureWebhook(
-    config: GitHubManifestConfig,
-    context: StepContext,
-  ): Promise<StepResult> {
-    const webhookUrl = process.env['STUDIO_WEBHOOK_URL']?.trim();
-    if (!webhookUrl) {
-      // No real webhook endpoint configured — skip rather than registering a
-      // dead placeholder URL that would produce noisy failed deliveries.
-      return {
-        status: 'completed',
-        resourcesProduced: { github_webhook_id: 'skipped-no-url' },
-      };
-    }
-    const secret = crypto.randomBytes(32).toString('hex');
-    const result = await this.withRateLimit(() =>
-      this.apiClient.createWebhook(config.owner, config.repo_name, webhookUrl, secret),
-    );
-    return {
-      status: 'completed',
-      resourcesProduced: { github_webhook_id: String(result.id) },
-    };
-  }
-
   // ---------------------------------------------------------------------------
   // checkStep() — verify whether a step's resource already exists
   // ---------------------------------------------------------------------------
@@ -665,12 +698,15 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
         const existing = await this.apiClient.getRepo(config.owner, config.repo_name);
         if (existing) {
           const github_repo_url = existing.cloneUrl.replace(/\.git$/i, '');
-          return { status: 'completed', resourcesProduced: { github_repo_url } };
+          return {
+            status: 'completed',
+            resourcesProduced: { github_repo_url, github_repo_id: String(existing.id) },
+          };
         }
         return { status: 'failed', resourcesProduced: {}, error: 'Repository not found' };
       }
       case 'github:create-environments': {
-        const env = context.environment ?? config.environments[0] ?? 'dev';
+        const env = context.environment ?? config.environments[0] ?? 'development';
         try {
           const result = await this.withRateLimit(() =>
             this.apiClient.createEnvironment(config.owner, config.repo_name, env),
@@ -681,7 +717,7 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
         }
       }
       case 'github:inject-secrets': {
-        const env = context.environment ?? config.environments[0] ?? 'dev';
+        const env = context.environment ?? config.environments[0] ?? 'development';
         try {
           const secrets = await this.withRateLimit(() =>
             this.apiClient.listEnvironmentSecrets(config.owner, config.repo_name, env),
@@ -706,9 +742,6 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
         } catch {
           return { status: 'failed', resourcesProduced: {}, error: 'Failed to list workflows' };
         }
-      }
-      case 'github:configure-webhook': {
-        return { status: 'completed', resourcesProduced: { github_webhook_id: 'check-skipped' } };
       }
       default:
         return { status: 'failed', resourcesProduced: {}, error: `Unknown step: ${stepKey}` };

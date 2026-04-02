@@ -24,6 +24,8 @@ export interface ModuleDefinition {
   optionalModules: ModuleId[];
   stepKeys: string[];
   teardownStepKeys: string[];
+  /** User-action node keys that belong to this module (for UI attribution). */
+  userActionKeys?: string[];
 }
 
 export type ProjectTemplateId = 'mobile-app' | 'web-app' | 'api-backend' | 'custom';
@@ -53,6 +55,7 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
       'firebase:register-android-app',
     ],
     teardownStepKeys: ['firebase:delete-gcp-project'],
+    userActionKeys: ['user:setup-gcp-billing'],
   },
   'firebase-auth': {
     id: 'firebase-auth',
@@ -101,8 +104,9 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
     provider: 'github',
     requiredModules: [],
     optionalModules: ['github-ci'],
-    stepKeys: ['github:create-repository', 'github:create-environments', 'github:configure-webhook'],
+    stepKeys: ['github:create-repository', 'github:create-environments'],
     teardownStepKeys: ['github:delete-repository'],
+    userActionKeys: ['user:provide-github-pat'],
   },
   'github-ci': {
     id: 'github-ci',
@@ -121,8 +125,9 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
     provider: 'eas',
     requiredModules: ['github-repo'],
     optionalModules: ['eas-submit'],
-    stepKeys: ['eas:create-project', 'eas:configure-build-profiles', 'eas:link-github', 'eas:store-token-in-github'],
+    stepKeys: ['eas:create-project', 'eas:configure-build-profiles', 'eas:store-token-in-github'],
     teardownStepKeys: ['eas:delete-project'],
+    userActionKeys: ['user:provide-expo-token', 'user:install-expo-github-app'],
   },
   'eas-submit': {
     id: 'eas-submit',
@@ -151,6 +156,7 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
       'apple:store-signing-in-eas',
     ],
     teardownStepKeys: ['apple:remove-app-store-listing', 'apple:revoke-signing-assets'],
+    userActionKeys: ['user:enroll-apple-developer'],
   },
   'google-play-publishing': {
     id: 'google-play-publishing',
@@ -167,6 +173,7 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
       'google-play:extract-fingerprints',
     ],
     teardownStepKeys: ['google-play:remove-app-listing', 'google-play:revoke-service-account'],
+    userActionKeys: ['user:enroll-google-play', 'user:upload-initial-aab'],
   },
   'cloudflare-domain': {
     id: 'cloudflare-domain',
@@ -184,6 +191,7 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
       'cloudflare:setup-android-asset-links',
     ],
     teardownStepKeys: ['cloudflare:remove-domain-zone'],
+    userActionKeys: ['user:confirm-dns-nameservers'],
   },
   'oauth-social': {
     id: 'oauth-social',

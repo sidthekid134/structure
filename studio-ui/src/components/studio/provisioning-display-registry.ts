@@ -74,11 +74,6 @@ const RESOURCE_DISPLAY_BY_KEY: Record<string, ResourceOutputPresentation> = {
       { label: 'GitHub Environments', hrefTemplate: '{upstream.github_repo_url}/settings/environments' },
     ],
   },
-  github_webhook_id: {
-    relatedLinks: [
-      { label: 'Webhooks', hrefTemplate: '{upstream.github_repo_url}/settings/hooks' },
-    ],
-  },
   eas_project_id: {
     primaryHrefTemplate: 'https://expo.dev/projects/{value}',
     relatedLinks: [{ label: 'Expo dashboard', href: 'https://expo.dev/' }],
@@ -158,15 +153,16 @@ const NODE_PORTAL_LINKS_BY_NODE_KEY: Record<string, CompletionPortalLink[]> = {
   'github:deploy-workflows': [
     { label: 'Actions', hrefTemplate: '{upstream.github_repo_url}/actions' },
   ],
-  'github:configure-webhook': [
-    { label: 'Webhooks', hrefTemplate: '{upstream.github_repo_url}/settings/hooks' },
-  ],
   'user:provide-github-pat': [{ label: 'GitHub token settings', href: 'https://github.com/settings/tokens' }],
   'user:provide-expo-token': [{ label: 'Expo access tokens', href: 'https://expo.dev/settings/access-tokens' }],
+  'user:install-expo-github-app': [
+    { label: 'Expo GitHub integration docs', href: 'https://docs.expo.dev/eas-update/github-integration/' },
+    { label: 'GitHub repository', hrefTemplate: '{upstream.github_repo_url}' },
+    { label: 'Expo account settings', href: 'https://expo.dev/settings' },
+  ],
   'user:setup-gcp-billing': [{ label: 'Google Cloud billing', href: 'https://console.cloud.google.com/billing' }],
   'user:enroll-apple-developer': [{ label: 'Apple Developer Program', href: 'https://developer.apple.com/programs/enroll/' }],
   'user:enroll-google-play': [{ label: 'Play Console signup', href: 'https://play.google.com/console/signup' }],
-  'user:acquire-domain': [{ label: 'Cloudflare domains', href: 'https://dash.cloudflare.com/' }],
 };
 
 function deepMergePresentation(

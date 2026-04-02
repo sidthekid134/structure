@@ -364,7 +364,9 @@ export class Orchestrator {
     const correlationId = crypto.randomUUID();
     const nodeMap = new Map<string, ProvisioningNode>(plan.nodes.map((n) => [n.key, n]));
 
-    const upstreamResources: Record<string, string> = {};
+    const upstreamResources: Record<string, string> = {
+      ...(options.initialUpstreamResources ?? {}),
+    };
 
     const runItem = async (item: {
       nodeKey: string;
@@ -383,8 +385,11 @@ export class Orchestrator {
         return undefined;
       }
 
-      if (nodeKeysFilter && !nodeKeysFilter.has(item.nodeKey)) {
-        return undefined;
+      if (nodeKeysFilter) {
+        const envSuffixed = item.environment ? `${item.nodeKey}@${item.environment}` : item.nodeKey;
+        if (!nodeKeysFilter.has(item.nodeKey) && !nodeKeysFilter.has(envSuffixed)) {
+          return undefined;
+        }
       }
 
       for (const dep of node.dependencies) {
@@ -672,7 +677,9 @@ export class Orchestrator {
   ): AsyncGenerator<StepProgressEvent, void, void> {
     const correlationId = crypto.randomUUID();
     const nodeMap = new Map<string, ProvisioningNode>(plan.nodes.map((n) => [n.key, n]));
-    const upstreamResources: Record<string, string> = {};
+    const upstreamResources: Record<string, string> = {
+      ...(options.initialUpstreamResources ?? {}),
+    };
 
     const executionGroups = StepResolver.resolveTeardownPlan(plan.nodes, plan.environments);
 

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { isValidProjectDomain, normalizeProjectDomain } from './project-identity.js';
 
 export type IntegrationProvider =
   | 'firebase'
@@ -66,6 +67,45 @@ const PROVIDERS: readonly IntegrationProvider[] = [
   'oauth',
 ] as const;
 const DEFAULT_PLATFORMS: MobilePlatform[] = ['ios', 'android'];
+export const EXPO_ENVIRONMENTS = ['development', 'preview', 'production'] as const;
+export const DEFAULT_EXPO_ENVIRONMENTS = ['preview', 'production'] as const;
+type ExpoEnvironment = (typeof EXPO_ENVIRONMENTS)[number];
+
+const ENVIRONMENT_ALIASES: Readonly<Record<string, ExpoEnvironment>> = {
+  development: 'development',
+  dev: 'development',
+  preview: 'preview',
+  qa: 'preview',
+  staging: 'preview',
+  production: 'production',
+  prod: 'production',
+};
+
+export function normalizeExpoEnvironments(input?: string[]): string[] {
+  if (!input?.length) {
+    return [...DEFAULT_EXPO_ENVIRONMENTS];
+  }
+
+  const unique = new Set<ExpoEnvironment>();
+  for (const environment of input) {
+    if (typeof environment !== 'string') {
+      throw new Error('Each environment must be a string.');
+    }
+    const normalized = ENVIRONMENT_ALIASES[environment.trim().toLowerCase()];
+    if (!normalized) {
+      throw new Error(
+        `Unsupported environment "${environment}". Supported environments: ${EXPO_ENVIRONMENTS.join(', ')}.`,
+      );
+    }
+    unique.add(normalized);
+  }
+
+  if (unique.size === 0) {
+    return [...DEFAULT_EXPO_ENVIRONMENTS];
+  }
+
+  return EXPO_ENVIRONMENTS.filter((environment) => unique.has(environment));
+}
 
 export class ProjectManager {
   private readonly projectsRoot: string;
@@ -179,6 +219,14 @@ export class ProjectManager {
       throw new Error('Bundle ID is required.');
     }
 
+    const domainRaw = input.domain?.trim() ?? '';
+    if (!isValidProjectDomain(domainRaw)) {
+      throw new Error(
+        'A valid project domain is required (e.g. app.example.com). Use letters, numbers, hyphens, and dots only.',
+      );
+    }
+    const domain = normalizeProjectDomain(domainRaw);
+
     const platforms = Array.from(new Set(input.platforms?.length ? input.platforms : DEFAULT_PLATFORMS));
     if (platforms.some((platform) => platform !== 'ios' && platform !== 'android')) {
       throw new Error('Platforms must be ios and/or android.');
@@ -209,9 +257,9 @@ export class ProjectManager {
         platform: platforms.length === 2 ? 'cross-platform' : platforms[0],
         githubOrg: input.githubOrg?.trim() ?? '',
         easAccount: input.easAccount?.trim() ?? '',
-        environments: input.environments?.length ? input.environments : ['qa', 'production'],
+        environments: normalizeExpoEnvironments(input.environments),
         platforms,
-        domain: input.domain?.trim() ?? '',
+        domain,
         plugins,
         createdAt: now,
         updatedAt: now,
@@ -225,10 +273,28 @@ export class ProjectManager {
 
   updateProjectInfo(
     projectId: string,
-    patch: Partial<Pick<ProjectInfo, 'name' | 'description' | 'repository' | 'platform'>>,
+    patch: Partial<Pick<ProjectInfo, 'name' | 'description' | 'repository' | 'platform' | 'domain'>>,
   ): ProjectModule {
     const module = this.getProject(projectId);
     const now = new Date().toISOString();
+
+    let domain = module.project.domain;
+    if (patch.domain !== undefined) {
+      const raw = patch.domain.trim();
+      if (raw === '') {
+        if (module.project.domain) {
+          throw new Error('Project domain cannot be cleared once set. Set a valid hostname.');
+        }
+      } else {
+        if (!isValidProjectDomain(raw)) {
+          throw new Error(
+            'Invalid domain. Use a hostname such as app.example.com (letters, numbers, hyphens, dots).',
+          );
+        }
+        domain = normalizeProjectDomain(raw);
+      }
+    }
+
     const updated: ProjectModule = {
       ...module,
       project: {
@@ -237,6 +303,7 @@ export class ProjectManager {
         description: patch.description?.trim() ?? module.project.description,
         repository: patch.repository?.trim() ?? module.project.repository,
         platform: patch.platform ?? module.project.platform,
+        domain,
         updatedAt: now,
       },
     };

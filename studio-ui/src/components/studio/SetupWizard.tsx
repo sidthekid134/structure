@@ -1,21 +1,35 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Bell,
+  Info,
   CheckCircle2,
+  Cloud,
+  Database,
   ExternalLink,
+  GitBranch,
+  Github,
+  Globe,
+  HardDrive,
+  KeyRound,
   Loader2,
   Lock,
+  Package,
   PauseCircle,
   Play,
   RefreshCw,
   ScanSearch,
   ShieldAlert,
+  ShieldCheck,
   SkipForward,
+  Smartphone,
   Undo2,
   Upload,
+  X,
   Zap,
 } from 'lucide-react';
-import { api } from './helpers';
+import type { LucideIcon } from 'lucide-react';
+import { api, provisioningNodeDescription } from './helpers';
 import { useOAuthSession } from '../../hooks/useOAuthSession';
 import { CompletedStepArtifactsPanel } from './CompletedStepArtifactsPanel';
 import {
@@ -26,10 +40,47 @@ import {
   type ProvisioningGraphNode,
   type ProvisioningPlanResponse,
   type ProvisioningStepNode,
+  type RevertManualAction,
   type UserActionNode,
 } from './types';
 import { OAuthFlowPanel } from './OAuthFlowPanel';
 import { effectiveUserActionInteractiveAction } from './user-action-interactive';
+
+// ---------------------------------------------------------------------------
+// Module display metadata — icon + color per module ID
+// ---------------------------------------------------------------------------
+
+interface ModuleDisplayMeta {
+  icon: LucideIcon;
+  iconColor: string;
+  bgColor: string;
+  borderColor: string;
+  textColor: string;
+}
+
+const MODULE_DISPLAY_META: Record<string, ModuleDisplayMeta> = {
+  'firebase-core':          { icon: Cloud,        iconColor: 'text-orange-500',              bgColor: 'bg-orange-500/10',   borderColor: 'border-orange-500/25',  textColor: 'text-orange-700 dark:text-orange-300' },
+  'firebase-auth':          { icon: ShieldCheck,   iconColor: 'text-violet-500',              bgColor: 'bg-violet-500/10',   borderColor: 'border-violet-500/25',  textColor: 'text-violet-700 dark:text-violet-300' },
+  'firebase-firestore':     { icon: Database,      iconColor: 'text-emerald-500',             bgColor: 'bg-emerald-500/10',  borderColor: 'border-emerald-500/25', textColor: 'text-emerald-700 dark:text-emerald-300' },
+  'firebase-storage':       { icon: HardDrive,     iconColor: 'text-cyan-500',                bgColor: 'bg-cyan-500/10',     borderColor: 'border-cyan-500/25',    textColor: 'text-cyan-700 dark:text-cyan-300' },
+  'firebase-messaging':     { icon: Bell,          iconColor: 'text-sky-500',                 bgColor: 'bg-sky-500/10',      borderColor: 'border-sky-500/25',     textColor: 'text-sky-700 dark:text-sky-300' },
+  'github-repo':            { icon: Github,        iconColor: 'text-slate-600 dark:text-slate-300', bgColor: 'bg-slate-500/10', borderColor: 'border-slate-500/25', textColor: 'text-slate-700 dark:text-slate-300' },
+  'github-ci':              { icon: GitBranch,     iconColor: 'text-slate-600 dark:text-slate-300', bgColor: 'bg-slate-500/10', borderColor: 'border-slate-500/25', textColor: 'text-slate-700 dark:text-slate-300' },
+  'eas-builds':             { icon: Smartphone,    iconColor: 'text-indigo-500',              bgColor: 'bg-indigo-500/10',   borderColor: 'border-indigo-500/25',  textColor: 'text-indigo-700 dark:text-indigo-300' },
+  'eas-submit':             { icon: Upload,        iconColor: 'text-indigo-500',              bgColor: 'bg-indigo-500/10',   borderColor: 'border-indigo-500/25',  textColor: 'text-indigo-700 dark:text-indigo-300' },
+  'apple-signing':          { icon: ShieldCheck,   iconColor: 'text-zinc-500',                bgColor: 'bg-zinc-500/10',     borderColor: 'border-zinc-500/25',    textColor: 'text-zinc-700 dark:text-zinc-300' },
+  'google-play-publishing': { icon: Play,          iconColor: 'text-green-500',               bgColor: 'bg-green-500/10',    borderColor: 'border-green-500/25',   textColor: 'text-green-700 dark:text-green-300' },
+  'cloudflare-domain':      { icon: Globe,         iconColor: 'text-amber-500',               bgColor: 'bg-amber-500/10',    borderColor: 'border-amber-500/25',   textColor: 'text-amber-700 dark:text-amber-300' },
+  'oauth-social':           { icon: KeyRound,      iconColor: 'text-violet-500',              bgColor: 'bg-violet-500/10',   borderColor: 'border-violet-500/25',  textColor: 'text-violet-700 dark:text-violet-300' },
+};
+
+const DEFAULT_MODULE_DISPLAY: ModuleDisplayMeta = {
+  icon: Package,
+  iconColor: 'text-muted-foreground',
+  bgColor: 'bg-muted',
+  borderColor: 'border-border',
+  textColor: 'text-muted-foreground',
+};
 
 interface GroupedSidebarStep {
   node: ProvisioningGraphNode;
@@ -94,6 +145,19 @@ function humanizeStatus(s: NodeStatus | undefined): string {
   if (!s) return 'not started';
   return s.replace(/-/g, ' ');
 }
+
+/** Expo robot tokens cannot call app deletion; server still returns a generic warning line. */
+function isExpoRobotDeleteRevertWarning(line: string): boolean {
+  return /robot access to this api is not supported/i.test(line);
+}
+
+type PlanNodeResetResponse = ProvisioningPlanResponse & {
+  revertWarnings?: string[];
+  revertManualActions?: RevertManualAction[];
+  needsReauth?: boolean;
+  sessionId?: string;
+  authUrl?: string;
+};
 
 /**
  * Required dependencies for one execution context (global node, or one per-env instance).
@@ -250,11 +314,41 @@ export function SetupWizard({
   const [isReverting, setIsReverting] = useState(false);
   const [isRevalidating, setIsRevalidating] = useState(false);
   const [isSkipping, setIsSkipping] = useState(false);
-  const [isSyncingPlan, setIsSyncingPlan] = useState(false);
+
   const [error, setError] = useState<string | null>(null);
+  const [syncInfo, setSyncInfo] = useState<string | null>(null);
   const [sidebarFocusIndex, setSidebarFocusIndex] = useState<number | null>(null);
+  const [revertManualGuide, setRevertManualGuide] = useState<RevertManualAction[] | null>(null);
+  const [manualRevertNodeKey, setManualRevertNodeKey] = useState<string | null>(null);
+  const [isFinalizingManualRevert, setIsFinalizingManualRevert] = useState(false);
 
   const gcpOAuthSession = useOAuthSession({ projectId, providerId: 'gcp' });
+
+  const applyPlanResetResponse = useCallback(
+    (result: PlanNodeResetResponse, revertedNodeKey: string) => {
+      onPlanChange(result);
+      void onRefresh();
+      const bannerWarnings =
+        result.revertWarnings?.filter((w) => !isExpoRobotDeleteRevertWarning(w)) ?? [];
+      if (result.revertManualActions?.length) {
+        setRevertManualGuide(result.revertManualActions);
+        setManualRevertNodeKey(revertedNodeKey);
+        if (bannerWarnings.length === 0) {
+          setSyncInfo(
+            'Manual cleanup is required on expo.dev. The step will be marked reverted after you confirm Done.',
+          );
+        }
+      } else {
+        setManualRevertNodeKey(null);
+      }
+      if (bannerWarnings.length > 0) {
+        setError(`Partial revert: ${bannerWarnings.join('; ')}`);
+      } else if (result.revertWarnings?.length && !result.revertManualActions?.length) {
+        setError(`Partial revert: ${result.revertWarnings.join('; ')}`);
+      }
+    },
+    [onPlanChange, onRefresh],
+  );
 
   const syncAndRefresh = useCallback(async () => {
     try {
@@ -299,6 +393,8 @@ export function SetupWizard({
 
   useEffect(() => {
     setSidebarFocusIndex(null);
+    setRevertManualGuide(null);
+    setManualRevertNodeKey(null);
   }, [projectId]);
 
   const currentNode = orderedNodes[displayIndex] ?? null;
@@ -353,6 +449,7 @@ export function SetupWizard({
   async function runCurrentStep() {
     if (!currentNode || currentNode.type !== 'step') return;
     setError(null);
+    setSyncInfo(null);
     setIsRunning(true);
     try {
       const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
@@ -413,6 +510,7 @@ export function SetupWizard({
   async function skipStep() {
     if (!currentNode || !plan) return;
     setError(null);
+    setSyncInfo(null);
     setIsSkipping(true);
     try {
       const updated = await api<ProvisioningPlanResponse>(
@@ -443,12 +541,11 @@ export function SetupWizard({
       return;
     }
     setError(null);
+    setSyncInfo(null);
     setIsReverting(true);
 
     async function executeRevert() {
-      const result = await api<
-        ProvisioningPlanResponse & { revertWarnings?: string[]; needsReauth?: boolean; sessionId?: string; authUrl?: string }
-      >(
+      const result = await api<PlanNodeResetResponse>(
         `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/reset`,
         {
           method: 'POST',
@@ -460,8 +557,7 @@ export function SetupWizard({
       if (result.needsReauth && result.authUrl && result.sessionId) {
         const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
         if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
-          // Re-authenticated — retry the revert now that we have a token.
-          const retried = await api<ProvisioningPlanResponse & { revertWarnings?: string[] }>(
+          const retried = await api<PlanNodeResetResponse>(
             `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/reset`,
             {
               method: 'POST',
@@ -469,22 +565,14 @@ export function SetupWizard({
               body: JSON.stringify({ nodeKey: currentNode!.key }),
             },
           );
-          onPlanChange(retried);
-          await onRefresh();
-          if (retried.revertWarnings?.length) {
-            setError(`Partial revert: ${retried.revertWarnings.join('; ')}`);
-          }
+          applyPlanResetResponse(retried, currentNode!.key);
         } else {
           setError(gcpOAuthSession.error ?? 'Google re-authentication failed. Please try again.');
         }
         return;
       }
 
-      onPlanChange(result);
-      await onRefresh();
-      if (result.revertWarnings?.length) {
-        setError(`Partial revert: ${result.revertWarnings.join('; ')}`);
-      }
+      applyPlanResetResponse(result, currentNode!.key);
     }
 
     try {
@@ -499,7 +587,9 @@ export function SetupWizard({
   async function revalidateStep() {
     if (!currentNode || currentNode.type !== 'step') return;
     setError(null);
+    setSyncInfo(null);
     setIsRevalidating(true);
+    const priorStatus = currentStatus;
     try {
       const res = await api<{
         supported: boolean;
@@ -514,15 +604,19 @@ export function SetupWizard({
       onPlanChange(res.plan);
       await onRefresh();
       if (!res.supported) {
-        setError(res.message ?? 'Revalidation is not available for this step.');
+        setSyncInfo(res.message ?? 'Sync is not available for this step.');
       } else if (res.results?.length) {
         const failed = res.results.filter((r) => !r.stillValid);
         if (failed.length > 0) {
-          setError(
-            failed.length === res.results.length
-              ? 'Revalidation failed: this step no longer matches upstream state and was reset.'
-              : `Revalidation: ${failed.length} environment(s) no longer match and were reset.`,
-          );
+          if (priorStatus === 'completed') {
+            setError(
+              failed.length === res.results.length
+                ? 'Resource no longer exists in the provider — step has been reset.'
+                : `${failed.length} environment(s) no longer exist and were reset.`,
+            );
+          } else {
+            setSyncInfo('Not created yet — run this step to provision the resource.');
+          }
         }
       }
     } catch (err) {
@@ -532,62 +626,43 @@ export function SetupWizard({
     }
   }
 
-  async function syncPlanStatus() {
+  async function finalizeManualRevert(): Promise<void> {
+    if (!manualRevertNodeKey) {
+      setRevertManualGuide(null);
+      setSyncInfo(null);
+      return;
+    }
+    setIsFinalizingManualRevert(true);
     setError(null);
-    setIsSyncingPlan(true);
-    const pinnedIndex = displayIndex;
     try {
-      const result = await api<{
-        ok?: boolean;
-        needsReauth?: boolean;
-        sessionId?: string;
-        authUrl?: string;
-        firebaseResults?: Array<{ nodeKey: string; reconciled: boolean; message: string }>;
-      }>(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-
-      if (result.needsReauth && result.authUrl && result.sessionId) {
-        const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
-        if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
-          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
-          });
-        } else {
-          setError(gcpOAuthSession.error ?? 'Google re-authentication failed. Please try again.');
-          setIsSyncingPlan(false);
-          return;
-        }
-        await onRefresh();
-        setSidebarFocusIndex(pinnedIndex);
-        setIsSyncingPlan(false);
-        return;
-      }
-
+      const updated = await api<ProvisioningPlanResponse>(
+        `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/reset/manual-complete`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeKey: manualRevertNodeKey }),
+        },
+      );
+      onPlanChange(updated);
       await onRefresh();
-      setSidebarFocusIndex(pinnedIndex);
-
-      const failed = result.firebaseResults?.filter((r) => !r.reconciled);
-      if (failed?.length) {
-        setError(
-          `Firebase sync issues:\n${failed.map((r) => `• ${r.nodeKey.replace('firebase:', '')}: ${r.message}`).join('\n')}`,
-        );
-      }
+      setRevertManualGuide(null);
+      setManualRevertNodeKey(null);
+      setSyncInfo(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
-      setIsSyncingPlan(false);
+      setIsFinalizingManualRevert(false);
     }
   }
+
 
   const showRevert =
     currentStatus === 'completed' || currentStatus === 'skipped' || currentStatus === 'failed';
   const showRevalidate =
-    currentNode?.type === 'step' && currentStatus === 'completed' && !isTeardown;
+    currentNode?.type === 'step' &&
+    currentStatus !== 'in-progress' &&
+    currentStatus !== 'waiting-on-user' &&
+    !isTeardown;
   const showSkip =
     Boolean(currentNode && plan) &&
     !['completed', 'skipped', 'in-progress'].includes(currentStatus) &&
@@ -602,6 +677,7 @@ export function SetupWizard({
   }
 
   return (
+    <>
     <div className="grid grid-cols-1 lg:grid-cols-[minmax(220px,300px)_1fr] gap-4">
       <nav
         aria-label="Setup steps"
@@ -709,17 +785,27 @@ export function SetupWizard({
             </button>
           )}
 
-          {isUserAction && currentStatus !== 'completed' && (
-            <button
-              type="button"
-              onClick={() => void submitUserAction()}
-              disabled={isSubmitting || !userActionCanSubmit}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-xs font-bold disabled:opacity-50"
-            >
-              {isSubmitting ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
-              {isSubmitting ? 'Submitting...' : 'Complete Step'}
-            </button>
-          )}
+          {isUserAction && currentStatus !== 'completed' && (() => {
+            const ua = currentNode as UserActionNode;
+            const verifyMode = ua.verification.type === 'api-check';
+            return (
+              <button
+                type="button"
+                onClick={() => void submitUserAction()}
+                disabled={isSubmitting || !userActionCanSubmit}
+                className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-xs font-bold disabled:opacity-50"
+              >
+                {isSubmitting ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : verifyMode ? (
+                  <ScanSearch size={13} />
+                ) : (
+                  <Upload size={13} />
+                )}
+                {isSubmitting ? 'Submitting...' : verifyMode ? 'Verify installation' : 'Complete Step'}
+              </button>
+            );
+          })()}
 
           {currentStatus === 'in-progress' && !isRunning && (
             <span className="inline-flex items-center gap-1.5 text-xs text-primary animate-pulse">
@@ -772,28 +858,11 @@ export function SetupWizard({
               type="button"
               onClick={() => void revalidateStep()}
               disabled={isRevalidating || planHasInProgress}
-              title={planHasInProgress ? 'Finish in-progress steps first' : undefined}
+              title={planHasInProgress ? 'Finish in-progress steps first' : 'Check if this step\'s resource still exists in the provider'}
               className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold text-muted-foreground hover:bg-muted/60 hover:text-foreground disabled:opacity-50"
             >
               {isRevalidating ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-              {isRevalidating ? 'Checking…' : 'Revalidate'}
-            </button>
-          ) : null}
-
-          {!isTeardown ? (
-            <button
-              type="button"
-              onClick={() => void syncPlanStatus()}
-              disabled={planHasInProgress || isRunning || isSyncingPlan}
-              title={
-                planHasInProgress
-                  ? 'Wait for in-progress steps to finish'
-                  : 'Walk the plan and reconcile statuses with live providers, then save (request finishes when sync is done)'
-              }
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold text-muted-foreground hover:bg-muted/60 hover:text-foreground disabled:opacity-50"
-            >
-              {isSyncingPlan ? <Loader2 size={13} className="animate-spin" /> : <ScanSearch size={13} />}
-              {isSyncingPlan ? 'Syncing…' : 'Sync status'}
+              {isRevalidating ? 'Syncing…' : 'Sync'}
             </button>
           ) : null}
         </div>
@@ -805,7 +874,28 @@ export function SetupWizard({
           </div>
         ) : null}
 
-        <div className={`rounded-xl border bg-card p-5 space-y-4 ${isTeardown ? 'border-red-500/30' : 'border-border'}`}>
+        {syncInfo ? (
+          <div className="rounded-lg border border-border bg-muted/40 p-3 flex items-start gap-2">
+            <Info size={14} className="text-muted-foreground mt-0.5 shrink-0" />
+            <p className="text-xs text-muted-foreground">{syncInfo}</p>
+          </div>
+        ) : null}
+
+        <div className={`rounded-xl border bg-card overflow-hidden ${isTeardown ? 'border-red-500/30' : 'border-border'}`}>
+          {(() => {
+            const moduleId = plan.moduleByNodeKey?.[currentNode.key];
+            const moduleLabel = moduleId ? (plan.moduleLabelById?.[moduleId] ?? moduleId) : null;
+            if (!moduleLabel || !moduleId) return null;
+            const meta = MODULE_DISPLAY_META[moduleId] ?? DEFAULT_MODULE_DISPLAY;
+            const ModuleIcon = meta.icon;
+            return (
+              <div className={`flex items-center gap-2 px-4 py-2 border-b ${meta.bgColor} ${meta.borderColor}`}>
+                <ModuleIcon size={12} className={`shrink-0 ${meta.iconColor}`} />
+                <span className={`text-[11px] font-semibold ${meta.textColor}`}>{moduleLabel}</span>
+              </div>
+            );
+          })()}
+          <div className="p-5 space-y-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
@@ -818,7 +908,9 @@ export function SetupWizard({
                 </p>
               ) : null}
               <h3 className="text-lg font-semibold mt-1">{currentNode.label}</h3>
-              <p className="text-sm text-muted-foreground mt-1">{currentNode.description}</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {provisioningNodeDescription(currentNode, plan.environments)}
+              </p>
               {currentBlockers.length > 0 ? (
                 <div
                   className="mt-3 rounded-lg border border-amber-500/35 bg-amber-500/5 p-3"
@@ -866,11 +958,20 @@ export function SetupWizard({
 
           {/* OAuth step nodes: the RUN button triggers OAuth automatically when needed. */}
 
-          {(currentStatus === 'completed' || currentStatus === 'skipped') && (
+          {currentNode.type === 'step' && currentNode.produces.length > 0 && (
             <CompletedStepArtifactsPanel
               node={currentNode}
               plan={plan}
-              terminalStatus={currentStatus === 'skipped' ? 'skipped' : 'completed'}
+              stepStatus={currentStatus}
+            />
+          )}
+
+          {(currentNode.type === 'user-action' || (currentNode.type === 'step' && currentNode.produces.length === 0)) &&
+            (currentStatus === 'completed' || currentStatus === 'skipped') && (
+            <CompletedStepArtifactsPanel
+              node={currentNode}
+              plan={plan}
+              stepStatus={currentStatus}
             />
           )}
 
@@ -937,7 +1038,11 @@ export function SetupWizard({
                     <ol className="list-decimal pl-4 text-xs text-muted-foreground space-y-1">
                       <li>Open the provider portal for this step.</li>
                       <li>Apply the required configuration exactly as described.</li>
-                      <li>Return here and mark the step complete.</li>
+                      <li>
+                        {userNode.verification.type === 'api-check'
+                          ? 'Return here and click Verify installation — Studio checks Expo before completing this step.'
+                          : 'Return here and mark the step complete.'}
+                      </li>
                     </ol>
                   </div>
                 )}
@@ -979,9 +1084,84 @@ export function SetupWizard({
               </div>
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>
+
+    {revertManualGuide && revertManualGuide.length > 0 ? (
+      <div
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="revert-manual-title"
+      >
+        <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-lg">
+          <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+            <div className="min-w-0">
+              <h2 id="revert-manual-title" className="text-base font-semibold text-foreground">
+                Manual step required
+              </h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Studio could not complete this cleanup with your current Expo token.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setRevertManualGuide(null);
+                setManualRevertNodeKey(null);
+                setSyncInfo(null);
+              }}
+              className="shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="Close"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="max-h-[min(60vh,420px)] overflow-y-auto px-5 py-4 space-y-5">
+            {revertManualGuide.map((action) => (
+              <div key={action.stepKey} className="space-y-2">
+                <h3 className="text-sm font-semibold text-foreground">{action.title}</h3>
+                <p className="text-sm text-muted-foreground leading-relaxed">{action.body}</p>
+                <a
+                  href={action.primaryUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary hover:underline"
+                >
+                  <ExternalLink size={14} />
+                  {action.primaryLabel}
+                </a>
+              </div>
+            ))}
+          </div>
+          <div className="border-t border-border px-5 py-3 flex justify-end gap-2">
+            <button
+              type="button"
+              disabled={isFinalizingManualRevert}
+              onClick={() => {
+                setRevertManualGuide(null);
+                setManualRevertNodeKey(null);
+                setSyncInfo(null);
+              }}
+              className="rounded-lg border border-border bg-card px-4 py-2 text-xs font-semibold text-muted-foreground hover:bg-muted disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isFinalizingManualRevert}
+              onClick={() => { void finalizeManualRevert(); }}
+              className="rounded-lg bg-primary px-4 py-2 text-xs font-bold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {isFinalizingManualRevert ? 'Finalizing…' : 'Done'}
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }
 

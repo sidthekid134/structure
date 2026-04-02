@@ -36,6 +36,25 @@ export interface StudioServerOptions {
   devMode?: boolean;
 }
 
+/** Safe request logging: field names + value shapes only (no raw secrets). */
+function describeJsonBodyShape(body: unknown, depth = 0): string {
+  if (body === null || body === undefined) return String(body);
+  if (depth > 4) return '…';
+  if (typeof body === 'string') return `string(${body.length} chars)`;
+  if (typeof body === 'number' || typeof body === 'boolean') return String(body);
+  if (Array.isArray(body)) {
+    if (body.length === 0) return '[]';
+    const first = describeJsonBodyShape(body[0], depth + 1);
+    return body.length === 1 ? `[${first}]` : `[${first}, … ×${body.length}]`;
+  }
+  if (typeof body === 'object') {
+    const o = body as Record<string, unknown>;
+    const parts = Object.keys(o).map((k) => `${k}=${describeJsonBodyShape(o[k], depth + 1)}`);
+    return `{${parts.join(', ')}}`;
+  }
+  return typeof body;
+}
+
 // ---------------------------------------------------------------------------
 // StudioServer
 // ---------------------------------------------------------------------------
@@ -99,13 +118,26 @@ export class StudioServer {
         const message = `[studio-api] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms)`;
         if (res.statusCode >= 500) {
           console.error(message);
-          return;
-        }
-        if (res.statusCode >= 400) {
+        } else if (res.statusCode >= 400) {
           console.warn(message);
-          return;
+        } else {
+          console.log(message);
         }
-        console.log(message);
+        // Second line: JSON body shape only (never log raw secrets / token values).
+        if (req.method !== 'GET' && req.method !== 'HEAD' && req.body && typeof req.body === 'object') {
+          const keys = Object.keys(req.body as object);
+          if (keys.length > 0) {
+            const detail = describeJsonBodyShape(req.body);
+            const line = `[studio-api]   req body: ${detail}`;
+            if (res.statusCode >= 500) {
+              console.error(line);
+            } else if (res.statusCode >= 400) {
+              console.warn(line);
+            } else {
+              console.log(line);
+            }
+          }
+        }
       });
       next();
     });
