@@ -207,6 +207,15 @@ export function ProjectDetailView({
             await loadPlan();
           }}
           onRefresh={loadPlan}
+          onRecomputePlan={async () => {
+            const modules = (plan?.selectedModules as ModuleId[]) ?? selectedModules;
+            await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/modules`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ modules }),
+            });
+            await loadPlan();
+          }}
         />
       )}
 

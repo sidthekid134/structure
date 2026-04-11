@@ -13,16 +13,13 @@ export const PLATFORM_CORE_VERSION = '1.0';
 // Provider type literals
 // ---------------------------------------------------------------------------
 
-export type ProviderType =
-  | 'firebase'
-  | 'github'
-  | 'eas'
-  | 'apple'
-  | 'google-play'
-  | 'cloudflare'
-  | 'oauth';
+/**
+ * Open branded string — built-in providers plus any plugin-contributed ones.
+ * Use BuiltinProviderType for exhaustive checks against the built-in set.
+ */
+export type ProviderType = string & { readonly __brand?: 'ProviderType' };
 
-export const PROVIDER_TYPES: readonly ProviderType[] = [
+export const BUILTIN_PROVIDERS = [
   'firebase',
   'github',
   'eas',
@@ -32,8 +29,13 @@ export const PROVIDER_TYPES: readonly ProviderType[] = [
   'oauth',
 ] as const;
 
-// Dependency order for reconciliation
-export const PROVIDER_DEPENDENCY_ORDER: readonly ProviderType[] = [
+export type BuiltinProviderType = (typeof BUILTIN_PROVIDERS)[number];
+
+/** @deprecated Use globalPluginRegistry.getProviders() for the full set including plugin providers */
+export const PROVIDER_TYPES: readonly string[] = BUILTIN_PROVIDERS;
+
+/** @deprecated Use globalPluginRegistry.resolveProviderOrder() */
+export const PROVIDER_DEPENDENCY_ORDER: readonly string[] = [
   'firebase',
   'github',
   'eas',
@@ -132,6 +134,12 @@ export interface OAuthManifestConfig {
   firebase_project_id: string;
 }
 
+/** Catch-all config for plugin-contributed providers not in the built-in set. */
+export interface CustomProviderConfig {
+  readonly provider: string;
+  [key: string]: unknown;
+}
+
 export type ProviderConfig =
   | FirebaseManifestConfig
   | GitHubManifestConfig
@@ -139,7 +147,8 @@ export type ProviderConfig =
   | AppleManifestConfig
   | GooglePlayManifestConfig
   | CloudflareManifestConfig
-  | OAuthManifestConfig;
+  | OAuthManifestConfig
+  | CustomProviderConfig;
 
 // ---------------------------------------------------------------------------
 // Provider manifest (top-level document)

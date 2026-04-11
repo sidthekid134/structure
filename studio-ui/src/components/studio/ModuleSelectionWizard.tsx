@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -7,6 +7,7 @@ import {
   Layers,
   LayoutGrid,
   Link2,
+  Lock,
   Package,
   Smartphone,
   Sparkles,
@@ -132,7 +133,7 @@ const MODULES: ModuleDefinition[] = [
   },
   {
     id: 'google-play-publishing',
-    label: 'Google Play Publishing',
+    label: 'Google Play',
     description: 'Play app setup and service account.',
     provider: 'google-play',
     functionGroupId: 'google-play',
@@ -209,7 +210,6 @@ const TEMPLATES: ProjectTemplate[] = [
   },
 ];
 
-/** Display order for capability sections (foundation → data → auth → delivery). */
 const FUNCTION_GROUP_ORDER: ModuleFunctionGroupId[] = [
   'cloud-foundation',
   'persistent-store',
@@ -226,7 +226,7 @@ const FUNCTION_GROUP_ORDER: ModuleFunctionGroupId[] = [
 
 const FUNCTION_GROUP_STYLE: Record<
   ModuleFunctionGroupId,
-  { title: string; subtitle: string; dot: string; ring: string; softBg: string }
+  { title: string; subtitle: string; dot: string; ring: string; softBg: string; accent: string }
 > = {
   'cloud-foundation': {
     title: 'Cloud & project foundation',
@@ -234,6 +234,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-orange-500',
     ring: 'ring-orange-500/20',
     softBg: 'from-orange-500/[0.07] to-transparent',
+    accent: 'hsl(25 95% 53%)',
   },
   'persistent-store': {
     title: 'Persistent store',
@@ -241,6 +242,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-emerald-500',
     ring: 'ring-emerald-500/20',
     softBg: 'from-emerald-500/[0.07] to-transparent',
+    accent: 'hsl(160 84% 39%)',
   },
   'object-storage': {
     title: 'Object & file storage',
@@ -248,6 +250,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-cyan-500',
     ring: 'ring-cyan-500/20',
     softBg: 'from-cyan-500/[0.07] to-transparent',
+    accent: 'hsl(189 94% 43%)',
   },
   messaging: {
     title: 'Messaging & push',
@@ -255,6 +258,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-sky-500',
     ring: 'ring-sky-500/20',
     softBg: 'from-sky-500/[0.07] to-transparent',
+    accent: 'hsl(199 89% 48%)',
   },
   'auth-identity': {
     title: 'Authentication & identity',
@@ -262,6 +266,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-violet-500',
     ring: 'ring-violet-500/20',
     softBg: 'from-violet-500/[0.07] to-transparent',
+    accent: 'hsl(263 70% 50%)',
   },
   'domain-edge': {
     title: 'Domain & edge',
@@ -269,6 +274,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-amber-500',
     ring: 'ring-amber-500/20',
     softBg: 'from-amber-500/[0.07] to-transparent',
+    accent: 'hsl(38 92% 50%)',
   },
   'source-control': {
     title: 'Source control',
@@ -276,6 +282,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-slate-500 dark:bg-slate-400',
     ring: 'ring-slate-500/20',
     softBg: 'from-slate-500/[0.07] to-transparent',
+    accent: 'hsl(215 16% 47%)',
   },
   'ci-automation': {
     title: 'CI & automation',
@@ -283,6 +290,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-blue-500',
     ring: 'ring-blue-500/20',
     softBg: 'from-blue-500/[0.07] to-transparent',
+    accent: 'hsl(221 83% 53%)',
   },
   'mobile-release': {
     title: 'Mobile builds & submit',
@@ -290,6 +298,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-indigo-500',
     ring: 'ring-indigo-500/20',
     softBg: 'from-indigo-500/[0.07] to-transparent',
+    accent: 'hsl(239 84% 67%)',
   },
   'apple-distribution': {
     title: 'Apple signing & distribution',
@@ -297,6 +306,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-zinc-500',
     ring: 'ring-zinc-500/20',
     softBg: 'from-zinc-500/[0.07] to-transparent',
+    accent: 'hsl(240 5% 65%)',
   },
   'google-play': {
     title: 'Google Play',
@@ -304,6 +314,7 @@ const FUNCTION_GROUP_STYLE: Record<
     dot: 'bg-green-500',
     ring: 'ring-green-500/20',
     softBg: 'from-green-500/[0.07] to-transparent',
+    accent: 'hsl(142 71% 45%)',
   },
 };
 
@@ -356,6 +367,46 @@ function moduleLabel(id: ModuleId): string {
   return MODULES.find((m) => m.id === id)?.label ?? id;
 }
 
+/** Compute the depth tier for each module in the DAG (0 = no deps, 1 = depends on tier-0, etc.). */
+function computeModuleTiers(mods: ModuleDefinition[]): Map<ModuleId, number> {
+  const byId = new Map(mods.map((m) => [m.id, m]));
+  const cache = new Map<ModuleId, number>();
+
+  const getTier = (id: ModuleId): number => {
+    const cached = cache.get(id);
+    if (cached !== undefined) return cached;
+    const mod = byId.get(id);
+    if (!mod || mod.requiredModules.length === 0) {
+      cache.set(id, 0);
+      return 0;
+    }
+    cache.set(id, 0); // cycle guard
+    const depth = Math.max(...mod.requiredModules.map(getTier)) + 1;
+    cache.set(id, depth);
+    return depth;
+  };
+
+  for (const m of mods) getTier(m.id);
+  return cache;
+}
+
+const TIER_LABELS: Record<number, { title: string; subtitle: string }> = {
+  0: { title: 'Foundation', subtitle: 'Start here' },
+  1: { title: 'Services', subtitle: 'Unlocked by foundation' },
+  2: { title: 'Integrations', subtitle: 'Require multiple services' },
+};
+
+type LineData = {
+  id: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  srcSelected: boolean;
+  dstSelected: boolean;
+  color: string;
+};
+
 export function ModuleSelectionWizard({
   variant = 'workspace',
   selectedTemplateId,
@@ -368,7 +419,6 @@ export function ModuleSelectionWizard({
   setupStepCount = null,
   savedModuleCount = null,
 }: {
-  /** `workspace`: full page with summary + save plan. `modal`: picker only (e.g. create project). */
   variant?: 'workspace' | 'modal';
   selectedTemplateId: ProjectTemplateId;
   selectedModuleIds: ModuleId[];
@@ -402,22 +452,95 @@ export function ModuleSelectionWizard({
     return map;
   }, [selectedSet, moduleById]);
 
-  const grouped = useMemo(() => {
-    const byGroup = new Map<ModuleFunctionGroupId, ModuleDefinition[]>();
-    for (const mod of MODULES) {
-      const list = byGroup.get(mod.functionGroupId) ?? [];
-      list.push(mod);
-      byGroup.set(mod.functionGroupId, list);
-    }
-    return FUNCTION_GROUP_ORDER.map((id) => [id, byGroup.get(id) ?? []] as const).filter(
-      ([, modules]) => modules.length > 0,
-    );
-  }, []);
-
   const selectedList = useMemo(
     () => MODULES.filter((m) => selectedSet.has(m.id)),
     [selectedSet],
   );
+
+  // ── Graph layout ──────────────────────────────────────────────────────────
+  const containerRef = useRef<HTMLDivElement>(null);
+  const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const [lines, setLines] = useState<LineData[]>([]);
+
+  const tiers = useMemo(() => computeModuleTiers(MODULES), []);
+
+  const columns = useMemo(() => {
+    const map = new Map<number, ModuleDefinition[]>();
+    for (const mod of MODULES) {
+      const t = tiers.get(mod.id) ?? 0;
+      if (!map.has(t)) map.set(t, []);
+      map.get(t)!.push(mod);
+    }
+    for (const mods of map.values()) {
+      mods.sort(
+        (a, b) =>
+          FUNCTION_GROUP_ORDER.indexOf(a.functionGroupId) -
+          FUNCTION_GROUP_ORDER.indexOf(b.functionGroupId),
+      );
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => a - b);
+  }, [tiers]);
+
+  const recomputeLines = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const cr = container.getBoundingClientRect();
+    const next: LineData[] = [];
+
+    for (const mod of MODULES) {
+      const toEl = cardRefs.current.get(mod.id);
+      if (!toEl) continue;
+      const toR = toEl.getBoundingClientRect();
+
+      for (const reqId of mod.requiredModules) {
+        const fromEl = cardRefs.current.get(reqId);
+        if (!fromEl) continue;
+        const fromR = fromEl.getBoundingClientRect();
+        const srcMod = MODULES.find((m) => m.id === reqId);
+        const color = srcMod ? FUNCTION_GROUP_STYLE[srcMod.functionGroupId].accent : 'hsl(var(--primary))';
+
+        next.push({
+          id: `${reqId}→${mod.id}`,
+          x1: fromR.right - cr.left,
+          y1: fromR.top + fromR.height / 2 - cr.top,
+          x2: toR.left - cr.left,
+          y2: toR.top + toR.height / 2 - cr.top,
+          srcSelected: selectedSet.has(reqId),
+          dstSelected: selectedSet.has(mod.id),
+          color,
+        });
+      }
+    }
+
+    setLines((prev) => {
+      if (prev.length !== next.length) return next;
+      for (let i = 0; i < next.length; i++) {
+        const a = prev[i], b = next[i];
+        if (
+          a.id !== b.id ||
+          Math.abs(a.x1 - b.x1) > 0.5 ||
+          Math.abs(a.y1 - b.y1) > 0.5 ||
+          Math.abs(a.x2 - b.x2) > 0.5 ||
+          Math.abs(a.y2 - b.y2) > 0.5 ||
+          a.srcSelected !== b.srcSelected ||
+          a.dstSelected !== b.dstSelected
+        )
+          return next;
+      }
+      return prev;
+    });
+  }, [selectedSet]);
+
+  useLayoutEffect(() => {
+    recomputeLines();
+  }, [recomputeLines]);
+
+  useLayoutEffect(() => {
+    const obs = new ResizeObserver(recomputeLines);
+    const el = containerRef.current;
+    if (el) obs.observe(el);
+    return () => obs.disconnect();
+  }, [recomputeLines]);
 
   return (
     <div className={isModal ? 'space-y-5' : 'space-y-8'}>
@@ -519,181 +642,296 @@ export function ModuleSelectionWizard({
         <section aria-labelledby="modules-heading" className="space-y-3 min-w-0">
           <div>
             <h3 id="modules-heading" className="text-sm font-bold text-foreground tracking-tight">
-              2 · Customize modules
+              2 · Build your module graph
             </h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Grouped by capability (not vendor). Locked items are required by another selected module.
+              Select modules to unlock their dependents. Lines show which modules activate which.
             </p>
           </div>
 
-          <div className="space-y-4">
-            {grouped.map(([groupId, modules]) => {
-              const style = FUNCTION_GROUP_STYLE[groupId];
-              const groupSelected = modules.filter((m) => selectedSet.has(m.id)).length;
-              return (
-                <div
-                  key={groupId}
-                  className={`rounded-2xl border border-border overflow-hidden bg-gradient-to-br ${style.softBg} to-card shadow-sm`}
+          {/* ── Dependency graph ───────────────────────────────────────────── */}
+          <div
+            ref={containerRef}
+            className="relative rounded-2xl border border-border bg-card/60 overflow-x-auto"
+          >
+            {/* SVG connector overlay */}
+            <svg
+              className="absolute inset-0 pointer-events-none"
+              style={{ width: '100%', height: '100%', overflow: 'visible' }}
+              aria-hidden
+            >
+              <defs>
+                <marker
+                  id="dep-arrow-active"
+                  markerWidth="7"
+                  markerHeight="7"
+                  refX="6"
+                  refY="3.5"
+                  orient="auto"
                 >
-                  <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border/80 bg-card/80 backdrop-blur-sm">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={`h-2 w-2 rounded-full shrink-0 ${style.dot} ring-2 ${style.ring}`} aria-hidden />
-                      <div className="min-w-0">
-                        <span className="text-xs font-bold uppercase tracking-wider text-foreground block truncate">
-                          {style.title}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground font-medium normal-case tracking-normal line-clamp-1">
-                          {style.subtitle}
-                        </span>
-                      </div>
+                  <path d="M0,0 L7,3.5 L0,7 Z" fill="hsl(var(--primary))" opacity="0.7" />
+                </marker>
+                <marker
+                  id="dep-arrow-partial"
+                  markerWidth="6"
+                  markerHeight="6"
+                  refX="5"
+                  refY="3"
+                  orient="auto"
+                >
+                  <path d="M0,0 L6,3 L0,6 Z" fill="hsl(var(--muted-foreground))" opacity="0.4" />
+                </marker>
+              </defs>
+
+              {lines.map((line) => {
+                const anyActive = line.srcSelected || line.dstSelected;
+                if (!anyActive) return null;
+                const fullyActive = line.srcSelected && line.dstSelected;
+                const cx = (line.x2 - line.x1) * 0.55;
+                const d = `M ${line.x1} ${line.y1} C ${line.x1 + cx} ${line.y1}, ${line.x2 - cx} ${line.y2}, ${line.x2} ${line.y2}`;
+
+                return (
+                  <path
+                    key={line.id}
+                    d={d}
+                    fill="none"
+                    stroke={fullyActive ? line.color : 'hsl(var(--muted-foreground))'}
+                    strokeWidth={fullyActive ? 1.75 : 1}
+                    strokeDasharray={fullyActive ? undefined : '5 3'}
+                    opacity={fullyActive ? 0.65 : 0.3}
+                    markerEnd={fullyActive ? 'url(#dep-arrow-active)' : 'url(#dep-arrow-partial)'}
+                    style={{ transition: 'opacity 0.25s, stroke-width 0.2s' }}
+                  />
+                );
+              })}
+            </svg>
+
+            {/* Tier columns */}
+            <div className="flex gap-px">
+              {columns.map(([tier, mods], colIdx) => {
+                const label = TIER_LABELS[tier] ?? { title: `Layer ${tier}`, subtitle: '' };
+                const isLast = colIdx === columns.length - 1;
+                return (
+                  <div
+                    key={tier}
+                    className={`flex flex-col flex-1 min-w-[175px] ${!isLast ? 'border-r border-border/50' : ''}`}
+                  >
+                    {/* Column header */}
+                    <div className="px-4 py-2.5 border-b border-border/50 bg-muted/20">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-foreground/60">
+                        {label.title}
+                      </p>
+                      <p className="text-[9px] text-muted-foreground/50 mt-px leading-tight">
+                        {label.subtitle}
+                      </p>
                     </div>
-                    <span className="text-[10px] font-bold tabular-nums text-muted-foreground bg-muted/80 px-2 py-0.5 rounded-full border border-border">
-                      {groupSelected}/{modules.length}
-                    </span>
-                  </div>
-                  <ul className="p-2 sm:p-3 grid grid-cols-1 gap-2">
-                    {modules.map((mod) => {
-                      const selected = selectedSet.has(mod.id);
-                      const requiredBy = requiredBySelected.get(mod.id) ?? [];
-                      const locked = requiredBy.length > 0 && selected;
-                      const depLabels = requiredBy.map((id) => moduleLabel(id)).join(', ');
-                      return (
-                        <li key={mod.id}>
-                          <button
-                            type="button"
-                            disabled={locked}
-                            onClick={() => {
-                              if (locked) return;
-                              const next = new Set(selectedSet);
-                              if (selected) next.delete(mod.id);
-                              else next.add(mod.id);
-                              onModulesChange(resolveDependencies(Array.from(next)));
+
+                    {/* Module cards */}
+                    <div className="p-2.5 flex flex-col gap-2">
+                      {mods.map((mod) => {
+                        const selected = selectedSet.has(mod.id);
+                        const locked = (requiredBySelected.get(mod.id)?.length ?? 0) > 0 && selected;
+                        const missingDeps = mod.requiredModules.filter((id) => !selectedSet.has(id));
+                        const blocked = !selected && missingDeps.length > 0;
+                        const groupStyle = FUNCTION_GROUP_STYLE[mod.functionGroupId];
+
+                        return (
+                          <div
+                            key={mod.id}
+                            ref={(el) => {
+                              if (el) cardRefs.current.set(mod.id, el);
+                              else cardRefs.current.delete(mod.id);
                             }}
-                            className={`w-full text-left rounded-xl border px-3 py-3 sm:px-4 transition-all ${
-                              selected
-                                ? 'border-primary/40 bg-primary/[0.06] shadow-sm ring-1 ring-primary/15'
-                                : 'border-border/80 bg-card/60 hover:bg-muted/40 hover:border-border'
-                            } ${locked ? 'opacity-[0.92] cursor-not-allowed' : ''}`}
                           >
-                            <div className="flex items-start gap-3">
-                              <span
-                                className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border-2 transition-colors ${
-                                  selected
-                                    ? 'border-primary bg-primary text-primary-foreground'
-                                    : 'border-muted-foreground/30 bg-background'
-                                }`}
-                                aria-hidden
-                              >
-                                {selected ? <Check size={12} strokeWidth={3} /> : null}
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="text-sm font-semibold text-foreground">{mod.label}</span>
+                            <button
+                              type="button"
+                              disabled={locked || blocked}
+                              onClick={() => {
+                                if (locked || blocked) return;
+                                const next = new Set(selectedSet);
+                                if (selected) next.delete(mod.id);
+                                else next.add(mod.id);
+                                onModulesChange(resolveDependencies(Array.from(next)));
+                              }}
+                              title={
+                                locked
+                                  ? `Required by ${requiredBySelected.get(mod.id)?.map(moduleLabel).join(', ')}`
+                                  : blocked
+                                    ? `Needs: ${missingDeps.map(moduleLabel).join(', ')}`
+                                    : undefined
+                              }
+                              className={[
+                                'w-full text-left rounded-xl border p-3 transition-all duration-200 flex flex-col gap-1.5',
+                                'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+                                locked
+                                  ? 'border-amber-500/40 bg-amber-500/[0.06] ring-1 ring-amber-500/20 cursor-not-allowed'
+                                  : selected
+                                    ? 'border-primary/40 bg-primary/[0.07] ring-1 ring-primary/20 shadow-sm'
+                                    : blocked
+                                      ? 'border-border/30 bg-muted/10 opacity-35 cursor-not-allowed'
+                                      : 'border-border/70 bg-card hover:border-primary/30 hover:bg-primary/[0.03] cursor-pointer',
+                              ].join(' ')}
+                            >
+                              {/* Row 1: indicator + label */}
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={[
+                                    'flex h-4 w-4 shrink-0 items-center justify-center rounded-[5px] border-2 transition-colors',
+                                    locked
+                                      ? 'border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                      : selected
+                                        ? 'border-primary bg-primary text-primary-foreground'
+                                        : 'border-muted-foreground/30 bg-background',
+                                  ].join(' ')}
+                                  aria-hidden
+                                >
                                   {locked ? (
-                                    <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 text-amber-800 dark:text-amber-200 px-1.5 py-px text-[10px] font-bold uppercase tracking-wide border border-amber-500/25">
-                                      <Link2 size={10} />
-                                      Required
-                                    </span>
+                                    <Lock size={9} strokeWidth={2.5} />
+                                  ) : selected ? (
+                                    <Check size={9} strokeWidth={3} />
                                   ) : null}
+                                </span>
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span
+                                    className={`h-1.5 w-1.5 rounded-full shrink-0 ${groupStyle.dot}`}
+                                    aria-hidden
+                                  />
+                                  <span
+                                    className={[
+                                      'text-[11px] font-semibold truncate leading-tight',
+                                      locked
+                                        ? 'text-amber-900 dark:text-amber-100'
+                                        : selected
+                                          ? 'text-foreground'
+                                          : 'text-foreground/80',
+                                    ].join(' ')}
+                                  >
+                                    {mod.label}
+                                  </span>
                                 </div>
-                                <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{mod.description}</p>
-                                <p className="text-[10px] text-muted-foreground/70 mt-1 font-mono capitalize">
-                                  {mod.provider.replace(/-/g, ' ')}
-                                </p>
-                                {locked ? (
-                                  <p className="mt-2 text-[11px] text-amber-800/90 dark:text-amber-200/90 leading-snug">
-                                    Needed by <span className="font-semibold">{depLabels}</span>
-                                  </p>
-                                ) : null}
                               </div>
-                            </div>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              );
-            })}
+
+                              {/* Row 2: description */}
+                              <p className="text-[10px] leading-snug line-clamp-2 text-muted-foreground pl-6">
+                                {mod.description}
+                              </p>
+
+                              {/* Row 3: dependency context */}
+                              {locked && (
+                                <p className="text-[10px] text-amber-700/80 dark:text-amber-300/80 pl-6 font-medium flex items-center gap-1 leading-snug">
+                                  <Link2 size={9} className="shrink-0" />
+                                  {requiredBySelected.get(mod.id)?.map(moduleLabel).join(', ')}
+                                </p>
+                              )}
+                              {blocked && (
+                                <p className="text-[10px] text-muted-foreground/60 pl-6 leading-snug">
+                                  Needs {missingDeps.map(moduleLabel).join(', ')}
+                                </p>
+                              )}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Legend */}
+            <div className="flex items-center gap-4 px-4 py-2.5 border-t border-border/50 bg-muted/10">
+              <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <span className="h-3 w-3 rounded-sm border-2 border-primary bg-primary/20 inline-block" />
+                Selected
+              </span>
+              <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <span className="h-3 w-3 rounded-sm border-2 border-amber-500/60 bg-amber-500/10 inline-block" />
+                Locked by dependency
+              </span>
+              <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <span className="h-3 w-3 rounded-sm border border-border/40 bg-muted/20 opacity-40 inline-block" />
+                Blocked — select required first
+              </span>
+            </div>
           </div>
         </section>
 
         {!isModal ? (
-        <aside className="lg:sticky lg:top-4 space-y-3">
-          <div className="rounded-2xl border border-border bg-card p-4 shadow-sm space-y-4">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Summary</p>
-              <p className="text-2xl font-bold tabular-nums text-foreground mt-1">{selectedSet.size}</p>
-              <p className="text-xs text-muted-foreground">modules in scope (with dependencies)</p>
-            </div>
-            <div className="rounded-xl bg-muted/40 border border-border/80 p-3 space-y-2 text-xs">
-              <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground">Setup steps (saved plan)</span>
-                <span className="font-mono font-semibold text-foreground">
-                  {setupStepCount === null ? '—' : setupStepCount}
-                </span>
-              </div>
-              <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground">Modules on server</span>
-                <span className="font-mono font-semibold text-foreground">
-                  {savedModuleCount === null ? '—' : savedModuleCount}
-                </span>
-              </div>
-            </div>
-            {selectedList.length > 0 ? (
+          <aside className="lg:sticky lg:top-4 space-y-3">
+            <div className="rounded-2xl border border-border bg-card p-4 shadow-sm space-y-4">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Selected</p>
-                <ul className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
-                  {selectedList.map((m) => (
-                    <li
-                      key={m.id}
-                      className="flex items-center gap-2 text-[11px] text-foreground/90 rounded-lg bg-muted/30 px-2 py-1.5 border border-border/60"
-                    >
-                      <Check size={11} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
-                      <span className="truncate font-medium">{m.label}</span>
-                    </li>
-                  ))}
-                </ul>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Summary</p>
+                <p className="text-2xl font-bold tabular-nums text-foreground mt-1">{selectedSet.size}</p>
+                <p className="text-xs text-muted-foreground">modules in scope (with dependencies)</p>
               </div>
-            ) : (
-              <p className="text-xs text-muted-foreground italic">No modules selected. Choose a template or toggle items.</p>
-            )}
-          </div>
-
-          <div
-            className={`rounded-2xl border p-4 shadow-sm transition-colors ${
-              hasPendingChanges
-                ? 'border-primary/35 bg-primary/[0.04] ring-1 ring-primary/15'
-                : 'border-border bg-card'
-            }`}
-          >
-            <p className="text-sm font-semibold text-foreground">
-              {hasPendingChanges ? 'Unsaved changes' : 'Plan matches Setup'}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-              {hasPendingChanges
-                ? 'Update the server plan so the Setup tab shows the right steps and journey phases.'
-                : 'Your module list matches the last saved provisioning plan.'}
-            </p>
-            <button
-              type="button"
-              disabled={!hasPendingChanges || isApplying}
-              onClick={onApply}
-              className="mt-4 w-full inline-flex items-center justify-center gap-2 rounded-xl bg-primary text-primary-foreground px-4 py-3 text-sm font-bold shadow-md shadow-primary/20 hover:opacity-95 disabled:opacity-40 disabled:shadow-none transition-opacity"
-            >
-              {isApplying ? (
-                <span className="inline-block h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+              <div className="rounded-xl bg-muted/40 border border-border/80 p-3 space-y-2 text-xs">
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">Setup steps (saved plan)</span>
+                  <span className="font-mono font-semibold text-foreground">
+                    {setupStepCount === null ? '—' : setupStepCount}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">Modules on server</span>
+                  <span className="font-mono font-semibold text-foreground">
+                    {savedModuleCount === null ? '—' : savedModuleCount}
+                  </span>
+                </div>
+              </div>
+              {selectedList.length > 0 ? (
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Selected</p>
+                  <ul className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                    {selectedList.map((m) => (
+                      <li
+                        key={m.id}
+                        className="flex items-center gap-2 text-[11px] text-foreground/90 rounded-lg bg-muted/30 px-2 py-1.5 border border-border/60"
+                      >
+                        <Check size={11} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <span className="truncate font-medium">{m.label}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : (
-                <ArrowRight size={18} />
+                <p className="text-xs text-muted-foreground italic">No modules selected. Choose a template or toggle items.</p>
               )}
-              {isApplying ? 'Updating plan…' : 'Save & update Setup plan'}
-            </button>
-            <p className="text-[10px] text-muted-foreground mt-2 flex items-center gap-1">
-              <ChevronRight size={12} className="shrink-0 opacity-60" />
-              After save, opens the Setup tab with the refreshed graph.
-            </p>
-          </div>
-        </aside>
+            </div>
+
+            <div
+              className={`rounded-2xl border p-4 shadow-sm transition-colors ${
+                hasPendingChanges
+                  ? 'border-primary/35 bg-primary/[0.04] ring-1 ring-primary/15'
+                  : 'border-border bg-card'
+              }`}
+            >
+              <p className="text-sm font-semibold text-foreground">
+                {hasPendingChanges ? 'Unsaved changes' : 'Plan matches Setup'}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                {hasPendingChanges
+                  ? 'Update the server plan so the Setup tab shows the right steps and journey phases.'
+                  : 'Your module list matches the last saved provisioning plan.'}
+              </p>
+              <button
+                type="button"
+                disabled={!hasPendingChanges || isApplying}
+                onClick={onApply}
+                className="mt-4 w-full inline-flex items-center justify-center gap-2 rounded-xl bg-primary text-primary-foreground px-4 py-3 text-sm font-bold shadow-md shadow-primary/20 hover:opacity-95 disabled:opacity-40 disabled:shadow-none transition-opacity"
+              >
+                {isApplying ? (
+                  <span className="inline-block h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+                ) : (
+                  <ArrowRight size={18} />
+                )}
+                {isApplying ? 'Updating plan…' : 'Save & update Setup plan'}
+              </button>
+              <p className="text-[10px] text-muted-foreground mt-2 flex items-center gap-1">
+                <ChevronRight size={12} className="shrink-0 opacity-60" />
+                After save, opens the Setup tab with the refreshed graph.
+              </p>
+            </div>
+          </aside>
         ) : null}
       </div>
     </div>

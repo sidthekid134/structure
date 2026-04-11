@@ -196,6 +196,8 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
         return this.stepGenerateSaKey(config, context);
       case 'firebase:enable-services':
         return this.stepEnableServices(config, context);
+      case 'firebase:create-firestore-db':
+        return this.stepCreateFirestoreDb(config, context);
       case 'firebase:register-ios-app':
         return this.stepRegisterIosApp(config, context);
       case 'firebase:register-android-app':
@@ -379,6 +381,21 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
     return {
       status: 'completed',
       resourcesProduced: { firebase_android_app_id: appId },
+    };
+  }
+
+  private async stepCreateFirestoreDb(
+    _config: FirebaseManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    const projectId = context.upstreamResources['firebase_project_id'] ?? context.upstreamResources['gcp_project_id'];
+    if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'create-firestore-db');
+    return {
+      status: 'completed',
+      resourcesProduced: {
+        firestore_database_id: '(default)',
+        firestore_location: 'us-central1',
+      },
     };
   }
 

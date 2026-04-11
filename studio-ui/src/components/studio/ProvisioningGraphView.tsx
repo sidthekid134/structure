@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertCircle,
@@ -43,10 +43,10 @@ import {
 } from './provisioning-display-registry';
 
 // ---------------------------------------------------------------------------
-// Provider metadata
+// Provider metadata — built-in fallback; dynamic data served via plan.providerDisplayMeta
 // ---------------------------------------------------------------------------
 
-const PROVIDER_META: Record<string, { label: string; color: string; bg: string; border: string }> = {
+const BUILTIN_PROVIDER_META: Record<string, { label: string; color: string; bg: string; border: string }> = {
   firebase: { label: 'Firebase', color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/30' },
   github: { label: 'GitHub', color: 'text-slate-600 dark:text-slate-300', bg: 'bg-slate-500/10', border: 'border-slate-500/30' },
   eas: { label: 'EAS', color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/30' },
@@ -57,11 +57,15 @@ const PROVIDER_META: Record<string, { label: string; color: string; bg: string; 
   'user-action': { label: 'Required Action', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30' },
 };
 
-function getProviderMeta(node: ProvisioningGraphNode) {
+function getProviderMeta(
+  node: ProvisioningGraphNode,
+  dynamicMeta?: Record<string, { label: string; color: string; bg: string; border: string }>,
+) {
+  const meta = { ...BUILTIN_PROVIDER_META, ...dynamicMeta };
   if (node.type === 'user-action') {
-    return node.provider ? (PROVIDER_META[node.provider] ?? PROVIDER_META['user-action']) : PROVIDER_META['user-action'];
+    return node.provider ? (meta[node.provider] ?? meta['user-action']) : meta['user-action'];
   }
-  return PROVIDER_META[node.provider] ?? { label: node.provider, color: 'text-muted-foreground', bg: 'bg-muted', border: 'border-border' };
+  return meta[node.provider] ?? { label: node.provider, color: 'text-muted-foreground', bg: 'bg-muted', border: 'border-border' };
 }
 
 // ---------------------------------------------------------------------------
@@ -345,14 +349,62 @@ interface NodeCardProps {
   projectId: string;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
   onRunNode: (nodeKey: string) => void;
+  onCancelNode: (nodeKey: string) => void;
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
+  providerDisplayMeta?: Record<string, { label: string; color: string; bg: string; border: string }>;
 }
 
-function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onSyncAndRefresh, isGloballyRunning }: NodeCardProps) {
+function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta }: NodeCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [credentialInput, setCredentialInput] = useState('');
   const [userActionBusy, setUserActionBusy] = useState(false);
+  const [localInputs, setLocalInputs] = useState<Record<string, string>>({});
+  const [inputsDirty, setInputsDirty] = useState(false);
+  const [savingInputs, setSavingInputs] = useState(false);
+
+  const stepNode = node.type === 'step' ? (node as ProvisioningStepNode) : null;
+  const hasInputFields = stepNode?.inputFields && stepNode.inputFields.length > 0;
+  const nodeState = nodeStates[node.key];
+
+  const currentInputs = useMemo(() => {
+    if (!hasInputFields || !stepNode?.inputFields) return {};
+    const saved = nodeState?.userInputs ?? {};
+    const defaults: Record<string, string> = {};
+    for (const field of stepNode.inputFields) {
+      defaults[field.key] = saved[field.key] ?? field.defaultValue ?? '';
+    }
+    return defaults;
+  }, [hasInputFields, stepNode?.inputFields, nodeState?.userInputs]);
+
+  useEffect(() => {
+    if (hasInputFields) {
+      setLocalInputs(currentInputs);
+      setInputsDirty(false);
+    }
+  }, [nodeState?.userInputs]);
+
+  const handleInputChange = (key: string, value: string) => {
+    setLocalInputs((prev) => ({ ...prev, [key]: value }));
+    setInputsDirty(true);
+  };
+
+  const handleSaveInputs = async () => {
+    setSavingInputs(true);
+    try {
+      await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/${encodeURIComponent(node.key)}/inputs`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs: localInputs }),
+      });
+      setInputsDirty(false);
+      await onSyncAndRefresh();
+    } catch {
+      // let it fail visibly
+    } finally {
+      setSavingInputs(false);
+    }
+  };
 
   const completeUserAction = async () => {
     setUserActionBusy(true);
@@ -367,7 +419,7 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
   const portalLinks = useMemo(() => resolvedNodePortalLinks(node, upstream), [node, upstream]);
 
   const effectiveStatus = getEffectiveStatus(node, nodeStates, environments);
-  const meta = getProviderMeta(node);
+  const meta = getProviderMeta(node, providerDisplayMeta);
 
   const perEnvInstances =
     node.type === 'step' && node.environmentScope === 'per-environment'
@@ -466,6 +518,18 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               {effectiveStatus === 'waiting-on-user' ? 'VERIFY' : 'RUN'}
             </button>
           )}
+          {/* Step nodes — CANCEL button when running */}
+          {node.type === 'step' && effectiveStatus === 'in-progress' && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onCancelNode(node.key); }}
+              title="Cancel this step"
+              className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-red-500 bg-red-500/10 border-red-500/30 hover:bg-red-500/20 transition-colors"
+            >
+              <MinusCircle size={9} />
+              CANCEL
+            </button>
+          )}
           {/* User-action nodes — interactive action (e.g. OAuth) — expand to use */}
           {isUserAction && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && oauthInteractive && (
             <button
@@ -543,6 +607,76 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               <p className="text-[11px] text-muted-foreground leading-relaxed">
                 {provisioningNodeDescription(node, environments)}
               </p>
+
+              {/* Step input fields */}
+              {hasInputFields && stepNode?.inputFields && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
+                <div className="space-y-2.5 pt-1 border-t border-border">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Configuration
+                  </p>
+                  {stepNode.inputFields.map((field) => (
+                    <div key={field.key} className="space-y-1">
+                      <label className="text-[11px] font-semibold text-foreground">
+                        {field.label}
+                        {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                      </label>
+                      {field.description && (
+                        <p className="text-[10px] text-muted-foreground leading-snug">{field.description}</p>
+                      )}
+                      {field.type === 'select' && field.options ? (
+                        <select
+                          value={localInputs[field.key] ?? field.defaultValue ?? ''}
+                          onChange={(e) => handleInputChange(field.key, e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-full text-xs bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                        >
+                          {field.options.map((opt) => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={localInputs[field.key] ?? ''}
+                          onChange={(e) => handleInputChange(field.key, e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          placeholder={field.placeholder}
+                          className="w-full text-xs font-mono bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                        />
+                      )}
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    disabled={savingInputs || !inputsDirty}
+                    onClick={(e) => { e.stopPropagation(); void handleSaveInputs(); }}
+                    className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border text-primary bg-primary/10 border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {savingInputs ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
+                    {savingInputs ? 'Saving…' : inputsDirty ? 'Save Configuration' : 'Configuration Saved'}
+                  </button>
+                </div>
+              )}
+
+              {/* Show saved input values when step is complete */}
+              {hasInputFields && stepNode?.inputFields && (effectiveStatus === 'completed' || effectiveStatus === 'skipped') && nodeState?.userInputs && (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Configuration
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {stepNode.inputFields.map((field) => {
+                      const val = nodeState.userInputs?.[field.key] ?? field.defaultValue ?? '';
+                      return (
+                        <span key={field.key} className="inline-flex items-center gap-1 text-[10px] font-mono bg-muted border border-border px-1.5 py-0.5 rounded text-foreground" title={field.description}>
+                          <span className="text-[9px] text-muted-foreground/70">{field.label}:</span>
+                          <span className="max-w-[160px] truncate">{val}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Per-env status breakdown */}
               {perEnvInstances && (
@@ -700,11 +834,13 @@ interface PhaseGroupProps {
   projectId: string;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
   onRunNodes: (nodeKeys: string[]) => void;
+  onCancelNode: (nodeKey: string) => void;
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
+  providerDisplayMeta?: Record<string, { label: string; color: string; bg: string; border: string }>;
 }
 
-function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, onUserActionComplete, onRunNodes, onSyncAndRefresh, isGloballyRunning }: PhaseGroupProps) {
+function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, onUserActionComplete, onRunNodes, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta }: PhaseGroupProps) {
   const [expanded, setExpanded] = useState(true);
 
   const statuses = phase.nodes.map((n) => getEffectiveStatus(n, nodeStates, environments));
@@ -822,8 +958,10 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
                   projectId={projectId}
                   onUserActionComplete={onUserActionComplete}
                   onRunNode={(key) => onRunNodes([key])}
+                  onCancelNode={onCancelNode}
                   onSyncAndRefresh={onSyncAndRefresh}
                   isGloballyRunning={isGloballyRunning}
+                  providerDisplayMeta={providerDisplayMeta}
                 />
               ))}
             </div>
@@ -938,6 +1076,20 @@ export function ProvisioningGraphView({
       setRunError((err as Error).message);
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const handleCancelNode = async (nodeKey: string) => {
+    setRunError(null);
+    try {
+      await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodeKey }),
+      });
+      await onRefresh();
+    } catch (err) {
+      setRunError((err as Error).message);
     }
   };
 
@@ -1161,8 +1313,10 @@ export function ProvisioningGraphView({
             projectId={projectId}
             onUserActionComplete={(nodeKey, resources) => void handleUserActionComplete(nodeKey, resources)}
             onRunNodes={(nodeKeys) => void handleRunNodes(nodeKeys)}
+            onCancelNode={(nodeKey) => void handleCancelNode(nodeKey)}
             onSyncAndRefresh={handleSyncAndRefresh}
             isGloballyRunning={!!(overallStats?.isRunning || isRunning)}
+            providerDisplayMeta={plan.providerDisplayMeta}
           />
         ))}
       </div>

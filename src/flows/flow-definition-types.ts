@@ -21,6 +21,12 @@ export interface StepDefinition {
 
 export interface FlowDefinition {
   flow_type: GuidedFlowType;
+  /**
+   * Optional: provisioning step key(s) this flow is associated with.
+   * Used by the plugin registry to look up flows by step key.
+   * When omitted, the plugin registry falls back to flow_type-based lookup.
+   */
+  stepKeys?: string[];
   label: string;
   description: string;
   steps: StepDefinition[];

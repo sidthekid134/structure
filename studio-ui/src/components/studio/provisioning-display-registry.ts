@@ -62,6 +62,17 @@ const RESOURCE_DISPLAY_BY_KEY: Record<string, ResourceOutputPresentation> = {
       },
     ],
   },
+  firestore_database_id: {
+    primaryHrefTemplate:
+      'https://console.firebase.google.com/project/{upstream.firebase_project_id}/firestore',
+    relatedLinks: [
+      {
+        label: 'Firestore in Cloud Console',
+        hrefTemplate: 'https://console.cloud.google.com/firestore?project={upstream.gcp_project_id}',
+      },
+    ],
+  },
+  firestore_location: {},
   github_repo_url: {
     primaryLinkFromValue: true,
     relatedLinks: [
@@ -140,6 +151,12 @@ const NODE_PORTAL_LINKS_BY_NODE_KEY: Record<string, CompletionPortalLink[]> = {
       hrefTemplate: 'https://console.firebase.google.com/project/{upstream.firebase_project_id}',
     },
   ],
+  'firebase:create-firestore-db': [
+    {
+      label: 'Open Firestore',
+      hrefTemplate: 'https://console.firebase.google.com/project/{upstream.firebase_project_id}/firestore',
+    },
+  ],
   'github:create-repository': [
     { label: 'Open repository', hrefTemplate: '{upstream.github_repo_url}' },
     { label: 'Repository settings', hrefTemplate: '{upstream.github_repo_url}/settings' },
@@ -178,8 +195,11 @@ function deepMergePresentation(
   };
 }
 
-export function mergeResourcePresentation(resource: ResourceOutput): ResourceOutputPresentation {
-  const reg = RESOURCE_DISPLAY_BY_KEY[resource.key] ?? {};
+export function mergeResourcePresentation(
+  resource: ResourceOutput,
+  dynamicDisplayByKey?: Record<string, ResourceOutputPresentation>,
+): ResourceOutputPresentation {
+  const reg = dynamicDisplayByKey?.[resource.key] ?? RESOURCE_DISPLAY_BY_KEY[resource.key] ?? {};
   const graph = resource.presentation ?? {};
   const merged = deepMergePresentation(reg, graph);
   const sensitiveDefault = DEFAULT_SENSITIVE_KEYS.has(resource.key);
@@ -227,10 +247,16 @@ export function collectUpstreamResources(nodeStates: Record<string, NodeState>):
   return out;
 }
 
-export function mergeNodePortalLinks(node: ProvisioningGraphNode): CompletionPortalLink[] {
+export function mergeNodePortalLinks(
+  node: ProvisioningGraphNode,
+  dynamicPortalLinks?: Record<string, CompletionPortalLink[]>,
+): CompletionPortalLink[] {
   const fromNode = node.type === 'step' || node.type === 'user-action' ? node.completionPortalLinks ?? [] : [];
+  const fromDynamic = dynamicPortalLinks?.[node.key] ?? [];
   const fromRegistry = NODE_PORTAL_LINKS_BY_NODE_KEY[node.key] ?? [];
-  return [...fromRegistry, ...fromNode];
+  // Dynamic overrides static; node overrides both
+  const combined = fromDynamic.length > 0 ? [...fromDynamic, ...fromNode] : [...fromRegistry, ...fromNode];
+  return combined;
 }
 
 function resolveRelatedLink(
@@ -278,8 +304,9 @@ export function getResolvedRelatedLinks(
 export function resolvedNodePortalLinks(
   node: ProvisioningGraphNode,
   upstream: Record<string, string>,
+  dynamicPortalLinks?: Record<string, CompletionPortalLink[]>,
 ): Array<{ label: string; href: string }> {
-  const merged = mergeNodePortalLinks(node);
+  const merged = mergeNodePortalLinks(node, dynamicPortalLinks);
   const out: Array<{ label: string; href: string }> = [];
   for (const link of merged) {
     const r = resolvePortalLink(link, upstream);

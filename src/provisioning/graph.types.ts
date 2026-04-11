@@ -87,6 +87,31 @@ export interface ResourceOutput {
   presentation?: ResourceOutputPresentation;
 }
 
+// ---------------------------------------------------------------------------
+// Step input fields — user-configurable parameters for a step
+// ---------------------------------------------------------------------------
+
+export type StepInputFieldType = 'text' | 'select';
+
+export interface StepInputField {
+  key: string;
+  label: string;
+  description?: string;
+  type: StepInputFieldType;
+  placeholder?: string;
+  /**
+   * Default value shown in the UI. Supports project tokens that are resolved
+   * server-side before sending to the frontend:
+   *   {slug}     — project slug / resource name
+   *   {bundleId} — app bundle ID (e.g. com.example.myapp)
+   *   {domain}   — app domain (e.g. myapp.example.com)
+   *   {name}     — project display name
+   */
+  defaultValue?: string;
+  options?: string[];
+  required?: boolean;
+}
+
 /** Shown when a node is complete — docs, consoles (static or templated). */
 export interface CompletionPortalLink {
   label: string;
@@ -137,6 +162,8 @@ export interface ProvisioningStepNode {
   interactiveAction?: InteractiveAction;
   /** Optional tie-break within the same topological layer (lower runs first). */
   orderHint?: number;
+  /** Configurable input fields — user-provided parameters for this step. */
+  inputFields?: StepInputField[];
 }
 
 export type ProvisioningNode = UserActionNode | ProvisioningStepNode;
@@ -164,6 +191,8 @@ export interface NodeState {
   completedAt?: number;
   error?: string;
   resourcesProduced?: Record<string, string>;
+  /** User-provided input values for steps with inputFields. */
+  userInputs?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------

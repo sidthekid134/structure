@@ -17,16 +17,32 @@ import {
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
+import {
+  configureFirebaseOAuthProvider,
+  downloadFirebaseAndroidAppConfig,
+  downloadFirebaseIosAppConfig,
+  getFirebaseAuthConfig,
+  getFirebaseDefaultSupportedIdpConfig,
+} from '../core/gcp/gcp-api-client.js';
 
 // ---------------------------------------------------------------------------
 // API client interface
 // ---------------------------------------------------------------------------
 
 export interface OAuthApiClient {
+  resolveGoogleClientIds?(
+    context: StepContext,
+  ): Promise<{
+    iosClientId: string;
+    androidClientId: string;
+    webClientId: string;
+    webClientSecret: string;
+  }>;
   createClient(
     provider: 'google' | 'github' | 'apple',
     redirectUri: string,
     scopes: string[],
+    context?: StepContext,
   ): Promise<{ clientId: string; clientSecret: string }>;
   getClient(
     provider: 'google' | 'github' | 'apple',
@@ -42,10 +58,24 @@ export interface OAuthApiClient {
 }
 
 export class StubOAuthApiClient implements OAuthApiClient {
+  async resolveGoogleClientIds(
+    _context: StepContext,
+  ): Promise<{
+    iosClientId: string;
+    androidClientId: string;
+    webClientId: string;
+    webClientSecret: string;
+  }> {
+    throw new Error(
+      'StubOAuthApiClient cannot resolve real OAuth client IDs. Configure OAuthAdapter with StudioOAuthApiClient.',
+    );
+  }
+
   async createClient(
     provider: 'google' | 'github' | 'apple',
     _redirectUri: string,
     _scopes: string[],
+    _context?: StepContext,
   ): Promise<{ clientId: string; clientSecret: string }> {
     return {
       clientId: `${provider}-client-${Date.now()}`,
@@ -69,6 +99,200 @@ export class StubOAuthApiClient implements OAuthApiClient {
 
   async getFirebaseAuthProviders(_firebaseProjectId: string): Promise<string[]> {
     return [];
+  }
+}
+
+export class StudioOAuthApiClient implements OAuthApiClient {
+  constructor(
+    private readonly getAccessTokenForProject: (
+      studioProjectId: string,
+      reason: string,
+    ) => Promise<string>,
+  ) {}
+
+  async resolveGoogleClientIds(
+    context: StepContext,
+  ): Promise<{
+    iosClientId: string;
+    androidClientId: string;
+    webClientId: string;
+    webClientSecret: string;
+  }> {
+    const studioProjectId = context.projectId;
+    const gcpProjectId =
+      context.upstreamResources['gcp_project_id']?.trim() ||
+      context.upstreamResources['firebase_project_id']?.trim() ||
+      (await context.vaultRead(`${studioProjectId}/gcp_project_id`))?.trim();
+    if (!gcpProjectId) {
+      throw new Error(
+        `Missing gcp_project_id for "${studioProjectId}". Complete "Create GCP Project" before registering OAuth client IDs.`,
+      );
+    }
+
+    const iosAppId =
+      context.upstreamResources['firebase_ios_app_id']?.trim() ||
+      (await context.vaultRead(`${studioProjectId}/firebase_ios_app_id`))?.trim();
+    if (!iosAppId) {
+      throw new Error(
+        `Missing firebase_ios_app_id for "${studioProjectId}". Complete "Register iOS App" before registering OAuth client IDs.`,
+      );
+    }
+
+    const androidAppId =
+      context.upstreamResources['firebase_android_app_id']?.trim() ||
+      (await context.vaultRead(`${studioProjectId}/firebase_android_app_id`))?.trim();
+    if (!androidAppId) {
+      throw new Error(
+        `Missing firebase_android_app_id for "${studioProjectId}". Complete "Register Android App" before registering OAuth client IDs.`,
+      );
+    }
+
+    const token = await this.getAccessTokenForProject(
+      studioProjectId,
+      'oauth:register-oauth-clients',
+    );
+
+    const googleIdp = await getFirebaseDefaultSupportedIdpConfig(
+      token,
+      gcpProjectId,
+      'google.com',
+    );
+    if (!googleIdp.clientId?.trim()) {
+      throw new Error(
+        `Google Sign-In clientId is missing on Firebase project "${gcpProjectId}". Enable Google Sign-In and re-run.`,
+      );
+    }
+    if (!googleIdp.clientSecret?.trim()) {
+      throw new Error(
+        `Google Sign-In clientSecret is missing on Firebase project "${gcpProjectId}". Reconfigure Google Sign-In and re-run.`,
+      );
+    }
+
+    const iosConfigPlist = await downloadFirebaseIosAppConfig(
+      token,
+      gcpProjectId,
+      iosAppId,
+    );
+    const iosClientId = this.extractIosClientId(iosConfigPlist);
+
+    const androidConfigJson = await downloadFirebaseAndroidAppConfig(
+      token,
+      gcpProjectId,
+      androidAppId,
+    );
+    const androidClientId = this.extractAndroidClientId(androidConfigJson);
+
+    return {
+      iosClientId,
+      androidClientId,
+      webClientId: googleIdp.clientId,
+      webClientSecret: googleIdp.clientSecret,
+    };
+  }
+
+  async createClient(
+    provider: 'google' | 'github' | 'apple',
+    _redirectUri: string,
+    _scopes: string[],
+    context?: StepContext,
+  ): Promise<{ clientId: string; clientSecret: string }> {
+    if (provider !== 'google') {
+      throw new Error(`Studio OAuth client creation is only implemented for provider "${provider}".`);
+    }
+    if (!context) {
+      throw new Error('StepContext is required to resolve OAuth client IDs for Google.');
+    }
+    const ids = await this.resolveGoogleClientIds(context);
+    return { clientId: ids.webClientId, clientSecret: ids.webClientSecret };
+  }
+
+  async getClient(
+    _provider: 'google' | 'github' | 'apple',
+    _clientId: string,
+  ): Promise<{ clientId: string } | null> {
+    return null;
+  }
+
+  async wireFirebaseAuthProvider(
+    firebaseProjectId: string,
+    provider: 'google' | 'github' | 'apple',
+    clientId: string,
+    clientSecret: string,
+  ): Promise<void> {
+    if (provider === 'github') {
+      throw new Error('GitHub auth wiring is not implemented in StudioOAuthApiClient.');
+    }
+    const token = await this.getAccessTokenForProject(firebaseProjectId, 'oauth:wire-firebase-auth-provider');
+    const firebaseProvider = provider === 'google' ? 'google.com' : 'apple.com';
+    await configureFirebaseOAuthProvider(token, firebaseProjectId, firebaseProvider, clientId, clientSecret);
+  }
+
+  async getFirebaseAuthProviders(firebaseProjectId: string): Promise<string[]> {
+    const token = await this.getAccessTokenForProject(firebaseProjectId, 'oauth:get-firebase-auth-providers');
+    const config = await getFirebaseAuthConfig(token, firebaseProjectId) as {
+      signIn?: { email?: { enabled?: boolean } };
+    };
+    const out: string[] = [];
+    if (config.signIn?.email?.enabled) out.push('email');
+    try {
+      const googleIdp = await getFirebaseDefaultSupportedIdpConfig(token, firebaseProjectId, 'google.com');
+      if (googleIdp.enabled) out.push('google');
+    } catch {
+      // Missing Google provider config is a valid state.
+    }
+    return out;
+  }
+
+  private extractIosClientId(plist: string): string {
+    const match = plist.match(/<key>\s*CLIENT_ID\s*<\/key>\s*<string>\s*([^<]+)\s*<\/string>/);
+    if (!match?.[1]) {
+      throw new Error('Could not parse CLIENT_ID from GoogleService-Info.plist.');
+    }
+    return match[1].trim();
+  }
+
+  private extractAndroidClientId(json: string): string {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch (err) {
+      throw new Error(`google-services.json is not valid JSON: ${(err as Error).message}`);
+    }
+    const root = parsed as {
+      client?: Array<{
+        client_info?: { android_client_info?: { package_name?: string } };
+        oauth_client?: Array<{
+          client_id?: string;
+          client_type?: number;
+          android_info?: { package_name?: string };
+        }>;
+      }>;
+    };
+    const clients = root.client ?? [];
+
+    // Primary: Firebase android oauth entries are marked with client_type=1.
+    for (const client of clients) {
+      const androidOauth = (client.oauth_client ?? []).find(
+        (entry) =>
+          entry.client_type === 1 &&
+          typeof entry.client_id === 'string' &&
+          entry.client_id.trim().length > 0,
+      );
+      if (androidOauth?.client_id) {
+        return androidOauth.client_id.trim();
+      }
+    }
+
+    const observedClientTypes = clients
+      .flatMap((client) => client.oauth_client ?? [])
+      .map((entry) => entry.client_type)
+      .filter((t): t is number => typeof t === 'number');
+    throw new Error(
+      `Could not locate Android OAuth client_id in google-services.json (expected oauth_client.client_type=1). ` +
+      `Observed client types: ${observedClientTypes.length ? observedClientTypes.join(', ') : 'none'}. ` +
+      `Run "google-play:extract-fingerprints" and "google-play:add-fingerprints-to-firebase" first ` +
+      `or add an Android SHA-1 fingerprint in Firebase Console, then retry.`,
+    );
   }
 }
 
@@ -164,16 +388,28 @@ export class OAuthAdapter implements ProviderAdapter<OAuthManifestConfig> {
   ): Promise<StepResult> {
     this.log.info('OAuthAdapter.executeStep()', { stepKey });
     switch (stepKey) {
-      case 'oauth:enable-auth-providers':
-        return { status: 'completed', resourcesProduced: {} };
       case 'oauth:register-oauth-clients': {
-        const result = await this.apiClient.createClient(config.oauth_provider, config.redirect_uri, config.scopes);
+        if (config.oauth_provider !== 'google') {
+          throw new AdapterError(
+            `oauth:register-oauth-clients currently supports oauth_provider="google", got "${config.oauth_provider}".`,
+            'oauth',
+            'executeStep',
+          );
+        }
+        if (!this.apiClient.resolveGoogleClientIds) {
+          throw new AdapterError(
+            'OAuthAdapter is missing a real OAuth API client. Configure StudioOAuthApiClient for oauth:register-oauth-clients.',
+            'oauth',
+            'executeStep',
+          );
+        }
+        const ids = await this.apiClient.resolveGoogleClientIds(context);
         return {
           status: 'completed',
           resourcesProduced: {
-            oauth_client_id_ios: result.clientId,
-            oauth_client_id_android: result.clientId,
-            oauth_client_id_web: result.clientId,
+            oauth_client_id_ios: ids.iosClientId,
+            oauth_client_id_android: ids.androidClientId,
+            oauth_client_id_web: ids.webClientId,
           },
         };
       }

@@ -1,19 +1,29 @@
 import type { ProviderType } from '../providers/types.js';
+import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 
-export type ModuleId =
-  | 'firebase-core'
-  | 'firebase-auth'
-  | 'firebase-firestore'
-  | 'firebase-storage'
-  | 'firebase-messaging'
-  | 'github-repo'
-  | 'github-ci'
-  | 'eas-builds'
-  | 'eas-submit'
-  | 'apple-signing'
-  | 'google-play-publishing'
-  | 'cloudflare-domain'
-  | 'oauth-social';
+/**
+ * Open branded string — built-in modules plus any plugin-contributed ones.
+ * Use BuiltinModuleId for exhaustive checks against the built-in set.
+ */
+export type ModuleId = string & { readonly __brand?: 'ModuleId' };
+
+export const BUILTIN_MODULE_IDS = [
+  'firebase-core',
+  'firebase-auth',
+  'firebase-firestore',
+  'firebase-storage',
+  'firebase-messaging',
+  'github-repo',
+  'github-ci',
+  'eas-builds',
+  'eas-submit',
+  'apple-signing',
+  'google-play-publishing',
+  'cloudflare-domain',
+  'oauth-social',
+] as const;
+
+export type BuiltinModuleId = (typeof BUILTIN_MODULE_IDS)[number];
 
 export interface ModuleDefinition {
   id: ModuleId;
@@ -28,7 +38,11 @@ export interface ModuleDefinition {
   userActionKeys?: string[];
 }
 
-export type ProjectTemplateId = 'mobile-app' | 'web-app' | 'api-backend' | 'custom';
+/** Open string — built-in templates plus plugin-contributed ones. */
+export type ProjectTemplateId = string & { readonly __brand?: 'ProjectTemplateId' };
+
+export const BUILTIN_TEMPLATE_IDS = ['mobile-app', 'web-app', 'api-backend', 'custom'] as const;
+export type BuiltinProjectTemplateId = (typeof BUILTIN_TEMPLATE_IDS)[number];
 
 export interface ProjectTemplate {
   id: ProjectTemplateId;
@@ -37,7 +51,7 @@ export interface ProjectTemplate {
   modules: ModuleId[];
 }
 
-export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
+export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
   'firebase-core': {
     id: 'firebase-core',
     label: 'Firebase Core',
@@ -64,18 +78,18 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
     provider: 'oauth',
     requiredModules: ['firebase-core'],
     optionalModules: ['oauth-social'],
-    stepKeys: ['oauth:enable-auth-providers', 'oauth:register-oauth-clients', 'oauth:configure-redirect-uris'],
+    stepKeys: ['firebase:enable-auth', 'oauth:enable-auth-providers', 'oauth:enable-google-sign-in', 'oauth:register-oauth-clients', 'oauth:configure-redirect-uris'],
     teardownStepKeys: ['oauth:disable-auth-providers'],
   },
   'firebase-firestore': {
     id: 'firebase-firestore',
     label: 'Firestore',
-    description: 'Enable Firebase services and deploy Firestore rules.',
+    description: 'Create a Firestore database and deploy security rules.',
     provider: 'firebase',
     requiredModules: ['firebase-core'],
     optionalModules: [],
-    stepKeys: ['firebase:enable-services', 'firebase:configure-firestore-rules'],
-    teardownStepKeys: ['firebase:delete-firestore-data'],
+    stepKeys: ['firebase:create-firestore-db', 'firebase:configure-firestore-rules'],
+    teardownStepKeys: ['firebase:delete-firestore-db'],
   },
   'firebase-storage': {
     id: 'firebase-storage',
@@ -84,7 +98,7 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
     provider: 'firebase',
     requiredModules: ['firebase-core'],
     optionalModules: [],
-    stepKeys: ['firebase:enable-services', 'firebase:configure-storage-rules'],
+    stepKeys: ['firebase:enable-storage', 'firebase:configure-storage-rules'],
     teardownStepKeys: ['firebase:delete-storage-buckets'],
   },
   'firebase-messaging': {
@@ -94,7 +108,7 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
     provider: 'firebase',
     requiredModules: ['firebase-core', 'apple-signing', 'google-play-publishing'],
     optionalModules: [],
-    stepKeys: ['firebase:enable-services', 'apple:upload-apns-to-firebase', 'google-play:add-fingerprints-to-firebase'],
+    stepKeys: ['firebase:enable-fcm', 'apple:upload-apns-to-firebase', 'google-play:add-fingerprints-to-firebase'],
     teardownStepKeys: ['firebase:disable-messaging'],
   },
   'github-repo': {
@@ -205,7 +219,7 @@ export const MODULE_CATALOG: Readonly<Record<ModuleId, ModuleDefinition>> = {
   },
 };
 
-export const PROJECT_TEMPLATES: Readonly<Record<ProjectTemplateId, ProjectTemplate>> = {
+export const PROJECT_TEMPLATES: Readonly<Record<string, ProjectTemplate>> = {
   'mobile-app': {
     id: 'mobile-app',
     label: 'Mobile App',
@@ -257,7 +271,15 @@ export const PROJECT_TEMPLATES: Readonly<Record<ProjectTemplateId, ProjectTempla
 
 export const DEFAULT_MODULE_IDS: ModuleId[] = PROJECT_TEMPLATES['mobile-app'].modules;
 
-export function resolveModuleDependencies(moduleIds: ModuleId[]): ModuleId[] {
+/**
+ * Resolve module dependencies topologically.
+ * Accepts an optional catalog override — when omitted uses MODULE_CATALOG.
+ * The plugin registry passes its own merged catalog here.
+ */
+export function resolveModuleDependencies(
+  moduleIds: ModuleId[],
+  catalog: Readonly<Record<string, ModuleDefinition>> = MODULE_CATALOG,
+): ModuleId[] {
   const seen = new Set<ModuleId>();
   const visiting = new Set<ModuleId>();
 
@@ -267,7 +289,7 @@ export function resolveModuleDependencies(moduleIds: ModuleId[]): ModuleId[] {
       throw new Error(`Circular module dependency detected at "${moduleId}".`);
     }
 
-    const module = MODULE_CATALOG[moduleId];
+    const module = catalog[moduleId];
     if (!module) {
       throw new Error(`Unknown module "${moduleId}".`);
     }
@@ -287,30 +309,78 @@ export function resolveModuleDependencies(moduleIds: ModuleId[]): ModuleId[] {
   return Array.from(seen);
 }
 
-export function getProvidersForModules(moduleIds: ModuleId[]): ProviderType[] {
+export function getProvidersForModules(
+  moduleIds: ModuleId[],
+  catalog: Readonly<Record<string, ModuleDefinition>> = MODULE_CATALOG,
+): ProviderType[] {
   const providers = new Set<ProviderType>();
-  for (const moduleId of resolveModuleDependencies(moduleIds)) {
-    providers.add(MODULE_CATALOG[moduleId].provider);
+  for (const moduleId of resolveModuleDependencies(moduleIds, catalog)) {
+    providers.add(catalog[moduleId]!.provider);
   }
   return Array.from(providers);
 }
 
-export function getStepKeysForModules(moduleIds: ModuleId[]): string[] {
+export function getStepKeysForModules(
+  moduleIds: ModuleId[],
+  catalog: Readonly<Record<string, ModuleDefinition>> = MODULE_CATALOG,
+): string[] {
   const stepKeys = new Set<string>();
-  for (const moduleId of resolveModuleDependencies(moduleIds)) {
-    for (const stepKey of MODULE_CATALOG[moduleId].stepKeys) {
+  for (const moduleId of resolveModuleDependencies(moduleIds, catalog)) {
+    for (const stepKey of catalog[moduleId]!.stepKeys) {
       stepKeys.add(stepKey);
     }
   }
   return Array.from(stepKeys);
 }
 
-export function getTeardownStepKeysForModules(moduleIds: ModuleId[]): string[] {
+export function getTeardownStepKeysForModules(
+  moduleIds: ModuleId[],
+  catalog: Readonly<Record<string, ModuleDefinition>> = MODULE_CATALOG,
+): string[] {
   const stepKeys = new Set<string>();
-  for (const moduleId of resolveModuleDependencies(moduleIds)) {
-    for (const stepKey of MODULE_CATALOG[moduleId].teardownStepKeys) {
+  for (const moduleId of resolveModuleDependencies(moduleIds, catalog)) {
+    for (const stepKey of catalog[moduleId]!.teardownStepKeys) {
       stepKeys.add(stepKey);
     }
   }
   return Array.from(stepKeys);
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic catalog — reads from plugin registry when bootstrapped
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the effective module catalog.
+ * After registerBuiltinPlugins() runs, derives from the plugin registry.
+ * Falls back to the static MODULE_CATALOG before bootstrap.
+ */
+export function getEffectiveModuleCatalog(): Readonly<Record<string, ModuleDefinition>> {
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    return globalPluginRegistry.getModuleCatalog();
+  }
+  return MODULE_CATALOG;
+}
+
+/**
+ * Returns the effective project templates.
+ * After registerBuiltinPlugins() runs, derives from the plugin registry.
+ * Falls back to the static PROJECT_TEMPLATES before bootstrap.
+ */
+export function getEffectiveProjectTemplates(): Readonly<Record<string, ProjectTemplate>> {
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    const regTemplates = globalPluginRegistry.getProjectTemplates();
+    // Merge with static templates for label/description (static has more detail)
+    const merged: Record<string, ProjectTemplate> = { ...PROJECT_TEMPLATES };
+    for (const [id, tmpl] of Object.entries(regTemplates)) {
+      if (!merged[id]) {
+        merged[id] = tmpl;
+      } else {
+        // Registry has the computed module list; static has label/desc
+        merged[id] = { ...merged[id]!, modules: tmpl.modules };
+      }
+    }
+    return merged;
+  }
+  return PROJECT_TEMPLATES;
 }

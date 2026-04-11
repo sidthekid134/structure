@@ -10,8 +10,9 @@ import {
   OAUTH_STEPS,
   USER_ACTIONS,
 } from '../provisioning/step-registry.js';
+import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 
-export const PROVIDER_SECRET_SCHEMAS: Readonly<Record<ProviderType, string[]>> = {
+const STATIC_PROVIDER_SECRET_SCHEMAS: Readonly<Record<string, string[]>> = {
   firebase: ['service_account_json', 'api_key', 'fcm_key'],
   github: ['token'],
   eas: ['eas_token', 'expo_token'],
@@ -21,7 +22,23 @@ export const PROVIDER_SECRET_SCHEMAS: Readonly<Record<ProviderType, string[]>> =
   oauth: ['client_id', 'client_secret'],
 };
 
-export const PROVIDER_DEPENDENCIES: Readonly<Record<ProviderType, ProviderType[]>> = {
+/** @deprecated Use getEffectiveProviderSecretSchemas() for registry-aware version */
+export const PROVIDER_SECRET_SCHEMAS: Readonly<Record<ProviderType, string[]>> =
+  STATIC_PROVIDER_SECRET_SCHEMAS as Readonly<Record<ProviderType, string[]>>;
+
+/**
+ * Returns provider secret schemas from the registry when bootstrapped,
+ * falling back to static definitions.
+ */
+export function getEffectiveProviderSecretSchemas(): Readonly<Record<string, string[]>> {
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    const fromRegistry = globalPluginRegistry.getProviderSecretSchemas();
+    return Object.keys(fromRegistry).length > 0 ? fromRegistry : STATIC_PROVIDER_SECRET_SCHEMAS;
+  }
+  return STATIC_PROVIDER_SECRET_SCHEMAS;
+}
+
+const STATIC_PROVIDER_DEPENDENCIES: Readonly<Record<string, string[]>> = {
   firebase: [],
   github: ['firebase'],
   eas: ['github'],
@@ -30,6 +47,22 @@ export const PROVIDER_DEPENDENCIES: Readonly<Record<ProviderType, ProviderType[]
   cloudflare: [],
   oauth: ['firebase'],
 };
+
+/** @deprecated Use getEffectiveProviderDependencies() for registry-aware version */
+export const PROVIDER_DEPENDENCIES: Readonly<Record<ProviderType, ProviderType[]>> =
+  STATIC_PROVIDER_DEPENDENCIES as Readonly<Record<ProviderType, ProviderType[]>>;
+
+/**
+ * Returns provider dependency map from the registry when bootstrapped,
+ * falling back to static definitions.
+ */
+export function getEffectiveProviderDependencies(): Readonly<Record<string, string[]>> {
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    const fromRegistry = globalPluginRegistry.getProviderDependencyMap();
+    return Object.keys(fromRegistry).length > 0 ? fromRegistry : STATIC_PROVIDER_DEPENDENCIES;
+  }
+  return STATIC_PROVIDER_DEPENDENCIES;
+}
 
 export type IntegrationScope = 'organization' | 'project';
 
@@ -59,7 +92,7 @@ export interface IntegrationBlueprintDescriptor {
 // New: ProviderBlueprint catalog — step-level representation
 // ---------------------------------------------------------------------------
 
-export const PROVIDER_BLUEPRINTS: Readonly<Record<ProviderType, ProviderBlueprint>> = {
+const STATIC_PROVIDER_BLUEPRINTS: Readonly<Record<string, ProviderBlueprint>> = {
   firebase: {
     provider: 'firebase',
     scope: 'project',
@@ -103,6 +136,22 @@ export const PROVIDER_BLUEPRINTS: Readonly<Record<ProviderType, ProviderBlueprin
     userActions: [],
   },
 };
+
+/** @deprecated Use getEffectiveProviderBlueprints() for registry-aware version */
+export const PROVIDER_BLUEPRINTS: Readonly<Record<ProviderType, ProviderBlueprint>> =
+  STATIC_PROVIDER_BLUEPRINTS as Readonly<Record<ProviderType, ProviderBlueprint>>;
+
+/**
+ * Returns provider blueprints from the registry when bootstrapped,
+ * falling back to static definitions.
+ */
+export function getEffectiveProviderBlueprints(): Readonly<Record<string, ProviderBlueprint>> {
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    const fromRegistry = globalPluginRegistry.getProviderBlueprints();
+    return Object.keys(fromRegistry).length > 0 ? fromRegistry : STATIC_PROVIDER_BLUEPRINTS;
+  }
+  return STATIC_PROVIDER_BLUEPRINTS;
+}
 
 // ---------------------------------------------------------------------------
 // Legacy: PROVIDER_INTEGRATION_BLUEPRINTS — kept for backward compat

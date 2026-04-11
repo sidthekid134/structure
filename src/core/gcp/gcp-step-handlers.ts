@@ -34,6 +34,12 @@ import {
   ensureRequiredProjectApis,
   isServiceEnabled,
   enableProjectService,
+  enableIdentityToolkit,
+  enableFirebaseDefaultIdp,
+  checkBillingEnabled,
+  listBillingAccounts,
+  linkBillingAccount,
+  getFirebaseAuthConfig,
   listFirebaseIosApps,
   registerFirebaseIosApp,
   listFirebaseAndroidApps,
@@ -43,9 +49,14 @@ import {
   getActiveFirestoreRulesetName,
   getActiveStorageRulesetName,
   parseDisabledApiServiceName,
+  provisionFirebaseOnProject,
+  getFirestoreDatabase,
+  createFirestoreDatabase,
+  deleteFirestoreDatabase,
   sleep,
   provisionerSaEmail,
 } from './gcp-api-client.js';
+import type { FirestoreDatabaseType } from './gcp-api-client.js';
 import {
   getStoredGcpProjectId,
   storeGcpProjectId,
@@ -61,7 +72,13 @@ import {
   storeFirebaseIosAppId,
   getStoredFirebaseAndroidAppId,
   storeFirebaseAndroidAppId,
+  getStoredFirestoreDatabaseId,
+  storeFirestoreDatabaseId,
+  getStoredFirestoreLocation,
+  storeFirestoreLocation,
+  deleteFirestoreCredentials,
 } from './gcp-credentials.js';
+import { projectResourceSlug } from '../../studio/project-identity.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -70,6 +87,21 @@ import {
 /** Structured logger for a step + studio project pair. */
 function makeLog(step: string, studioId: string): (msg: string) => void {
   return (msg: string) => console.log(`[gcp:${step}] studio="${studioId}" | ${msg}`);
+}
+
+function validateAndroidPackageName(packageName: string): void {
+  const trimmed = packageName.trim();
+  const valid = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(trimmed);
+  if (!valid) {
+    throw new Error(
+      `Invalid Android package name "${packageName}". ` +
+      'Use dot-separated lowercase segments with letters/digits/underscores only (no hyphens), e.g. "net.third_brain.flow".',
+    );
+  }
+}
+
+function normalizeAndroidPackageName(packageName: string): string {
+  return packageName.replace(/-/g, '_').trim();
 }
 
 /**
@@ -87,11 +119,14 @@ async function withApiRetry<T>(
   } catch (firstErr) {
     const service = parseDisabledApiServiceName(firstErr);
     if (!service) throw firstErr;
-    log(`→ API "${service}" is disabled on "${gcpProjectId}" — enabling and retrying in 5s...`);
+    log(`→ API "${service}" is disabled on "${gcpProjectId}" — enabling...`);
     const enabled = await enableProjectService(gcpProjectId, token, service);
     if (!enabled) throw firstErr;
+
+    // enableProjectService polls the LRO to completion and verifies the API is
+    // actually enabled before returning. Give it a short buffer then retry once.
     await sleep(5000);
-    return await fn(); // second attempt — throws naturally if still failing
+    return await fn();
   }
 }
 
@@ -335,23 +370,25 @@ const enableFirebaseHandler: StepHandler = {
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
-    log(`→ Checking if firebase.googleapis.com is enabled on "${pid}"...`);
     const token = await context.getToken('gcp');
+
     const alreadyEnabled = await isServiceEnabled(token, pid, 'firebase.googleapis.com');
-    if (alreadyEnabled) {
-      log(`✓ firebase.googleapis.com is already ENABLED on "${pid}".`);
-      return { reconciled: true, resourcesProduced: { firebase_project_id: pid } };
+    if (!alreadyEnabled) {
+      log(`→ Enabling firebase.googleapis.com on "${pid}"...`);
+      const ok = await enableProjectService(pid, token, 'firebase.googleapis.com');
+      if (!ok) {
+        log(`✗ Failed to enable firebase.googleapis.com on "${pid}".`);
+        return { reconciled: false, message: `Could not enable firebase.googleapis.com on GCP project "${pid}".` };
+      }
+      log(`✓ firebase.googleapis.com enabled on "${pid}".`);
+    } else {
+      log(`✓ firebase.googleapis.com is already enabled on "${pid}".`);
     }
 
-    log(`→ Enabling firebase.googleapis.com on "${pid}"...`);
-    const ok = await enableProjectService(pid, token, 'firebase.googleapis.com');
-    if (!ok) {
-      log(`✗ Failed to enable firebase.googleapis.com on "${pid}".`);
-      return { reconciled: false, message: `Could not enable firebase.googleapis.com on GCP project "${pid}".` };
-    }
-    log(`→ Waiting 4s for API propagation on "${pid}"...`);
-    await sleep(4000);
-    log(`✓ COMPLETE — firebase.googleapis.com ENABLED on "${pid}".`);
+    log(`→ Provisioning Firebase on "${pid}" via :addFirebase (required before Firebase APIs accept requests)...`);
+    await provisionFirebaseOnProject(token, pid);
+
+    log(`✓ COMPLETE — Firebase provisioned on "${pid}".`);
     return { reconciled: true, resourcesProduced: { firebase_project_id: pid } };
   },
 
@@ -825,26 +862,157 @@ const generateSaKeyHandler: StepHandler = {
 };
 
 // ---------------------------------------------------------------------------
-// firebase:enable-services
-// Enables Auth, Firestore, Storage, FCM, and Rules GCP APIs on the project.
-// Per-environment step — idempotent; safe to run multiple times.
+// Per-plugin API enablement handlers
+// Each plugin enables only the GCP APIs it owns. Delete is a no-op since GCP
+// APIs cannot be selectively disabled without data loss.
 // ---------------------------------------------------------------------------
 
-const FIREBASE_SERVICE_APIS = [
-  'identitytoolkit.googleapis.com',  // Firebase Auth
-  'firestore.googleapis.com',         // Cloud Firestore
-  'storage.googleapis.com',           // Cloud Storage
-  'fcmregistrations.googleapis.com',  // Firebase Cloud Messaging
-  'firebaserules.googleapis.com',     // Firebase Security Rules
-] as const;
+function makeApiEnablementHandler(
+  stepKey: string,
+  apis: readonly string[],
+  producedResourceKey: string,
+): StepHandler {
+  const logTag = stepKey.replace('firebase:', '');
 
-const enableServicesHandler: StepHandler = {
-  stepKey: 'firebase:enable-services',
+  return {
+    stepKey,
+    requiredAuth: 'gcp',
+
+    async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+      const { projectId, vaultManager, passphrase } = context;
+      const log = makeLog(logTag, projectId);
+
+      const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+      if (!gcpProjectId) {
+        log('✗ No GCP project ID in vault. Complete "Create GCP Project" first.');
+        return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
+      }
+
+      const token = await context.getToken('gcp');
+      const failed: string[] = [];
+
+      for (const api of apis) {
+        log(`→ Enabling ${api} on "${gcpProjectId}"...`);
+        const ok = await enableProjectService(gcpProjectId, token, api);
+        if (ok) {
+          log(`✓ ${api} enabled.`);
+        } else {
+          log(`✗ Failed to enable ${api}.`);
+          failed.push(api);
+        }
+      }
+
+      if (failed.length > 0) {
+        return { reconciled: false, message: `Failed to enable APIs on "${gcpProjectId}": ${failed.join(', ')}` };
+      }
+
+      log(`✓ COMPLETE — APIs enabled on "${gcpProjectId}": ${apis.join(', ')}`);
+      return { reconciled: true, resourcesProduced: { [producedResourceKey]: apis.join(',') } };
+    },
+
+    async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
+      const log = makeLog(`${logTag}:delete`, _context.projectId);
+      log('○ GCP APIs cannot be selectively disabled — no action taken.');
+      return {
+        reconciled: true,
+        message: 'GCP service APIs cannot be disabled via API without data loss. Disable manually in Cloud Console if needed.',
+      };
+    },
+
+    async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
+      const { projectId, vaultManager, passphrase } = context;
+      const log = makeLog(`${logTag}:validate`, projectId);
+
+      const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+      if (!gcpProjectId) {
+        log('✗ No GCP project ID in vault.');
+        return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
+      }
+
+      log(`→ Checking APIs on "${gcpProjectId}"...`);
+      const token = await context.getToken('gcp');
+      const missing: string[] = [];
+      for (const api of apis) {
+        const enabled = await isServiceEnabled(token, gcpProjectId, api);
+        if (!enabled) missing.push(api);
+      }
+
+      if (missing.length === 0) {
+        log(`✓ APIs enabled on "${gcpProjectId}".`);
+        return { reconciled: true, resourcesProduced: { [producedResourceKey]: apis.join(',') } };
+      }
+      log(`✗ Missing APIs: ${missing.join(', ')}`);
+      return { reconciled: false, message: `APIs not yet enabled on "${gcpProjectId}": ${missing.join(', ')}. Run this step to enable them.` };
+    },
+
+    async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
+      const { projectId, vaultManager, passphrase } = context;
+      const log = makeLog(`${logTag}:sync`, projectId);
+
+      const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+      if (!gcpProjectId) return null;
+
+      log(`→ Checking APIs on "${gcpProjectId}"...`);
+      try {
+        const token = await context.getToken('gcp');
+        const missing: string[] = [];
+        for (const api of apis) {
+          const enabled = await isServiceEnabled(token, gcpProjectId, api);
+          if (!enabled) missing.push(api);
+        }
+        if (missing.length === 0) {
+          log(`✓ APIs enabled.`);
+          return { reconciled: true, resourcesProduced: { [producedResourceKey]: apis.join(',') } };
+        }
+        log(`○ Missing: ${missing.join(', ')} — run this step to enable them.`);
+        return { reconciled: false, message: `APIs not enabled: ${missing.join(', ')}.` };
+      } catch (err) {
+        const is403 = err instanceof GcpHttpError && err.statusCode === 403;
+        log(`✗ Could not check APIs: ${(err as Error).message}`);
+        return { reconciled: false, message: `Could not verify APIs: ${(err as Error).message}`, suggestsReauth: is403 };
+      }
+    },
+  };
+}
+
+// firebase:enable-auth — enables identitytoolkit.googleapis.com
+const enableAuthHandler = makeApiEnablementHandler(
+  'firebase:enable-auth',
+  ['identitytoolkit.googleapis.com'],
+  'enabled_auth_api',
+);
+
+// firebase:enable-storage — enables storage + rules APIs
+const enableStorageHandler = makeApiEnablementHandler(
+  'firebase:enable-storage',
+  ['storage.googleapis.com', 'firebaserules.googleapis.com'],
+  'enabled_storage_api',
+);
+
+// firebase:enable-fcm — enables FCM API
+const enableFcmHandler = makeApiEnablementHandler(
+  'firebase:enable-fcm',
+  ['fcmregistrations.googleapis.com'],
+  'enabled_fcm_api',
+);
+
+// ---------------------------------------------------------------------------
+// firebase:create-firestore-db
+// Creates a Firestore database instance. Accepts user inputs for database ID,
+// location, and mode. Idempotent — skips if database already exists.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_FIRESTORE_DB_ID = '(default)';
+const DEFAULT_FIRESTORE_LOCATION = 'us-central1';
+const DEFAULT_FIRESTORE_TYPE: FirestoreDatabaseType = 'FIRESTORE_NATIVE';
+
+const createFirestoreDbHandler: StepHandler = {
+  stepKey: 'firebase:create-firestore-db',
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
-    const log = makeLog('enable-services', projectId);
+    const { projectId, vaultManager, passphrase, userInputs } = context;
+    const log = makeLog('create-firestore-db', projectId);
 
     const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
     if (!gcpProjectId) {
@@ -852,90 +1020,158 @@ const enableServicesHandler: StepHandler = {
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
-    const token = await context.getToken('gcp');
-    const failed: string[] = [];
+    const projectSlug = projectResourceSlug(context.projectManager.getProject(projectId).project);
+    const databaseId = userInputs?.['database_id']?.trim() || projectSlug || DEFAULT_FIRESTORE_DB_ID;
+    const locationId = userInputs?.['location_id']?.trim() || DEFAULT_FIRESTORE_LOCATION;
+    const dbType = (userInputs?.['database_type']?.trim() as FirestoreDatabaseType) || DEFAULT_FIRESTORE_TYPE;
 
-    for (const api of FIREBASE_SERVICE_APIS) {
+    const token = await context.getToken('gcp');
+
+    // Enable required APIs before creating the database
+    const firestoreApis = ['firestore.googleapis.com', 'firebaserules.googleapis.com'] as const;
+    for (const api of firestoreApis) {
       log(`→ Enabling ${api} on "${gcpProjectId}"...`);
       const ok = await enableProjectService(gcpProjectId, token, api);
-      if (ok) {
-        log(`✓ ${api} enabled.`);
-      } else {
-        log(`✗ Failed to enable ${api}.`);
-        failed.push(api);
+      if (!ok) {
+        return { reconciled: false, message: `Failed to enable ${api} on "${gcpProjectId}". Check GCP permissions.` };
       }
+      log(`✓ ${api} enabled.`);
     }
 
-    if (failed.length > 0) {
-      return { reconciled: false, message: `Failed to enable the following APIs on "${gcpProjectId}": ${failed.join(', ')}` };
+    log(`→ Checking if Firestore database "${databaseId}" already exists on "${gcpProjectId}"...`);
+
+    const existing = await getFirestoreDatabase(token, gcpProjectId, databaseId);
+    if (existing) {
+      log(`✓ Firestore database "${databaseId}" already exists at "${existing.locationId}" (type: ${existing.type}).`);
+      storeFirestoreDatabaseId(vaultManager, passphrase, projectId, databaseId);
+      storeFirestoreLocation(vaultManager, passphrase, projectId, existing.locationId);
+      return {
+        reconciled: true,
+        resourcesProduced: {
+          firestore_database_id: databaseId,
+          firestore_location: existing.locationId,
+        },
+      };
     }
 
-    log(`→ Waiting 4s for API propagation on "${gcpProjectId}"...`);
-    await sleep(4000);
-    log(`✓ COMPLETE — All Firebase service APIs enabled on "${gcpProjectId}".`);
-    return { reconciled: true, resourcesProduced: { enabled_services: FIREBASE_SERVICE_APIS.join(',') } };
-  },
+    log(`→ Creating Firestore database "${databaseId}" in "${locationId}" (mode: ${dbType}) on "${gcpProjectId}"...`);
+    const db = await createFirestoreDatabase(token, gcpProjectId, databaseId, locationId, dbType);
+    const actualLocation = db.locationId || locationId;
 
-  async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
-    const log = makeLog('enable-services:delete', _context.projectId);
-    log('○ Firebase service APIs cannot be selectively disabled — no API action taken.');
+    storeFirestoreDatabaseId(vaultManager, passphrase, projectId, databaseId);
+    storeFirestoreLocation(vaultManager, passphrase, projectId, actualLocation);
+
+    log(`✓ COMPLETE — Firestore database "${databaseId}" created at "${actualLocation}" on "${gcpProjectId}".`);
     return {
       reconciled: true,
-      message: 'Firebase services (Auth, Firestore, Storage, FCM) cannot be disabled via API without data loss. Disable manually in Cloud Console if needed.',
+      resourcesProduced: {
+        firestore_database_id: databaseId,
+        firestore_location: actualLocation,
+      },
     };
+  },
+
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const log = makeLog('create-firestore-db:delete', projectId);
+
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+
+    if (!gcpProjectId || !databaseId) {
+      log('No Firestore database metadata in vault — nothing to delete.');
+      deleteFirestoreCredentials(vaultManager, passphrase, projectId);
+      return { reconciled: true, message: 'No Firestore database linked — nothing to delete.' };
+    }
+
+    log(`→ Deleting Firestore database "${databaseId}" from project "${gcpProjectId}"...`);
+    try {
+      const token = await context.getToken('gcp');
+      const result = await deleteFirestoreDatabase(token, gcpProjectId, databaseId);
+      deleteFirestoreCredentials(vaultManager, passphrase, projectId);
+      const msg = result === 'deleted'
+        ? `Deleted Firestore database "${databaseId}" from project "${gcpProjectId}".`
+        : `Firestore database "${databaseId}" was already absent.`;
+      log(`✓ ${msg}`);
+      return { reconciled: true, message: msg, resourcesProduced: {} };
+    } catch (err) {
+      const msg = (err as Error).message;
+      log(`✗ Failed to delete Firestore database: ${msg}`);
+      return { reconciled: false, message: `Could not delete Firestore database "${databaseId}": ${msg}` };
+    }
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
     const { projectId, vaultManager, passphrase } = context;
-    const log = makeLog('enable-services:validate', projectId);
+    const log = makeLog('create-firestore-db:validate', projectId);
 
     const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    if (!gcpProjectId) {
-      log('✗ No GCP project ID in vault.');
-      return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+
+    if (!gcpProjectId || !databaseId) {
+      log('✗ No GCP project or Firestore database ID in vault.');
+      return { reconciled: false, message: 'No Firestore database recorded. Run this step to create one.' };
     }
 
-    log(`→ Checking Firebase service APIs on "${gcpProjectId}"...`);
-    const token = await context.getToken('gcp');
-    const missing: string[] = [];
-    for (const api of FIREBASE_SERVICE_APIS) {
-      const enabled = await isServiceEnabled(token, gcpProjectId, api);
-      if (!enabled) missing.push(api);
+    log(`→ Verifying Firestore database "${databaseId}" on "${gcpProjectId}"...`);
+    try {
+      const token = await context.getToken('gcp');
+      const db = await getFirestoreDatabase(token, gcpProjectId, databaseId);
+      if (db) {
+        log(`✓ Firestore database "${databaseId}" exists at "${db.locationId}" (type: ${db.type}).`);
+        return {
+          reconciled: true,
+          resourcesProduced: {
+            firestore_database_id: databaseId,
+            firestore_location: db.locationId,
+          },
+        };
+      }
+      log(`✗ Firestore database "${databaseId}" not found on "${gcpProjectId}".`);
+      return { reconciled: false, message: `Firestore database "${databaseId}" not found. Run this step to create it.` };
+    } catch (err) {
+      const is403 = err instanceof GcpHttpError && err.statusCode === 403;
+      log(`✗ Validation error: ${(err as Error).message}`);
+      return { reconciled: false, message: (err as Error).message, suggestsReauth: is403 };
     }
-
-    if (missing.length === 0) {
-      log(`✓ All Firebase service APIs are enabled on "${gcpProjectId}".`);
-      return { reconciled: true, resourcesProduced: { enabled_services: FIREBASE_SERVICE_APIS.join(',') } };
-    }
-    log(`✗ Missing APIs: ${missing.join(', ')}`);
-    return { reconciled: false, message: `APIs not yet enabled on "${gcpProjectId}": ${missing.join(', ')}. Run this step to enable them.` };
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
     const { projectId, vaultManager, passphrase } = context;
-    const log = makeLog('enable-services:sync', projectId);
+    const log = makeLog('create-firestore-db:sync', projectId);
 
     const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
     if (!gcpProjectId) return null;
 
-    log(`→ Checking Firebase service APIs on "${gcpProjectId}"...`);
+    const storedDbId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    if (!storedDbId) {
+      log('○ No Firestore database ID in vault — step has not run yet.');
+      return { reconciled: false, message: 'No Firestore database recorded. Run this step to create one.' };
+    }
+
+    log(`→ Checking Firestore database "${storedDbId}" on "${gcpProjectId}"...`);
     try {
       const token = await context.getToken('gcp');
-      const missing: string[] = [];
-      for (const api of FIREBASE_SERVICE_APIS) {
-        const enabled = await isServiceEnabled(token, gcpProjectId, api);
-        if (!enabled) missing.push(api);
+      const db = await getFirestoreDatabase(token, gcpProjectId, storedDbId);
+      if (db) {
+        if (db.locationId !== getStoredFirestoreLocation(vaultManager, passphrase, projectId)) {
+          storeFirestoreLocation(vaultManager, passphrase, projectId, db.locationId);
+        }
+        log(`✓ Firestore database "${storedDbId}" exists at "${db.locationId}".`);
+        return {
+          reconciled: true,
+          resourcesProduced: {
+            firestore_database_id: storedDbId,
+            firestore_location: db.locationId,
+          },
+        };
       }
-      if (missing.length === 0) {
-        log(`✓ All Firebase service APIs enabled.`);
-        return { reconciled: true, resourcesProduced: { enabled_services: FIREBASE_SERVICE_APIS.join(',') } };
-      }
-      log(`○ Missing: ${missing.join(', ')} — run this step to enable them.`);
-      return { reconciled: false, message: `APIs not enabled: ${missing.join(', ')}.` };
+      log(`✗ Firestore database "${storedDbId}" no longer exists — revert and re-run this step.`);
+      return { reconciled: false, message: `Firestore database "${storedDbId}" was deleted from GCP. Revert and re-run this step.` };
     } catch (err) {
       const is403 = err instanceof GcpHttpError && err.statusCode === 403;
-      log(`✗ Could not check service APIs: ${(err as Error).message}`);
-      return { reconciled: false, message: `Could not verify Firebase services: ${(err as Error).message}`, suggestsReauth: is403 };
+      log(`✗ Could not check Firestore database: ${(err as Error).message}`);
+      return { reconciled: false, message: `Could not verify Firestore database: ${(err as Error).message}`, suggestsReauth: is403 };
     }
   },
 };
@@ -1076,8 +1312,9 @@ const registerAndroidAppHandler: StepHandler = {
     }
 
     const module = projectManager.getProject(projectId);
-    const packageName = module.project.bundleId; // Android package name mirrors the iOS bundle ID convention
+    const packageName = normalizeAndroidPackageName(module.project.bundleId); // Android package name mirrors iOS bundle ID with '-' normalized to '_'
     const displayName = module.project.name;
+    validateAndroidPackageName(packageName);
 
     log(`→ Checking for existing Android app with package "${packageName}" on "${gcpProjectId}"...`);
     const token = await context.getToken('gcp');
@@ -1126,7 +1363,8 @@ const registerAndroidAppHandler: StepHandler = {
     }
 
     const module = projectManager.getProject(projectId);
-    const packageName = module.project.bundleId;
+    const packageName = normalizeAndroidPackageName(module.project.bundleId);
+    validateAndroidPackageName(packageName);
     log(`→ Verifying Android app "${packageName}" (appId=${storedAppId}) on "${gcpProjectId}"...`);
     const token = await context.getToken('gcp');
     const apps = await listFirebaseAndroidApps(token, gcpProjectId);
@@ -1147,7 +1385,8 @@ const registerAndroidAppHandler: StepHandler = {
     if (!gcpProjectId) return null;
 
     const module = projectManager.getProject(projectId);
-    const packageName = module.project.bundleId;
+    const packageName = normalizeAndroidPackageName(module.project.bundleId);
+    validateAndroidPackageName(packageName);
     const storedAppId = getStoredFirebaseAndroidAppId(vaultManager, passphrase, projectId);
 
     log(`→ Looking for Android app "${packageName}" on Firebase project "${gcpProjectId}"...`);
@@ -1200,9 +1439,11 @@ const configureFirestoreRulesHandler: StepHandler = {
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
-    log(`→ Deploying Firestore security rules (deny-all default) to "${gcpProjectId}"...`);
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId) ?? undefined;
+    const dbLabel = databaseId && databaseId !== '(default)' ? `database "${databaseId}" on ` : '';
+    log(`→ Deploying Firestore security rules (deny-all default) to ${dbLabel}"${gcpProjectId}"...`);
     const token = await context.getToken('gcp');
-    await withApiRetry(gcpProjectId, token, () => deployFirestoreRules(token, gcpProjectId, DEFAULT_FIRESTORE_RULES), log);
+    await withApiRetry(gcpProjectId, token, () => deployFirestoreRules(token, gcpProjectId, DEFAULT_FIRESTORE_RULES, databaseId), log);
 
     log(`✓ COMPLETE — Firestore rules deployed to "${gcpProjectId}". Update rules in your source repo to customize.`);
     return { reconciled: true, resourcesProduced: {} };
@@ -1224,9 +1465,10 @@ const configureFirestoreRulesHandler: StepHandler = {
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId) ?? undefined;
     log(`→ Checking active Firestore ruleset on "${gcpProjectId}"...`);
     const token = await context.getToken('gcp');
-    const rulesetName = await getActiveFirestoreRulesetName(token, gcpProjectId);
+    const rulesetName = await getActiveFirestoreRulesetName(token, gcpProjectId, databaseId);
     if (rulesetName) {
       log(`✓ Firestore rules are deployed (ruleset: ${rulesetName}).`);
       return { reconciled: true, resourcesProduced: {} };
@@ -1242,10 +1484,11 @@ const configureFirestoreRulesHandler: StepHandler = {
     const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
     if (!gcpProjectId) return null;
 
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId) ?? undefined;
     log(`→ Checking active Firestore ruleset on "${gcpProjectId}"...`);
     try {
       const token = await context.getToken('gcp');
-      const rulesetName = await getActiveFirestoreRulesetName(token, gcpProjectId);
+      const rulesetName = await getActiveFirestoreRulesetName(token, gcpProjectId, databaseId);
       if (rulesetName) {
         log(`✓ Firestore rules deployed (ruleset: ${rulesetName}).`);
         return { reconciled: true, resourcesProduced: {} };
@@ -1348,8 +1591,333 @@ const configureStorageRulesHandler: StepHandler = {
 };
 
 // ---------------------------------------------------------------------------
+// firebase:delete-gcp-project  (teardown step)
+// ---------------------------------------------------------------------------
+
+const deleteGcpProjectTeardownHandler: StepHandler = {
+  stepKey: 'firebase:delete-gcp-project',
+  requiredAuth: 'gcp',
+
+  async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const log = makeLog('delete-gcp-project', projectId);
+
+    const storedId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    if (!storedId) {
+      log('No stored GCP project ID in vault — nothing to delete.');
+      return { reconciled: true, message: 'No GCP project linked — nothing to delete.' };
+    }
+
+    log(`→ Deleting GCP project "${storedId}" via Cloud Resource Manager API...`);
+    try {
+      const token = await context.getToken('gcp');
+      await deleteGcpProject(token, storedId);
+      log(`✓ GCP project "${storedId}" submitted for deletion (enters 30-day pending-delete state).`);
+    } catch (err) {
+      const msg = (err as Error).message;
+      log(`✗ Delete failed: ${msg}`);
+      return { reconciled: false, message: `Could not delete GCP project "${storedId}": ${msg}` };
+    }
+
+    vaultManager.deleteCredential(passphrase, 'firebase', `${projectId}/gcp_project_id`);
+
+    try {
+      const proj = projectManager.getProject(projectId);
+      if (proj.integrations.firebase) {
+        projectManager.updateIntegration(projectId, 'firebase', {
+          status: 'pending',
+          notes: 'GCP project deleted via provisioner teardown.',
+          config: { gcp_project_id: '', service_account_email: '', connected_by: '', credential_scope: 'project' },
+        });
+      }
+    } catch { /* project record may already be gone */ }
+
+    log(`✓ Vault entry "gcp_project_id" cleared and Firebase integration reset.`);
+    return {
+      reconciled: true,
+      message: `GCP project "${storedId}" submitted for deletion. Projects remain in "pending delete" for 30 days before permanent removal.`,
+      resourcesProduced: {},
+    };
+  },
+
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    return this.create(context);
+  },
+
+  async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const log = makeLog('delete-gcp-project:validate', projectId);
+    const storedId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    if (!storedId) {
+      log('✓ No GCP project ID in vault — teardown complete.');
+      return { reconciled: true, message: 'GCP project has been removed.' };
+    }
+    log(`Checking deletion state of "${storedId}"...`);
+    const token = await context.getToken('gcp');
+    const status = await getGcpProjectStatus(token, storedId);
+    if (status === 'not_found') {
+      log(`✓ GCP project "${storedId}" no longer exists.`);
+      return { reconciled: true };
+    }
+    log(`○ GCP project "${storedId}" still exists (status: ${status}).`);
+    return { reconciled: false, message: `GCP project "${storedId}" still exists. Run this teardown step to delete it.` };
+  },
+
+  async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
+    return this.validate(context);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Assisted teardown steps — user confirms manual cleanup, handler marks done.
+// ---------------------------------------------------------------------------
+
+function makeAssistedTeardownHandler(stepKey: string): StepHandler {
+  return {
+    stepKey,
+    async create(_context: StepHandlerContext): Promise<StepHandlerResult> {
+      return { reconciled: true, message: 'User confirmed cleanup complete.' };
+    },
+    async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
+      return { reconciled: true };
+    },
+    async validate(_context: StepHandlerContext): Promise<StepHandlerResult> {
+      return { reconciled: true };
+    },
+    async sync(_context: StepHandlerContext): Promise<StepHandlerResult | null> {
+      return null;
+    },
+  };
+}
+
+const disableMessagingTeardownHandler = makeAssistedTeardownHandler('firebase:disable-messaging');
+const deleteStorageBucketsTeardownHandler = makeAssistedTeardownHandler('firebase:delete-storage-buckets');
+
+// ---------------------------------------------------------------------------
 // Export: all Firebase step handlers
 // ---------------------------------------------------------------------------
+
+const deleteFirestoreDbTeardownHandler: StepHandler = {
+  stepKey: 'firebase:delete-firestore-db',
+  requiredAuth: 'gcp',
+  async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+    return createFirestoreDbHandler.delete(context);
+  },
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    return createFirestoreDbHandler.delete(context);
+  },
+  async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    if (!databaseId) return { reconciled: true, message: 'Firestore database has been removed.' };
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    if (!gcpProjectId) return { reconciled: true };
+    const token = await context.getToken('gcp');
+    const db = await getFirestoreDatabase(token, gcpProjectId, databaseId);
+    if (!db) return { reconciled: true, message: 'Firestore database no longer exists.' };
+    return { reconciled: false, message: `Firestore database "${databaseId}" still exists. Run this teardown step to delete it.` };
+  },
+  async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
+    return this.validate(context);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// oauth:enable-auth-providers
+// Initialises Firebase Auth on the GCP project by calling the Identity
+// Toolkit v2 PATCH config endpoint (sets up email/password sign-in).
+// Social providers (Google, GitHub) require real OAuth client IDs and are
+// configured in the later oauth:register-oauth-clients step.
+// ---------------------------------------------------------------------------
+
+const enableAuthProvidersHandler: StepHandler = {
+  stepKey: 'oauth:enable-auth-providers',
+  requiredAuth: 'gcp',
+
+  async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const log = makeLog('enable-auth-providers', projectId);
+
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    if (!gcpProjectId) {
+      return { reconciled: false, message: 'GCP project not yet provisioned — run firebase:create-gcp-project first.' };
+    }
+
+    const token = await context.getToken('gcp');
+
+    // ── Ensure billing is linked ──────────────────────────────────────────
+    log(`→ Checking billing status on "${gcpProjectId}"...`);
+    const billing = await checkBillingEnabled(token, gcpProjectId);
+    if (!billing.enabled) {
+      log(`→ Billing not linked — looking up available billing accounts...`);
+      const accounts = await listBillingAccounts(token);
+      if (accounts.length === 0) {
+        return {
+          reconciled: false,
+          message:
+            `No billing accounts found for the authenticated user. ` +
+            `Create one at https://console.cloud.google.com/billing then re-run this step.`,
+        };
+      }
+      const account = accounts[0]!;
+      log(`→ Linking billing account "${account.displayName}" (${account.name}) to "${gcpProjectId}"...`);
+      await linkBillingAccount(token, gcpProjectId, account.name);
+      log(`✓ Billing linked.`);
+    } else {
+      log(`✓ Billing already active (${billing.billingAccountName}).`);
+    }
+
+    // ── Initialise Identity Platform & configure email sign-in ────────────
+    log(`→ Initialising Firebase Auth config on "${gcpProjectId}"...`);
+    await enableIdentityToolkit(token, gcpProjectId);
+
+    log(`✓ COMPLETE — Firebase Auth email/password sign-in initialised on "${gcpProjectId}".`);
+    return { reconciled: true, resourcesProduced: { enabled_auth_providers: 'email' } };
+  },
+
+  async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
+    return { reconciled: true };
+  },
+
+  async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const log = makeLog('enable-auth-providers:validate', projectId);
+
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    if (!gcpProjectId) return { reconciled: true };
+
+    try {
+      const token = await context.getToken('gcp');
+      const config = await getFirebaseAuthConfig(token, gcpProjectId) as {
+        signIn?: { email?: { enabled?: boolean } };
+      };
+      const emailEnabled = config.signIn?.email?.enabled === true;
+      if (!emailEnabled) {
+        log(`○ Email/password sign-in not configured yet.`);
+        return { reconciled: false, message: 'Firebase Auth email sign-in is not enabled. Re-run this step.' };
+      }
+      log(`✓ Firebase Auth email/password is configured.`);
+      return { reconciled: true };
+    } catch (err) {
+      const is403 = err instanceof GcpHttpError && err.statusCode === 403;
+      log(`✗ Could not validate: ${(err as Error).message}`);
+      return { reconciled: false, message: `Could not validate Firebase Auth config: ${(err as Error).message}`, suggestsReauth: is403 };
+    }
+  },
+
+  async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
+    return this.validate(context);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// oauth:enable-google-sign-in
+// Enables Google as a default sign-in provider in Firebase Auth by PATCHing
+// the defaultSupportedIdpConfigs/google.com config that was auto-created when
+// Identity Platform was initialised by oauth:enable-auth-providers.
+// ---------------------------------------------------------------------------
+
+const enableGoogleSignInHandler: StepHandler = {
+  stepKey: 'oauth:enable-google-sign-in',
+  requiredAuth: 'gcp',
+
+  async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const log = makeLog('enable-google-sign-in', projectId);
+
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    if (!gcpProjectId) {
+      return { reconciled: false, message: 'GCP project not yet provisioned — run firebase:create-gcp-project first.' };
+    }
+
+    const token = await context.getToken('gcp');
+
+    log(`→ Enabling Google sign-in provider on "${gcpProjectId}"...`);
+    try {
+      await enableFirebaseDefaultIdp(token, gcpProjectId, 'google.com');
+    } catch (err) {
+      if (!(err instanceof GcpHttpError && err.statusCode === 404)) throw err;
+
+      const consoleUrl = `https://console.firebase.google.com/project/${gcpProjectId}/authentication/providers`;
+      log(`✗ Google sign-in config does not exist yet on "${gcpProjectId}".`);
+      return {
+        reconciled: false,
+        message:
+          `Google Sign-In has not been set up in Firebase yet. ` +
+          `Enable it once in the Firebase Console, then re-run this step to verify:\n\n` +
+          consoleUrl,
+      };
+    }
+
+    log(`✓ COMPLETE — Google sign-in enabled on "${gcpProjectId}".`);
+    return { reconciled: true, resourcesProduced: { google_sign_in_enabled: 'true' } };
+  },
+
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const log = makeLog('enable-google-sign-in:delete', projectId);
+
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    if (!gcpProjectId) return { reconciled: true };
+
+    const token = await context.getToken('gcp');
+    const configPath = `/admin/v2/projects/${gcpProjectId}/defaultSupportedIdpConfigs/google.com`;
+    try {
+      await gcpRequest(
+        'PATCH',
+        'identitytoolkit.googleapis.com',
+        `${configPath}?updateMask=enabled`,
+        token,
+        JSON.stringify({ enabled: false }),
+      );
+      log(`✓ Google sign-in disabled on "${gcpProjectId}".`);
+    } catch (err) {
+      if (err instanceof GcpHttpError && err.statusCode === 404) {
+        log(`○ Google sign-in config not found — nothing to disable.`);
+      } else {
+        throw err;
+      }
+    }
+    return { reconciled: true };
+  },
+
+  async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const log = makeLog('enable-google-sign-in:validate', projectId);
+
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    if (!gcpProjectId) return { reconciled: true };
+
+    try {
+      const token = await context.getToken('gcp');
+      const res = await gcpRequest(
+        'GET',
+        'identitytoolkit.googleapis.com',
+        `/admin/v2/projects/${gcpProjectId}/defaultSupportedIdpConfigs/google.com`,
+        token,
+      );
+      const config = JSON.parse(res.body) as { enabled?: boolean };
+      if (config.enabled) {
+        log(`✓ Google sign-in is enabled.`);
+        return { reconciled: true };
+      }
+      log(`○ Google sign-in config exists but is disabled.`);
+      return { reconciled: false, message: 'Google sign-in is not enabled. Re-run this step.' };
+    } catch (err) {
+      if (err instanceof GcpHttpError && err.statusCode === 404) {
+        log(`○ Google sign-in config not found.`);
+        return { reconciled: false, message: 'Google sign-in is not configured. Run "Enable Firebase Auth Providers" first, then re-run this step.' };
+      }
+      const is403 = err instanceof GcpHttpError && err.statusCode === 403;
+      log(`✗ Could not validate: ${(err as Error).message}`);
+      return { reconciled: false, message: `Could not check Google sign-in status: ${(err as Error).message}`, suggestsReauth: is403 };
+    }
+  },
+
+  async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
+    return this.validate(context);
+  },
+};
 
 export const FIREBASE_STEP_HANDLERS: StepHandler[] = [
   createGcpProjectHandler,
@@ -1357,9 +1925,19 @@ export const FIREBASE_STEP_HANDLERS: StepHandler[] = [
   createProvisionerSaHandler,
   bindProvisionerIamHandler,
   generateSaKeyHandler,
-  enableServicesHandler,
+  enableAuthHandler,
+  enableStorageHandler,
+  enableFcmHandler,
+  createFirestoreDbHandler,
   registerIosAppHandler,
   registerAndroidAppHandler,
   configureFirestoreRulesHandler,
   configureStorageRulesHandler,
+  enableAuthProvidersHandler,
+  enableGoogleSignInHandler,
+  // Teardown handlers
+  deleteGcpProjectTeardownHandler,
+  disableMessagingTeardownHandler,
+  deleteStorageBucketsTeardownHandler,
+  deleteFirestoreDbTeardownHandler,
 ];

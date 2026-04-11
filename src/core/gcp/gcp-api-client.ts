@@ -543,12 +543,50 @@ export async function isServiceEnabled(accessToken: string, gcpProjectId: string
 
 export async function enableProjectService(gcpProjectId: string, accessToken: string, serviceName: string): Promise<boolean> {
   try {
-    await gcpRequest(
+    const res = await gcpRequest(
       'POST', 'serviceusage.googleapis.com',
       `/v1/projects/${encodeURIComponent(gcpProjectId)}/services/${encodeURIComponent(serviceName)}:enable`,
       accessToken, '{}',
     );
-    console.log(`[gcp-api] Service Usage enable requested for ${serviceName} on ${gcpProjectId}.`);
+
+    // Service Usage returns a Long Running Operation — poll it to completion
+    // before returning. Without this, callers assume the API is ready but GCP
+    // hasn't finished enabling it yet, causing immediate 403s on first use.
+    const op = JSON.parse(res.body) as { name?: string; done?: boolean; error?: { code: number; message: string } };
+    if (op.name && !op.done) {
+      console.log(`[gcp-api] Waiting for Service Usage LRO to complete: ${op.name}`);
+      let lroCompleted = false;
+      for (let attempt = 0; attempt < 60; attempt++) {
+        await sleep(3000);
+        const pollRes = await gcpRequest('GET', 'serviceusage.googleapis.com', `/v1/${op.name}`, accessToken);
+        const polled = JSON.parse(pollRes.body) as { done?: boolean; error?: { code: number; message: string } };
+        if (polled.done) {
+          if (polled.error) {
+            console.log(`[gcp-api] Service Usage LRO failed for ${serviceName}: ${polled.error.message}`);
+            return false;
+          }
+          lroCompleted = true;
+          break;
+        }
+      }
+      if (!lroCompleted) {
+        console.log(`[gcp-api] Service Usage LRO for ${serviceName} did not complete within polling window — treating as failed.`);
+        return false;
+      }
+    } else if (op.error) {
+      console.log(`[gcp-api] Failed to enable ${serviceName} on ${gcpProjectId}: ${op.error.message}`);
+      return false;
+    }
+
+    // Verify the API is actually enabled — GCP can report LRO success but the
+    // enablement may not have taken effect (e.g. blocked by org policy).
+    const verified = await isServiceEnabled(accessToken, gcpProjectId, serviceName);
+    if (!verified) {
+      console.log(`[gcp-api] ${serviceName} LRO succeeded but isServiceEnabled returned false for ${gcpProjectId} — org policy may be blocking it.`);
+      return false;
+    }
+
+    console.log(`[gcp-api] ${serviceName} enabled on ${gcpProjectId}.`);
     return true;
   } catch (err) {
     if (err instanceof GcpHttpError) {
@@ -612,6 +650,43 @@ async function pollFirebaseOperation(accessToken: string, operationName: string)
   throw new Error('Firebase operation did not complete within 60s.');
 }
 
+/**
+ * Provisions Firebase on an existing GCP project by calling the Firebase
+ * Management API `:addFirebase` endpoint. This is required before any
+ * Firebase-specific APIs (Auth, Firestore Rules, Storage Rules, etc.) will
+ * accept requests — merely enabling firebase.googleapis.com via Service
+ * Usage is not sufficient.
+ *
+ * Idempotent: if the project is already a Firebase project the API returns
+ * a 409 which is treated as success.
+ */
+export async function provisionFirebaseOnProject(accessToken: string, gcpProjectId: string): Promise<void> {
+  console.log(`[gcp-api] Provisioning Firebase on GCP project "${gcpProjectId}" via :addFirebase...`);
+  try {
+    const res = await gcpRequest(
+      'POST', 'firebase.googleapis.com',
+      `/v1beta1/projects/${gcpProjectId}:addFirebase`,
+      accessToken, '{}',
+    );
+    const op = JSON.parse(res.body) as { name?: string; done?: boolean; error?: { message: string } };
+    if (op.name && !op.done) {
+      console.log(`[gcp-api] Waiting for :addFirebase LRO: ${op.name}`);
+      await pollFirebaseOperation(accessToken, op.name);
+    }
+    console.log(`[gcp-api] Firebase provisioned on "${gcpProjectId}".`);
+  } catch (err) {
+    if (err instanceof GcpHttpError) {
+      const b = err.body;
+      // 409 = already a Firebase project — treat as success
+      if (err.statusCode === 409 || b.includes('already') || b.includes('ALREADY_EXISTS')) {
+        console.log(`[gcp-api] "${gcpProjectId}" is already a Firebase project.`);
+        return;
+      }
+    }
+    throw err;
+  }
+}
+
 export async function listFirebaseIosApps(accessToken: string, gcpProjectId: string): Promise<FirebaseIosApp[]> {
   const res = await gcpRequest('GET', 'firebase.googleapis.com', `/v1beta1/projects/${gcpProjectId}/iosApps`, accessToken);
   const body = JSON.parse(res.body) as { apps?: Array<{ appId: string; bundleId: string; displayName?: string }> };
@@ -665,11 +740,121 @@ export async function registerFirebaseAndroidApp(
 }
 
 // ---------------------------------------------------------------------------
+// Firestore Database Management
+// ---------------------------------------------------------------------------
+
+export type FirestoreDatabaseType = 'FIRESTORE_NATIVE' | 'DATASTORE_MODE';
+
+export interface FirestoreDatabase {
+  name: string;
+  uid?: string;
+  locationId: string;
+  type: FirestoreDatabaseType;
+  deleteProtectionState?: 'DELETE_PROTECTION_ENABLED' | 'DELETE_PROTECTION_DISABLED';
+}
+
+export async function getFirestoreDatabase(
+  accessToken: string,
+  gcpProjectId: string,
+  databaseId: string,
+): Promise<FirestoreDatabase | null> {
+  try {
+    const res = await gcpRequest(
+      'GET', 'firestore.googleapis.com',
+      `/v1/projects/${gcpProjectId}/databases/${encodeURIComponent(databaseId)}`,
+      accessToken,
+    );
+    return JSON.parse(res.body) as FirestoreDatabase;
+  } catch (err) {
+    if (err instanceof GcpHttpError && err.statusCode === 404) return null;
+    throw err;
+  }
+}
+
+export async function createFirestoreDatabase(
+  accessToken: string,
+  gcpProjectId: string,
+  databaseId: string,
+  locationId: string,
+  type: FirestoreDatabaseType = 'FIRESTORE_NATIVE',
+): Promise<FirestoreDatabase> {
+  console.log(`[gcp-api] Creating Firestore database "${databaseId}" in "${locationId}" on project "${gcpProjectId}"…`);
+  const res = await gcpRequest(
+    'POST', 'firestore.googleapis.com',
+    `/v1/projects/${gcpProjectId}/databases?databaseId=${encodeURIComponent(databaseId)}`,
+    accessToken,
+    JSON.stringify({ type, locationId }),
+  );
+
+  const op = JSON.parse(res.body) as { name?: string; done?: boolean; response?: FirestoreDatabase; error?: { message: string } };
+  if (op.error) throw new Error(`Firestore database creation failed: ${op.error.message}`);
+
+  if (op.name && !op.done) {
+    console.log(`[gcp-api] Waiting for Firestore database creation LRO: ${op.name}`);
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await sleep(3000);
+      const pollRes = await gcpRequest('GET', 'firestore.googleapis.com', `/v1/${op.name}`, accessToken);
+      const polled = JSON.parse(pollRes.body) as { done?: boolean; response?: FirestoreDatabase; error?: { message: string } };
+      if (polled.error) throw new Error(`Firestore database creation failed: ${polled.error.message}`);
+      if (polled.done && polled.response) {
+        console.log(`[gcp-api] Firestore database "${databaseId}" created on "${gcpProjectId}".`);
+        return polled.response;
+      }
+    }
+    throw new Error(`Firestore database creation LRO did not complete within 3 minutes.`);
+  }
+
+  if (op.response) return op.response;
+
+  const db = await getFirestoreDatabase(accessToken, gcpProjectId, databaseId);
+  if (db) return db;
+  throw new Error(`Firestore database creation returned unexpected response: ${res.body}`);
+}
+
+export async function deleteFirestoreDatabase(
+  accessToken: string,
+  gcpProjectId: string,
+  databaseId: string,
+): Promise<'deleted' | 'not_found'> {
+  console.log(`[gcp-api] Deleting Firestore database "${databaseId}" on project "${gcpProjectId}"…`);
+  try {
+    await gcpRequest(
+      'DELETE', 'firestore.googleapis.com',
+      `/v1/projects/${gcpProjectId}/databases/${encodeURIComponent(databaseId)}`,
+      accessToken,
+    );
+    console.log(`[gcp-api] Firestore database "${databaseId}" deleted from "${gcpProjectId}".`);
+    return 'deleted';
+  } catch (err) {
+    if (err instanceof GcpHttpError && err.statusCode === 404) {
+      console.log(`[gcp-api] Firestore database "${databaseId}" not found on "${gcpProjectId}" — already deleted.`);
+      return 'not_found';
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Firebase Rules API — Firestore and Storage security rules
 // ---------------------------------------------------------------------------
 
-/** Deploy Firestore security rules to the given GCP project. */
-export async function deployFirestoreRules(accessToken: string, gcpProjectId: string, rulesContent: string): Promise<void> {
+/**
+ * Compute the Firebase Rules release name for a Firestore database.
+ * The default database uses `cloud.firestore`; named databases use
+ * `cloud.firestore/databases/{databaseId}`.
+ */
+function firestoreReleaseName(databaseId?: string): string {
+  if (!databaseId || databaseId === '(default)') return 'cloud.firestore';
+  return `cloud.firestore/databases/${databaseId}`;
+}
+
+/** Deploy Firestore security rules to the given GCP project and database. */
+export async function deployFirestoreRules(
+  accessToken: string,
+  gcpProjectId: string,
+  rulesContent: string,
+  databaseId?: string,
+): Promise<void> {
   const createRes = await gcpRequest(
     'POST', 'firebaserules.googleapis.com',
     `/v1/projects/${gcpProjectId}/rulesets`,
@@ -679,12 +864,33 @@ export async function deployFirestoreRules(accessToken: string, gcpProjectId: st
   const ruleset = JSON.parse(createRes.body) as { name?: string };
   if (!ruleset.name) throw new Error(`Firestore ruleset creation returned no name: ${createRes.body}`);
 
-  await gcpRequest(
-    'PUT', 'firebaserules.googleapis.com',
-    `/v1/projects/${gcpProjectId}/releases/cloud.firestore`,
-    accessToken,
-    JSON.stringify({ release: { name: `projects/${gcpProjectId}/releases/cloud.firestore`, rulesetName: ruleset.name } }),
-  );
+  const releaseName = firestoreReleaseName(databaseId);
+  const releaseBody = JSON.stringify({
+    release: { name: `projects/${gcpProjectId}/releases/${releaseName}`, rulesetName: ruleset.name },
+  });
+
+  // Firebase auto-creates the `cloud.firestore` release for the default database but does NOT
+  // auto-create releases for named databases. Try PUT (update) first; fall back to POST (create)
+  // when the release doesn't exist yet (404).
+  try {
+    await gcpRequest(
+      'PUT', 'firebaserules.googleapis.com',
+      `/v1/projects/${gcpProjectId}/releases/${encodeURIComponent(releaseName)}`,
+      accessToken,
+      releaseBody,
+    );
+  } catch (err) {
+    if (err instanceof GcpHttpError && err.statusCode === 404) {
+      await gcpRequest(
+        'POST', 'firebaserules.googleapis.com',
+        `/v1/projects/${gcpProjectId}/releases`,
+        accessToken,
+        releaseBody,
+      );
+    } else {
+      throw err;
+    }
+  }
 }
 
 /** Deploy Cloud Storage security rules to the project's default bucket. */
@@ -700,18 +906,40 @@ export async function deployStorageRules(accessToken: string, gcpProjectId: stri
   if (!ruleset.name) throw new Error(`Storage ruleset creation returned no name: ${createRes.body}`);
 
   const releaseName = `firebase.storage/${bucket}`;
-  await gcpRequest(
-    'PUT', 'firebaserules.googleapis.com',
-    `/v1/projects/${gcpProjectId}/releases/${encodeURIComponent(releaseName)}`,
-    accessToken,
-    JSON.stringify({ release: { name: `projects/${gcpProjectId}/releases/${releaseName}`, rulesetName: ruleset.name } }),
-  );
+  const releaseBody = JSON.stringify({
+    release: { name: `projects/${gcpProjectId}/releases/${releaseName}`, rulesetName: ruleset.name },
+  });
+
+  try {
+    await gcpRequest(
+      'PUT', 'firebaserules.googleapis.com',
+      `/v1/projects/${gcpProjectId}/releases/${encodeURIComponent(releaseName)}`,
+      accessToken,
+      releaseBody,
+    );
+  } catch (err) {
+    if (err instanceof GcpHttpError && err.statusCode === 404) {
+      await gcpRequest(
+        'POST', 'firebaserules.googleapis.com',
+        `/v1/projects/${gcpProjectId}/releases`,
+        accessToken,
+        releaseBody,
+      );
+    } else {
+      throw err;
+    }
+  }
 }
 
-/** Returns the active ruleset name for the cloud.firestore release, or null if none is set. */
-export async function getActiveFirestoreRulesetName(accessToken: string, gcpProjectId: string): Promise<string | null> {
+/** Returns the active ruleset name for the Firestore release, or null if none is set. */
+export async function getActiveFirestoreRulesetName(
+  accessToken: string,
+  gcpProjectId: string,
+  databaseId?: string,
+): Promise<string | null> {
+  const releaseName = firestoreReleaseName(databaseId);
   try {
-    const res = await gcpRequest('GET', 'firebaserules.googleapis.com', `/v1/projects/${gcpProjectId}/releases/cloud.firestore`, accessToken);
+    const res = await gcpRequest('GET', 'firebaserules.googleapis.com', `/v1/projects/${gcpProjectId}/releases/${encodeURIComponent(releaseName)}`, accessToken);
     const release = JSON.parse(res.body) as { rulesetName?: string };
     return release.rulesetName?.trim() || null;
   } catch (err) {
@@ -746,26 +974,73 @@ export interface FirebaseAuthProviderConfig {
 }
 
 /**
+ * Initialises Identity Platform on a GCP project so that the v2 config
+ * resource exists. This is a prerequisite for any PATCH to /v2/.../config.
+ * No-ops if Identity Platform is already initialised (409 ALREADY_EXISTS).
+ */
+export async function initializeIdentityPlatform(
+  accessToken: string,
+  gcpProjectId: string,
+): Promise<void> {
+  try {
+    await gcpRequest(
+      'POST',
+      'identitytoolkit.googleapis.com',
+      `/v2/projects/${gcpProjectId}/identityPlatform:initializeAuth`,
+      accessToken,
+      '{}',
+    );
+    console.log(`[gcp-api] Identity Platform initialised on "${gcpProjectId}".`);
+  } catch (err) {
+    if (err instanceof GcpHttpError && (err.statusCode === 409 || err.body.includes('ALREADY_EXISTS'))) {
+      console.log(`[gcp-api] Identity Platform already initialised on "${gcpProjectId}".`);
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
  * Enables Firebase Identity Toolkit (Firebase Auth) on a GCP project.
- * Calls the Identity Toolkit REST API to set up the Firebase Auth configuration.
+ * Initialises Identity Platform first if needed (handles 404 CONFIGURATION_NOT_FOUND),
+ * then configures email/password sign-in via the v2 config endpoint.
  */
 export async function enableIdentityToolkit(
   accessToken: string,
   gcpProjectId: string,
 ): Promise<void> {
-  await gcpRequest(
-    'PATCH',
-    'identitytoolkit.googleapis.com',
-    `/v2/projects/${gcpProjectId}/config?updateMask=signIn`,
-    accessToken,
-    JSON.stringify({
-      signIn: {
-        allowDuplicateEmails: false,
-        anonymous: { enabled: false },
-        email: { enabled: true, passwordRequired: true },
-      },
-    }),
-  );
+  const signInBody = JSON.stringify({
+    signIn: {
+      allowDuplicateEmails: false,
+      anonymous: { enabled: false },
+      email: { enabled: true, passwordRequired: true },
+    },
+  });
+
+  try {
+    await gcpRequest(
+      'PATCH',
+      'identitytoolkit.googleapis.com',
+      `/v2/projects/${gcpProjectId}/config?updateMask=signIn`,
+      accessToken,
+      signInBody,
+    );
+  } catch (err) {
+    if (err instanceof GcpHttpError && err.statusCode === 404 && err.body.includes('CONFIGURATION_NOT_FOUND')) {
+      console.log(`[gcp-api] Identity Platform config not found on "${gcpProjectId}" — initialising...`);
+      await initializeIdentityPlatform(accessToken, gcpProjectId);
+      await sleep(3000);
+      await gcpRequest(
+        'PATCH',
+        'identitytoolkit.googleapis.com',
+        `/v2/projects/${gcpProjectId}/config?updateMask=signIn`,
+        accessToken,
+        signInBody,
+      );
+    } else {
+      throw err;
+    }
+  }
   console.log(`[gcp-api] Firebase Identity Toolkit configured for project "${gcpProjectId}".`);
 }
 
@@ -905,6 +1180,122 @@ export async function configureAppleSignInProvider(
 }
 
 /**
+ * Enables an existing built-in Firebase Auth sign-in provider config via PATCH.
+ * Throws 404 if the config doesn't exist yet — the caller must create it first
+ * using `createFirebaseDefaultIdp`.
+ */
+export async function enableFirebaseDefaultIdp(
+  accessToken: string,
+  gcpProjectId: string,
+  idpId: 'google.com' | 'github.com' | 'apple.com',
+): Promise<void> {
+  const configPath = `/admin/v2/projects/${gcpProjectId}/defaultSupportedIdpConfigs/${idpId}`;
+  await gcpRequest(
+    'PATCH',
+    'identitytoolkit.googleapis.com',
+    `${configPath}?updateMask=enabled`,
+    accessToken,
+    JSON.stringify({ enabled: true }),
+  );
+  console.log(`[gcp-api] Firebase Auth "${idpId}" provider enabled for project "${gcpProjectId}".`);
+}
+
+export interface FirebaseDefaultSupportedIdpConfig {
+  name?: string;
+  enabled?: boolean;
+  clientId?: string;
+  clientSecret?: string;
+}
+
+export async function getFirebaseDefaultSupportedIdpConfig(
+  accessToken: string,
+  gcpProjectId: string,
+  idpId: 'google.com' | 'github.com' | 'apple.com',
+): Promise<FirebaseDefaultSupportedIdpConfig> {
+  const res = await gcpRequest(
+    'GET',
+    'identitytoolkit.googleapis.com',
+    `/admin/v2/projects/${gcpProjectId}/defaultSupportedIdpConfigs/${idpId}`,
+    accessToken,
+  );
+  const parsed = JSON.parse(res.body) as FirebaseDefaultSupportedIdpConfig;
+  if (!parsed.name) {
+    parsed.name = `projects/${gcpProjectId}/defaultSupportedIdpConfigs/${idpId}`;
+  }
+  return parsed;
+}
+
+/**
+ * Creates a new defaultSupportedIdpConfig entry with the given OAuth credentials.
+ */
+export async function createFirebaseDefaultIdp(
+  accessToken: string,
+  gcpProjectId: string,
+  idpId: 'google.com' | 'github.com' | 'apple.com',
+  clientId: string,
+  clientSecret: string,
+): Promise<void> {
+  await gcpRequest(
+    'POST',
+    'identitytoolkit.googleapis.com',
+    `/admin/v2/projects/${gcpProjectId}/defaultSupportedIdpConfigs?idpId=${idpId}`,
+    accessToken,
+    JSON.stringify({ enabled: true, clientId, clientSecret }),
+  );
+  console.log(`[gcp-api] Created and enabled Firebase Auth "${idpId}" provider for project "${gcpProjectId}".`);
+}
+
+/**
+ * Downloads GoogleService-Info.plist for a Firebase iOS app and returns decoded UTF-8 text.
+ */
+export async function downloadFirebaseIosAppConfig(
+  accessToken: string,
+  gcpProjectId: string,
+  iosAppId: string,
+): Promise<string> {
+  const res = await gcpRequest(
+    'GET',
+    'firebase.googleapis.com',
+    `/v1beta1/projects/${gcpProjectId}/iosApps/${encodeURIComponent(iosAppId)}/config`,
+    accessToken,
+  );
+  const parsed = JSON.parse(res.body) as { configFileContents?: string };
+  if (!parsed.configFileContents?.trim()) {
+    throw new Error(`Firebase iOS app config is missing for appId "${iosAppId}".`);
+  }
+  const decoded = Buffer.from(parsed.configFileContents, 'base64').toString('utf8');
+  if (!decoded.trim()) {
+    throw new Error(`Firebase iOS app config for "${iosAppId}" decoded to empty content.`);
+  }
+  return decoded;
+}
+
+/**
+ * Downloads google-services.json for a Firebase Android app and returns decoded UTF-8 text.
+ */
+export async function downloadFirebaseAndroidAppConfig(
+  accessToken: string,
+  gcpProjectId: string,
+  androidAppId: string,
+): Promise<string> {
+  const res = await gcpRequest(
+    'GET',
+    'firebase.googleapis.com',
+    `/v1beta1/projects/${gcpProjectId}/androidApps/${encodeURIComponent(androidAppId)}/config`,
+    accessToken,
+  );
+  const parsed = JSON.parse(res.body) as { configFileContents?: string };
+  if (!parsed.configFileContents?.trim()) {
+    throw new Error(`Firebase Android app config is missing for appId "${androidAppId}".`);
+  }
+  const decoded = Buffer.from(parsed.configFileContents, 'base64').toString('utf8');
+  if (!decoded.trim()) {
+    throw new Error(`Firebase Android app config for "${androidAppId}" decoded to empty content.`);
+  }
+  return decoded;
+}
+
+/**
  * Uploads an APNs key to Firebase Cloud Messaging for iOS push notifications.
  */
 export async function uploadApnsKeyToFirebase(
@@ -985,6 +1376,116 @@ export async function checkBillingEnabled(
     enabled: info.billingEnabled === true,
     billingAccountName: info.billingAccountName ?? null,
   };
+}
+
+/**
+ * Lists billing accounts the caller has access to.
+ * Returns only open (active) accounts.
+ */
+export async function listBillingAccounts(
+  accessToken: string,
+): Promise<Array<{ name: string; displayName: string }>> {
+  const res = await gcpRequest(
+    'GET',
+    'cloudbilling.googleapis.com',
+    '/v1/billingAccounts?pageSize=20',
+    accessToken,
+  );
+  const data = JSON.parse(res.body) as {
+    billingAccounts?: Array<{ name: string; displayName: string; open?: boolean }>;
+  };
+  return (data.billingAccounts ?? []).filter((a) => a.open !== false);
+}
+
+/**
+ * Links a billing account to a GCP project.
+ */
+export async function linkBillingAccount(
+  accessToken: string,
+  gcpProjectId: string,
+  billingAccountName: string,
+): Promise<void> {
+  await gcpRequest(
+    'PUT',
+    'cloudbilling.googleapis.com',
+    `/v1/projects/${gcpProjectId}/billingInfo`,
+    accessToken,
+    JSON.stringify({ billingAccountName }),
+  );
+  console.log(`[gcp-api] Linked billing account "${billingAccountName}" to project "${gcpProjectId}".`);
+}
+
+// ---------------------------------------------------------------------------
+// GCP project metadata
+// ---------------------------------------------------------------------------
+
+export async function getGcpProjectNumber(
+  accessToken: string,
+  gcpProjectId: string,
+): Promise<string> {
+  const res = await gcpRequest(
+    'GET',
+    'cloudresourcemanager.googleapis.com',
+    `/v1/projects/${gcpProjectId}`,
+    accessToken,
+  );
+  const payload = JSON.parse(res.body) as { projectNumber?: string };
+  if (!payload.projectNumber) {
+    throw new Error(`Could not resolve project number for "${gcpProjectId}".`);
+  }
+  return payload.projectNumber;
+}
+
+// ---------------------------------------------------------------------------
+// OAuth brand & client management (via IAP API)
+// ---------------------------------------------------------------------------
+
+export async function getOrCreateOAuthBrand(
+  accessToken: string,
+  projectNumber: string,
+  supportEmail: string,
+): Promise<string> {
+  const listRes = await gcpRequest(
+    'GET',
+    'iap.googleapis.com',
+    `/v1/projects/${projectNumber}/brands`,
+    accessToken,
+  );
+  const list = JSON.parse(listRes.body) as { brands?: Array<{ name: string }> };
+  if (list.brands && list.brands.length > 0) {
+    console.log(`[gcp-api] Using existing OAuth brand: ${list.brands[0]!.name}`);
+    return list.brands[0]!.name;
+  }
+
+  const createRes = await gcpRequest(
+    'POST',
+    'iap.googleapis.com',
+    `/v1/projects/${projectNumber}/brands`,
+    accessToken,
+    JSON.stringify({ applicationTitle: 'Firebase Auth', supportEmail }),
+  );
+  const brand = JSON.parse(createRes.body) as { name: string };
+  console.log(`[gcp-api] Created OAuth brand: ${brand.name}`);
+  return brand.name;
+}
+
+export async function createOAuthWebClient(
+  accessToken: string,
+  brandName: string,
+  displayName: string,
+): Promise<{ clientId: string; clientSecret: string }> {
+  const res = await gcpRequest(
+    'POST',
+    'iap.googleapis.com',
+    `/v1/${brandName}/identityAwareProxyClients`,
+    accessToken,
+    JSON.stringify({ displayName }),
+  );
+  const client = JSON.parse(res.body) as { name: string; secret: string };
+  const parts = client.name.split('/');
+  const clientId = parts[parts.length - 1]!;
+  console.log(`[gcp-api] Created OAuth web client: ${clientId}`);
+  return { clientId, clientSecret: client.secret };
 }
 
 // ---------------------------------------------------------------------------

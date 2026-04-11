@@ -5,6 +5,11 @@ import {
   propagateJourneyPhases,
   validatePlanAcyclic,
 } from '../provisioning/journey-phases.js';
+import { registerBuiltinPlugins } from '../plugins/builtin/index.js';
+
+beforeAll(() => {
+  registerBuiltinPlugins();
+});
 
 function ua(
   key: string,

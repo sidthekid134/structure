@@ -314,4 +314,51 @@ export function storeFirebaseAndroidAppId(
   vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firebase_android_app_id'), appId);
 }
 
+// ---------------------------------------------------------------------------
+// Firestore database storage
+// ---------------------------------------------------------------------------
+
+export function getStoredFirestoreDatabaseId(
+  vaultManager: VaultManager,
+  passphrase: string,
+  studioProjectId: string,
+): string | null {
+  return vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_database_id'))?.trim() || null;
+}
+
+export function storeFirestoreDatabaseId(
+  vaultManager: VaultManager,
+  passphrase: string,
+  studioProjectId: string,
+  databaseId: string,
+): void {
+  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_database_id'), databaseId);
+}
+
+export function getStoredFirestoreLocation(
+  vaultManager: VaultManager,
+  passphrase: string,
+  studioProjectId: string,
+): string | null {
+  return vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_location'))?.trim() || null;
+}
+
+export function storeFirestoreLocation(
+  vaultManager: VaultManager,
+  passphrase: string,
+  studioProjectId: string,
+  location: string,
+): void {
+  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_location'), location);
+}
+
+export function deleteFirestoreCredentials(
+  vaultManager: VaultManager,
+  passphrase: string,
+  studioProjectId: string,
+): void {
+  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_database_id'));
+  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_location'));
+}
+
 export { GCP_PROVISIONER_SA_ID, provisionerSaEmail };

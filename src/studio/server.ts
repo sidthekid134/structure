@@ -20,6 +20,7 @@ import { WebSocketServer } from 'ws';
 import { EventLog } from '../orchestration/event-log.js';
 import { createApiRouter } from './api.js';
 import { WsHandler } from './ws-handler.js';
+import { registerBuiltinPlugins } from '../plugins/builtin/index.js';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -145,6 +146,9 @@ export class StudioServer {
 
   private setupRoutes(storeDir: string): void {
     this.app.use(express.static(this.staticDir, { index: false }));
+
+    // Bootstrap plugins before the API router starts handling requests
+    registerBuiltinPlugins();
 
     // REST API
     this.app.use('/api', createApiRouter(this.eventLog, this.wsHandler, storeDir, this.devMode));

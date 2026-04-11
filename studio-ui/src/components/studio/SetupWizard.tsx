@@ -22,6 +22,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   SkipForward,
+  MinusCircle,
   Smartphone,
   Undo2,
   Upload,
@@ -48,6 +49,8 @@ import { effectiveUserActionInteractiveAction } from './user-action-interactive'
 
 // ---------------------------------------------------------------------------
 // Module display metadata — icon + color per module ID
+// Served dynamically from plan.pluginDisplayMeta; built-in icons are loaded
+// lazily so new plugins that ship their own icon names don't break here.
 // ---------------------------------------------------------------------------
 
 interface ModuleDisplayMeta {
@@ -58,21 +61,22 @@ interface ModuleDisplayMeta {
   textColor: string;
 }
 
-const MODULE_DISPLAY_META: Record<string, ModuleDisplayMeta> = {
-  'firebase-core':          { icon: Cloud,        iconColor: 'text-orange-500',              bgColor: 'bg-orange-500/10',   borderColor: 'border-orange-500/25',  textColor: 'text-orange-700 dark:text-orange-300' },
-  'firebase-auth':          { icon: ShieldCheck,   iconColor: 'text-violet-500',              bgColor: 'bg-violet-500/10',   borderColor: 'border-violet-500/25',  textColor: 'text-violet-700 dark:text-violet-300' },
-  'firebase-firestore':     { icon: Database,      iconColor: 'text-emerald-500',             bgColor: 'bg-emerald-500/10',  borderColor: 'border-emerald-500/25', textColor: 'text-emerald-700 dark:text-emerald-300' },
-  'firebase-storage':       { icon: HardDrive,     iconColor: 'text-cyan-500',                bgColor: 'bg-cyan-500/10',     borderColor: 'border-cyan-500/25',    textColor: 'text-cyan-700 dark:text-cyan-300' },
-  'firebase-messaging':     { icon: Bell,          iconColor: 'text-sky-500',                 bgColor: 'bg-sky-500/10',      borderColor: 'border-sky-500/25',     textColor: 'text-sky-700 dark:text-sky-300' },
-  'github-repo':            { icon: Github,        iconColor: 'text-slate-600 dark:text-slate-300', bgColor: 'bg-slate-500/10', borderColor: 'border-slate-500/25', textColor: 'text-slate-700 dark:text-slate-300' },
-  'github-ci':              { icon: GitBranch,     iconColor: 'text-slate-600 dark:text-slate-300', bgColor: 'bg-slate-500/10', borderColor: 'border-slate-500/25', textColor: 'text-slate-700 dark:text-slate-300' },
-  'eas-builds':             { icon: Smartphone,    iconColor: 'text-indigo-500',              bgColor: 'bg-indigo-500/10',   borderColor: 'border-indigo-500/25',  textColor: 'text-indigo-700 dark:text-indigo-300' },
-  'eas-submit':             { icon: Upload,        iconColor: 'text-indigo-500',              bgColor: 'bg-indigo-500/10',   borderColor: 'border-indigo-500/25',  textColor: 'text-indigo-700 dark:text-indigo-300' },
-  'apple-signing':          { icon: ShieldCheck,   iconColor: 'text-zinc-500',                bgColor: 'bg-zinc-500/10',     borderColor: 'border-zinc-500/25',    textColor: 'text-zinc-700 dark:text-zinc-300' },
-  'google-play-publishing': { icon: Play,          iconColor: 'text-green-500',               bgColor: 'bg-green-500/10',    borderColor: 'border-green-500/25',   textColor: 'text-green-700 dark:text-green-300' },
-  'cloudflare-domain':      { icon: Globe,         iconColor: 'text-amber-500',               bgColor: 'bg-amber-500/10',    borderColor: 'border-amber-500/25',   textColor: 'text-amber-700 dark:text-amber-300' },
-  'oauth-social':           { icon: KeyRound,      iconColor: 'text-violet-500',              bgColor: 'bg-violet-500/10',   borderColor: 'border-violet-500/25',  textColor: 'text-violet-700 dark:text-violet-300' },
+/** Lucide icon name → component. Only the icons used by built-in plugins need to be here. */
+const ICON_MAP: Record<string, LucideIcon> = {
+  Bell, Cloud, Database, GitBranch, Github, Globe, HardDrive,
+  KeyRound, Package, Play, ShieldCheck, Smartphone, Upload,
 };
+
+/** Converts plugin-registry PluginDisplayMeta to local ModuleDisplayMeta */
+function toModuleDisplayMeta(meta: { icon: string; colors: { text: string; bg: string; border: string } }): ModuleDisplayMeta {
+  return {
+    icon: ICON_MAP[meta.icon] ?? Package,
+    iconColor: meta.colors.text.split(' ')[0] ?? 'text-muted-foreground',
+    bgColor: meta.colors.bg,
+    borderColor: meta.colors.border,
+    textColor: meta.colors.text,
+  };
+}
 
 const DEFAULT_MODULE_DISPLAY: ModuleDisplayMeta = {
   icon: Package,
@@ -96,12 +100,14 @@ interface SidebarGroup {
 function buildJourneySidebarGroups(
   orderedNodes: ProvisioningGraphNode[],
   journeyPhaseByNodeKey: Record<string, JourneyPhaseId> | undefined,
+  phaseTitles?: Record<string, string>,
 ): SidebarGroup[] {
+  const titles = phaseTitles ?? JOURNEY_PHASE_TITLE;
   const groups: SidebarGroup[] = [];
   for (let i = 0; i < orderedNodes.length; i++) {
     const node = orderedNodes[i]!;
     const phase: JourneyPhaseId = journeyPhaseByNodeKey?.[node.key] ?? 'verification';
-    const label = JOURNEY_PHASE_TITLE[phase] ?? phase;
+    const label = titles[phase] ?? JOURNEY_PHASE_TITLE[phase] ?? phase;
     const last = groups[groups.length - 1];
     if (last && last.label === label) {
       last.items.push({ node, index: i });
@@ -300,12 +306,14 @@ export function SetupWizard({
   onPlanChange,
   onUserActionComplete,
   onRefresh,
+  onRecomputePlan,
 }: {
   projectId: string;
   plan: ProvisioningPlanResponse | null;
   onPlanChange: (plan: ProvisioningPlanResponse) => void;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => Promise<void>;
   onRefresh: () => Promise<void>;
+  onRecomputePlan?: () => Promise<void>;
 }) {
   const [credentialText, setCredentialText] = useState('');
   const [resourceInputs, setResourceInputs] = useState<Record<string, string>>({});
@@ -314,6 +322,7 @@ export function SetupWizard({
   const [isReverting, setIsReverting] = useState(false);
   const [isRevalidating, setIsRevalidating] = useState(false);
   const [isSkipping, setIsSkipping] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [syncInfo, setSyncInfo] = useState<string | null>(null);
@@ -321,6 +330,10 @@ export function SetupWizard({
   const [revertManualGuide, setRevertManualGuide] = useState<RevertManualAction[] | null>(null);
   const [manualRevertNodeKey, setManualRevertNodeKey] = useState<string | null>(null);
   const [isFinalizingManualRevert, setIsFinalizingManualRevert] = useState(false);
+  const [stepInputs, setStepInputs] = useState<Record<string, string>>({});
+  const [stepInputsDirty, setStepInputsDirty] = useState(false);
+  const [savingStepInputs, setSavingStepInputs] = useState(false);
+  const [isRecomputing, setIsRecomputing] = useState(false);
 
   const gcpOAuthSession = useOAuthSession({ projectId, providerId: 'gcp' });
 
@@ -372,7 +385,7 @@ export function SetupWizard({
   }, [plan]);
 
   const sidebarGroups = useMemo(
-    () => buildJourneySidebarGroups(orderedNodes, plan?.journeyPhaseByNodeKey),
+    () => buildJourneySidebarGroups(orderedNodes, plan?.journeyPhaseByNodeKey, plan?.journeyPhaseTitles),
     [orderedNodes, plan?.journeyPhaseByNodeKey],
   );
 
@@ -399,6 +412,49 @@ export function SetupWizard({
 
   const currentNode = orderedNodes[displayIndex] ?? null;
   const currentStatus = currentNode && plan ? getNodeStatus(currentNode, plan.nodeStates, plan.environments) : 'not-started';
+
+  const currentStepNode = currentNode?.type === 'step' ? (currentNode as ProvisioningStepNode) : null;
+  const currentInputFields = currentStepNode?.inputFields?.length ? currentStepNode.inputFields : null;
+  const currentNodeState = currentNode && plan ? plan.nodeStates[currentNode.key] : undefined;
+
+  useEffect(() => {
+    if (!currentInputFields) {
+      setStepInputs({});
+      setStepInputsDirty(false);
+      return;
+    }
+    const saved = currentNodeState?.userInputs ?? {};
+    const defaults: Record<string, string> = {};
+    for (const field of currentInputFields) {
+      defaults[field.key] = saved[field.key] ?? field.defaultValue ?? '';
+    }
+    setStepInputs(defaults);
+    setStepInputsDirty(false);
+  }, [currentNode?.key, currentNodeState?.userInputs]);
+
+  const handleStepInputChange = (key: string, value: string) => {
+    setStepInputs((prev) => ({ ...prev, [key]: value }));
+    setStepInputsDirty(true);
+  };
+
+  const handleSaveStepInputs = async () => {
+    if (!currentNode) return;
+    setSavingStepInputs(true);
+    setError(null);
+    try {
+      await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/${encodeURIComponent(currentNode.key)}/inputs`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs: stepInputs }),
+      });
+      setStepInputsDirty(false);
+      await onRefresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSavingStepInputs(false);
+    }
+  };
 
   const phaseProgress = useMemo(() => {
     if (!plan || !currentNode) return { done: 0, total: 0, phase: null as JourneyPhaseId | null };
@@ -533,13 +589,6 @@ export function SetupWizard({
 
   async function revertStep() {
     if (!currentNode) return;
-    if (
-      !window.confirm(
-        'Revert this step and delete the associated cloud resources? Dependent steps will also be reverted.',
-      )
-    ) {
-      return;
-    }
     setError(null);
     setSyncInfo(null);
     setIsReverting(true);
@@ -623,6 +672,28 @@ export function SetupWizard({
       setError((err as Error).message);
     } finally {
       setIsRevalidating(false);
+    }
+  }
+
+  async function cancelStep() {
+    if (!currentNode) return;
+    setIsCancelling(true);
+    setError(null);
+    try {
+      const updated = await api<ProvisioningPlanResponse>(
+        `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/cancel`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeKey: currentNode.key }),
+        },
+      );
+      onPlanChange(updated);
+      await onRefresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsCancelling(false);
     }
   }
 
@@ -808,10 +879,21 @@ export function SetupWizard({
           })()}
 
           {currentStatus === 'in-progress' && !isRunning && (
-            <span className="inline-flex items-center gap-1.5 text-xs text-primary animate-pulse">
-              <Loader2 size={13} className="animate-spin" />
-              Running — please wait…
-            </span>
+            <>
+              <span className="inline-flex items-center gap-1.5 text-xs text-primary animate-pulse">
+                <Loader2 size={13} className="animate-spin" />
+                Running — please wait…
+              </span>
+              <button
+                type="button"
+                onClick={() => void cancelStep()}
+                disabled={isCancelling}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/35 bg-card px-3 py-2 text-xs font-semibold text-red-700 dark:text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+              >
+                {isCancelling ? <Loader2 size={13} className="animate-spin" /> : <MinusCircle size={13} />}
+                {isCancelling ? 'Cancelling…' : 'Cancel'}
+              </button>
+            </>
           )}
 
           {currentStatus === 'resolving' && (
@@ -865,6 +947,34 @@ export function SetupWizard({
               {isRevalidating ? 'Syncing…' : 'Sync'}
             </button>
           ) : null}
+
+          {onRecomputePlan ? (
+            <button
+              type="button"
+              onClick={() => {
+                void (async () => {
+                  setIsRecomputing(true);
+                  setError(null);
+                  setSyncInfo(null);
+                  try {
+                    await onRecomputePlan();
+                    setSyncInfo('Plan rebuilt from latest step definitions. New steps may now appear.');
+                    setSidebarFocusIndex(null);
+                  } catch (err) {
+                    setError((err as Error).message);
+                  } finally {
+                    setIsRecomputing(false);
+                  }
+                })();
+              }}
+              disabled={isRecomputing || planHasInProgress}
+              title="Rebuild the plan from the latest step definitions while preserving completed state"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold text-muted-foreground hover:bg-muted/60 hover:text-foreground disabled:opacity-50"
+            >
+              {isRecomputing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+              {isRecomputing ? 'Rebuilding…' : 'Rebuild Plan'}
+            </button>
+          ) : null}
         </div>
 
         {error ? (
@@ -886,7 +996,8 @@ export function SetupWizard({
             const moduleId = plan.moduleByNodeKey?.[currentNode.key];
             const moduleLabel = moduleId ? (plan.moduleLabelById?.[moduleId] ?? moduleId) : null;
             if (!moduleLabel || !moduleId) return null;
-            const meta = MODULE_DISPLAY_META[moduleId] ?? DEFAULT_MODULE_DISPLAY;
+            const rawMeta = plan.pluginDisplayMeta?.[moduleId];
+            const meta = rawMeta ? toModuleDisplayMeta(rawMeta) : DEFAULT_MODULE_DISPLAY;
             const ModuleIcon = meta.icon;
             return (
               <div className={`flex items-center gap-2 px-4 py-2 border-b ${meta.bgColor} ${meta.borderColor}`}>
@@ -899,7 +1010,7 @@ export function SetupWizard({
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
-                {phaseProgress.phase ? JOURNEY_PHASE_TITLE[phaseProgress.phase] : 'Setup'} — Step{' '}
+                {phaseProgress.phase ? (plan?.journeyPhaseTitles?.[phaseProgress.phase] ?? JOURNEY_PHASE_TITLE[phaseProgress.phase] ?? phaseProgress.phase) : 'Setup'} — Step{' '}
                 {displayIndex + 1} of {orderedNodes.length}
               </p>
               {phaseProgress.total > 0 ? (
@@ -946,6 +1057,107 @@ export function SetupWizard({
               {currentStatus === 'resolving' ? 'auto-resolving' : currentStatus.replace('-', ' ')}
             </span>
           </div>
+
+          {currentInputFields && currentStatus !== 'completed' && currentStatus !== 'skipped' && (
+            <div className="rounded-lg border border-border p-4 space-y-3">
+              <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Configuration</p>
+              {currentInputFields.map((field) => (
+                <div key={field.key} className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground">
+                    {field.label}
+                    {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                  </label>
+                  {field.description && (
+                    <p className="text-[11px] text-muted-foreground leading-snug">{field.description}</p>
+                  )}
+                  {field.type === 'select' && field.options ? (
+                    <select
+                      value={stepInputs[field.key] ?? field.defaultValue ?? ''}
+                      onChange={(e) => handleStepInputChange(field.key, e.target.value)}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                    >
+                      {field.options.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={stepInputs[field.key] ?? ''}
+                      onChange={(e) => handleStepInputChange(field.key, e.target.value)}
+                      placeholder={field.placeholder}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                    />
+                  )}
+                </div>
+              ))}
+              <button
+                type="button"
+                disabled={savingStepInputs || !stepInputsDirty}
+                onClick={() => void handleSaveStepInputs()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary/10 border border-primary/30 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {savingStepInputs ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                {savingStepInputs ? 'Saving…' : stepInputsDirty ? 'Save Configuration' : 'Configuration Saved'}
+              </button>
+            </div>
+          )}
+
+          {currentInputFields && (currentStatus === 'completed' || currentStatus === 'skipped') && currentNodeState?.userInputs && (
+            <div className="rounded-lg border border-border p-4 space-y-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Configuration</p>
+              <div className="flex flex-wrap gap-2">
+                {currentInputFields.map((field) => {
+                  const val = currentNodeState.userInputs?.[field.key] ?? field.defaultValue ?? '';
+                  return (
+                    <span key={field.key} className="inline-flex items-center gap-1.5 text-xs font-mono bg-muted border border-border px-2 py-1 rounded text-foreground" title={field.description}>
+                      <span className="text-[10px] text-muted-foreground/70">{field.label}:</span>
+                      <span>{val}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {currentStatus === 'failed' && (() => {
+            const failedError =
+              currentNode.type === 'step' && currentNode.environmentScope === 'per-environment'
+                ? plan.environments
+                    .map((env) => plan.nodeStates[`${currentNode.key}@${env}`]?.error)
+                    .find(Boolean)
+                : plan.nodeStates[currentNode.key]?.error;
+            if (!failedError) return null;
+
+            const urlRegex = /(https?:\/\/[^\s]+)/g;
+            const parts = failedError.split(urlRegex);
+
+            return (
+              <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={14} className="text-red-500 mt-0.5 shrink-0" />
+                  <div className="text-sm text-red-800 dark:text-red-200 space-y-2 min-w-0">
+                    {parts.map((part, i) =>
+                      urlRegex.test(part) ? (
+                        <a
+                          key={i}
+                          href={part}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-primary font-semibold hover:underline break-all"
+                        >
+                          <ExternalLink size={12} className="shrink-0" />
+                          {part}
+                        </a>
+                      ) : (
+                        <span key={i} className="whitespace-pre-wrap">{part}</span>
+                      ),
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {isTeardown && (
             <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 flex items-start gap-2">

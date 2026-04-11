@@ -1,18 +1,17 @@
 /**
  * When automated revert (e.g. Expo API delete) cannot run, the API attaches
  * structured hints so the UI can show links and instructions.
+ *
+ * The preferred path is for StepHandlers to implement getManualRevertAction().
+ * The built-in EAS handler fallback lives here for backward compat.
  */
 
 import type { ProjectManager } from './project-manager.js';
 import { projectResourceSlug } from './project-identity.js';
+import { globalStepHandlerRegistry } from '../provisioning/step-handler-registry.js';
+import type { StepHandlerContext, RevertManualAction } from '../provisioning/step-handler-registry.js';
 
-export interface RevertManualAction {
-  stepKey: string;
-  title: string;
-  body: string;
-  primaryUrl: string;
-  primaryLabel: string;
-}
+export type { RevertManualAction };
 
 /** Expo returns this when the token is a robot token that may not call scheduleAppDeletion. */
 const EXPO_ROBOT_DELETE_BLOCKED = /robot access to this api is not supported/i;
@@ -71,4 +70,32 @@ export function appendExpoManualDeleteIfRobotBlocked(
   if (stepKey !== 'eas:create-project' || !EXPO_ROBOT_DELETE_BLOCKED.test(message)) return;
   if (actions.some((a) => a.stepKey === 'eas:create-project')) return;
   actions.push(expoProjectManualDeleteAction(projectManager, studioProjectId, expoAccountCandidates));
+}
+
+/**
+ * Generic manual revert action resolver.
+ *
+ * Calls `stepHandler.getManualRevertAction()` when the handler provides one.
+ * Falls back to built-in step-specific logic for known steps.
+ * Returns null when no manual action is available.
+ */
+export async function tryGetManualRevertAction(
+  stepKey: string,
+  context: StepHandlerContext,
+  failureMessage: string,
+  projectManager: ProjectManager,
+): Promise<RevertManualAction | null> {
+  const handler = globalStepHandlerRegistry.get(stepKey);
+  if (handler?.getManualRevertAction) {
+    const result = handler.getManualRevertAction(context);
+    if (result) return result;
+  }
+
+  // Built-in fallback for EAS
+  if (stepKey === 'eas:create-project' && EXPO_ROBOT_DELETE_BLOCKED.test(failureMessage)) {
+    const candidates = [context.upstreamArtifacts['expo_account'] ?? ''];
+    return expoProjectManualDeleteAction(projectManager, context.projectId, candidates);
+  }
+
+  return null;
 }

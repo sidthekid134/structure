@@ -37,7 +37,11 @@ import type {
 } from './types';
 
 export default function PlatformStudio() {
-  const [isDark, setIsDark] = useState(false);
+  const [isDark, setIsDark] = useState(() => {
+    const stored = localStorage.getItem('studio-theme');
+    if (stored !== null) return stored === 'dark';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
   const [view, setView] = useState<StudioView>('overview');
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -307,6 +311,7 @@ export default function PlatformStudio() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
+    localStorage.setItem('studio-theme', isDark ? 'dark' : 'light');
   }, [isDark]);
 
   useEffect(() => {

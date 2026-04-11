@@ -68,6 +68,7 @@ import { getDriftStatus, startDriftReconcile } from '../core/drift.js';
 import { GitHubAdapter, HttpGitHubApiClient } from '../providers/github.js';
 import { FirebaseAdapter, StubFirebaseApiClient } from '../providers/firebase.js';
 import { EasAdapter } from '../providers/eas.js';
+import { OAuthAdapter, StudioOAuthApiClient } from '../providers/oauth.js';
 import { ExpoGraphqlEasApiClient } from '../providers/expo-graphql-eas-client.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { Orchestrator } from '../orchestration/orchestrator.js';
@@ -92,6 +93,7 @@ import {
   projectResourceSlug,
 } from './project-identity.js';
 import { buildPlannedOutputPreviewByNodeKey } from './planned-output-previews.js';
+import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 import {
   appendExpoManualDeleteIfRobotBlocked,
   type RevertManualAction,
@@ -271,16 +273,20 @@ export function createApiRouter(
   function clearLogicalNodeState(plan: ProvisioningPlan, node: ProvisioningNode): void {
     if (node.type === 'step' && node.environmentScope === 'per-environment') {
       for (const env of plan.environments) {
+        const prev = plan.nodeStates.get(`${node.key}@${env}`);
         plan.nodeStates.set(`${node.key}@${env}`, {
           nodeKey: node.key,
           status: 'not-started',
           environment: env,
+          ...(prev?.userInputs ? { userInputs: prev.userInputs } : {}),
         });
       }
     } else {
+      const prev = plan.nodeStates.get(node.key);
       plan.nodeStates.set(node.key, {
         nodeKey: node.key,
         status: 'not-started',
+        ...(prev?.userInputs ? { userInputs: prev.userInputs } : {}),
       });
     }
   }
@@ -352,6 +358,9 @@ export function createApiRouter(
     const org = projectManager.getOrganization();
     const orgGh = (org.integrations.github?.config ?? {}) as Record<string, string>;
     const projectSlug = projectResourceSlug(mod.project) || plan.projectId;
+    const projectName = mod.project.name?.trim() || projectSlug;
+    const projectBundleId = mod.project.bundleId?.trim() || '';
+    const projectDomain = projectPrimaryDomain(mod.project);
     const expoAccount =
       mod.project.easAccount?.trim() ||
       org.integrations.eas?.config?.['expoAccountSlug']?.trim() ||
@@ -361,6 +370,16 @@ export function createApiRouter(
       expoAccount && projectSlug
         ? `https://expo.dev/accounts/${encodeURIComponent(expoAccount)}/projects/${encodeURIComponent(projectSlug)}/github`
         : '';
+
+    /** Resolve project tokens in inputField defaultValues. */
+    function resolveInputFieldDefault(value: string): string {
+      return value
+        .replace(/\{slug\}/g, projectSlug)
+        .replace(/\{name\}/g, projectName)
+        .replace(/\{bundleId\}/g, projectBundleId)
+        .replace(/\{domain\}/g, projectDomain);
+    }
+
     const nodes = plan.nodes.map((node) => {
       if (node.type === 'user-action' && node.key === 'user:install-expo-github-app') {
         return {
@@ -374,11 +393,39 @@ export function createApiRouter(
           ],
         };
       }
+      // Resolve project tokens in inputFields defaultValues
+      if (node.type === 'step' && node.inputFields?.length) {
+        return {
+          ...node,
+          inputFields: node.inputFields.map((field) => ({
+            ...field,
+            defaultValue: field.defaultValue ? resolveInputFieldDefault(field.defaultValue) : field.defaultValue,
+            placeholder: field.placeholder ? resolveInputFieldDefault(field.placeholder) : field.placeholder,
+          })),
+        };
+      }
       return node;
     });
+    const enriched = StepResolver.enrichPlanSnapshot({ ...plan, nodes });
+    const allNodeKeys = enriched.nodes
+      .map((n) => n.key)
+      .concat(
+        enriched.nodes
+          .filter((n) => n.type === 'step' && n.environmentScope === 'per-environment')
+          .flatMap((n) => plan.environments.map((env) => `${n.key}@${env}`)),
+      );
+    const stepKeys = enriched.nodes.map((n) => n.key);
+
     return {
-      ...StepResolver.enrichPlanSnapshot({ ...plan, nodes }),
+      ...enriched,
       plannedOutputPreviewByNodeKey: buildPlannedOutputPreviewByNodeKey(plan, mod, orgGh),
+      stepCapabilities: globalPluginRegistry.getAllStepCapabilities(stepKeys),
+      stepActions: globalPluginRegistry.getAllStepActions(stepKeys),
+      pluginDisplayMeta: globalPluginRegistry.getAllPluginDisplayMeta(),
+      providerDisplayMeta: globalPluginRegistry.getAllProviderDisplayMeta(),
+      resourceDisplayByKey: globalPluginRegistry.getAllResourceDisplay(),
+      portalLinksByNodeKey: globalPluginRegistry.getAllCompletionPortalLinks(),
+      journeyPhaseTitles: globalPluginRegistry.getJourneyPhaseTitles(),
     };
   }
 
@@ -397,6 +444,10 @@ export function createApiRouter(
     return plan.nodes.some((n) => n.provider === 'firebase');
   }
 
+  function planUsesOauthProvider(plan: ProvisioningPlan): boolean {
+    return plan.nodes.some((n) => n.provider === 'oauth');
+  }
+
   function getRunsForProject(projectId: string): OperationRecord[] {
     return eventLog.listOperationsByAppId(projectId, 200);
   }
@@ -404,6 +455,17 @@ export function createApiRouter(
   // -------------------------------------------------------------------------
   // GET /api/organization — organization-level integration defaults
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // GET /api/plugin-catalog — full list of registered plugins, for the module picker UI
+  // -------------------------------------------------------------------------
+  router.get('/plugin-catalog', (_req: Request, res: Response) => {
+    try {
+      res.json(globalPluginRegistry.getPluginCatalog());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   router.get('/organization', (_req: Request, res: Response) => {
     try {
       res.json(projectManager.getOrganization());
@@ -1909,6 +1971,15 @@ export function createApiRouter(
       if (planTouchesEas && expoTokenForTeardown) {
         manifestProviders.push(buildEasManifestConfig(projectManager, projectId, plan));
       }
+      if (planUsesOauthProvider(plan)) {
+        manifestProviders.push({
+          provider: 'oauth',
+          oauth_provider: 'google',
+          redirect_uri: '',
+          scopes: [],
+          firebase_project_id: projectId,
+        });
+      }
       const manifest: ProviderManifest = {
         version: PLATFORM_CORE_VERSION,
         app_id: projectId,
@@ -1925,6 +1996,16 @@ export function createApiRouter(
         registry.register(
           'eas',
           new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForTeardown), undefined, httpClient),
+        );
+      }
+      if (planUsesOauthProvider(plan)) {
+        registry.register(
+          'oauth',
+          new OAuthAdapter(
+            new StudioOAuthApiClient((studioProjectId, reason) =>
+              gcpConnectionService.getAccessToken(studioProjectId, reason),
+            ),
+          ),
         );
       }
       const orchestrator = new Orchestrator(registry, eventLog);
@@ -2158,6 +2239,52 @@ export function createApiRouter(
   );
 
   // -------------------------------------------------------------------------
+  // PUT /api/projects/:projectId/provisioning/plan/node/:nodeKey/inputs
+  // Save user-provided input values for a step with inputFields.
+  // Body: { inputs: Record<string, string> }
+  // -------------------------------------------------------------------------
+  router.put(
+    '/projects/:projectId/provisioning/plan/node/:nodeKey/inputs',
+    async (req: Request, res: Response) => {
+      try {
+        const { projectId, nodeKey } = req.params;
+        const inputs: Record<string, string> = req.body?.inputs ?? {};
+        const plan = loadPersistedPlan(projectId);
+        if (!plan) {
+          res.status(404).json({ error: `No active provisioning plan for project "${projectId}".` });
+          return;
+        }
+
+        const state = plan.nodeStates.get(nodeKey);
+        if (!state) {
+          res.status(404).json({ error: `Node "${nodeKey}" not found in plan.` });
+          return;
+        }
+
+        const prevInputs = state.userInputs ?? {};
+        const inputsChanged = JSON.stringify(prevInputs) !== JSON.stringify(inputs);
+
+        state.userInputs = inputs;
+
+        if (inputsChanged && state.status === 'completed') {
+          state.status = 'not-started';
+          state.completedAt = undefined;
+          state.resourcesProduced = undefined;
+          state.error = undefined;
+        }
+
+        plan.nodeStates.set(nodeKey, state);
+        savePersistedPlan(projectId, plan);
+
+        logStudioApiAction('provisioning/plan/node/inputs PUT', { projectId, nodeKey, inputsChanged });
+        res.json({ nodeKey, inputs, needsReprovision: inputsChanged && state.status === 'not-started' });
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // POST /api/projects/:projectId/provisioning/plan/run
   // Starts step-level provisioning via provisionBySteps(). Responds immediately;
   // step progress is streamed to the WS channel for the project.
@@ -2255,6 +2382,15 @@ export function createApiRouter(
       if (planUsesEasProvider(plan)) {
         manifestProviders.push(buildEasManifestConfig(projectManager, projectId, plan));
       }
+      if (planUsesOauthProvider(plan)) {
+        manifestProviders.push({
+          provider: 'oauth',
+          oauth_provider: 'google',
+          redirect_uri: '',
+          scopes: [],
+          firebase_project_id: projectId,
+        });
+      }
       const manifest: ProviderManifest = {
         version: PLATFORM_CORE_VERSION,
         app_id: projectId,
@@ -2288,6 +2424,16 @@ export function createApiRouter(
         registry.register(
           'eas',
           new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForFullRun), undefined, httpClient),
+        );
+      }
+      if (planUsesOauthProvider(plan)) {
+        registry.register(
+          'oauth',
+          new OAuthAdapter(
+            new StudioOAuthApiClient((studioProjectId, reason) =>
+              gcpConnectionService.getAccessToken(studioProjectId, reason),
+            ),
+          ),
         );
       }
 
@@ -2518,7 +2664,13 @@ export function createApiRouter(
         if (planNode?.type === 'step') {
           const existing = plan.nodeStates.get(nk);
           if (existing?.status !== 'completed' && existing?.status !== 'skipped') {
-            plan.nodeStates.set(nk, { nodeKey: baseKey, status: 'in-progress', startedAt: Date.now() });
+            plan.nodeStates.set(nk, {
+              nodeKey: baseKey,
+              status: 'in-progress',
+              startedAt: Date.now(),
+              ...(existing?.environment !== undefined ? { environment: existing.environment } : {}),
+              ...(existing?.userInputs ? { userInputs: existing.userInputs } : {}),
+            });
             wsHandler.broadcastStepProgress(
               projectId,
               baseKey,
@@ -2574,9 +2726,11 @@ export function createApiRouter(
           // within a single handler call.  The access token is valid for 1h.
           const tokenCache = new Map<string, string>();
 
+          const existingState = currentPlan.nodeStates.get(stateKey);
           const context = {
             projectId,
             upstreamArtifacts: { ...upstreamArtifacts },
+            userInputs: existingState?.userInputs,
             async getToken(providerId: string): Promise<string> {
               const cached = tokenCache.get(providerId);
               if (cached) return cached;
@@ -2611,6 +2765,7 @@ export function createApiRouter(
                 environment,
                 completedAt: Date.now(),
                 resourcesProduced: resources,
+                userInputs: existingState?.userInputs,
               });
               wsHandler.broadcastStepProgress(projectId, baseKey, 'step', 'success', environment, resources);
               console.log(`[plan/run/nodes] studio="${projectId}" | ✓ "${baseKey}" completed.`);
@@ -2627,13 +2782,14 @@ export function createApiRouter(
                 status: 'failed',
                 environment,
                 error: errMsg,
+                userInputs: existingState?.userInputs,
               });
               wsHandler.broadcastStepProgress(projectId, baseKey, 'step', 'failure', environment, undefined, errMsg);
               console.log(`[plan/run/nodes] studio="${projectId}" | ✗ "${baseKey}" failed: ${errMsg}`);
             }
           } catch (err) {
             const errMsg = (err as Error).message;
-            currentPlan.nodeStates.set(stateKey, { nodeKey: baseKey, status: 'failed', environment, error: errMsg });
+            currentPlan.nodeStates.set(stateKey, { nodeKey: baseKey, status: 'failed', environment, error: errMsg, userInputs: existingState?.userInputs });
             wsHandler.broadcastStepProgress(projectId, baseKey, 'step', 'failure', environment, undefined, errMsg);
             console.error(`[plan/run/nodes] studio="${projectId}" | ✗ "${baseKey}" threw: ${errMsg}`);
           }
@@ -2641,10 +2797,11 @@ export function createApiRouter(
           savePersistedPlan(projectId, currentPlan);
         }
 
-        // ── Orchestrator path for github/*, eas/* steps and user-action gates ──
+        // ── Orchestrator path for github/*, eas/*, oauth/* steps and user-action gates ──
         const orchBaseKeys = orchestratorBacked.map((k) => (k.includes('@') ? k.split('@')[0]! : k));
         const needsGithubOrchestration = orchBaseKeys.some((b) => b.startsWith('github:'));
         const needsEasOrchestration = orchBaseKeys.some((b) => b.startsWith('eas:'));
+        const needsOauthOrchestration = orchBaseKeys.some((b) => b.startsWith('oauth:'));
         const canRunOrchestrator =
           orchestratorBacked.length > 0 &&
           (!needsGithubOrchestration || !!githubToken) &&
@@ -2683,6 +2840,15 @@ export function createApiRouter(
           if (needsEasOrchestration && expoTokenForOrchestrator) {
             manifestProviders.push(buildEasManifestConfig(projectManager, projectId, currentPlan));
           }
+          if (needsOauthOrchestration) {
+            manifestProviders.push({
+              provider: 'oauth',
+              oauth_provider: 'google',
+              redirect_uri: '',
+              scopes: [],
+              firebase_project_id: projectId,
+            });
+          }
 
           const manifest: ProviderManifest = {
             version: PLATFORM_CORE_VERSION,
@@ -2699,6 +2865,16 @@ export function createApiRouter(
             registry.register(
               'eas',
               new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForOrchestrator), undefined, ghForEas),
+            );
+          }
+          if (needsOauthOrchestration) {
+            registry.register(
+              'oauth',
+              new OAuthAdapter(
+                new StudioOAuthApiClient((studioProjectId, reason) =>
+                  gcpConnectionService.getAccessToken(studioProjectId, reason),
+                ),
+              ),
             );
           }
 
@@ -2812,8 +2988,10 @@ export function createApiRouter(
       // Determine which nodes have registered StepHandlers (e.g. firebase:*)
       // and require GCP API calls for deletion (need a live OAuth token).
       const GCP_DELETE_STEPS = new Set([
+        'firebase:create-gcp-project',
         'firebase:bind-provisioner-iam',
         'firebase:create-provisioner-sa',
+        'firebase:delete-gcp-project',
       ]);
       const handlerKeysToDelete = allKeysToReset.filter(
         (k) => globalStepHandlerRegistry.has(k),
@@ -2874,19 +3052,15 @@ export function createApiRouter(
           try {
             const result = await handler.delete(handlerContext);
             if (!result.reconciled && result.message) {
-              // gcp_project and enable-firebase deletion are intentionally not automated.
-              const INFORMATIONAL = new Set(['firebase:create-gcp-project', 'firebase:enable-firebase']);
-              if (!INFORMATIONAL.has(stepKey)) {
-                revertWarnings.push(`${stepKey}: ${result.message}`);
-                appendExpoManualDeleteIfRobotBlocked(
-                  revertManualActions,
-                  stepKey,
-                  result.message,
-                  projectManager,
-                  projectId,
-                  easConnectionService.getStoredExpoAccountNames(),
-                );
-              }
+              revertWarnings.push(`${stepKey}: ${result.message}`);
+              appendExpoManualDeleteIfRobotBlocked(
+                revertManualActions,
+                stepKey,
+                result.message,
+                projectManager,
+                projectId,
+                easConnectionService.getStoredExpoAccountNames(),
+              );
             }
           } catch (err) {
             const msg = (err as Error).message;
@@ -2926,6 +3100,48 @@ export function createApiRouter(
         (enriched as any).revertManualActions = revertManualActions;
       }
       res.json(enriched);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:projectId/provisioning/plan/node/cancel
+  // Force-clears a stuck in-progress node back to not-started without doing
+  // any GCP cleanup. Use when a handler is mid-flight and the user wants to
+  // unblock the UI so they can re-trigger the step.
+  // Body: { nodeKey: string }
+  // -------------------------------------------------------------------------
+  router.post('/projects/:projectId/provisioning/plan/node/cancel', (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const nodeKey = req.body?.nodeKey as string | undefined;
+      if (!nodeKey || typeof nodeKey !== 'string') {
+        res.status(400).json({ error: 'nodeKey is required.' });
+        return;
+      }
+
+      const plan = loadPersistedPlan(projectId);
+      if (!plan) {
+        res.status(404).json({ error: `No provisioning plan found for project "${projectId}".` });
+        return;
+      }
+
+      const node = plan.nodes.find((n) => n.key === nodeKey);
+      if (!node) {
+        res.status(404).json({ error: `Node "${nodeKey}" not found in plan.` });
+        return;
+      }
+
+      clearLogicalNodeState(plan, node);
+      savePersistedPlan(projectId, plan);
+
+      console.log(`[studio-api] node/cancel: force-cleared "${nodeKey}" back to not-started for project "${projectId}".`);
+      res.json(enrichPlanForResponse(plan));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
@@ -3209,16 +3425,27 @@ export function createApiRouter(
               environment: item.environment,
               completedAt: Date.now(),
               resourcesProduced: resourcesProduced ?? existing?.resourcesProduced,
+              ...(existing?.userInputs ? { userInputs: existing.userInputs } : {}),
             });
             if (resourcesProduced) Object.assign(upstream, resourcesProduced);
             results.push({ environment: item.environment, stillValid: true });
           } else {
-            plan.nodeStates.set(stateKey, { nodeKey, status: 'not-started', environment: item.environment });
+            plan.nodeStates.set(stateKey, {
+              nodeKey,
+              status: 'not-started',
+              environment: item.environment,
+              ...(existing?.userInputs ? { userInputs: existing.userInputs } : {}),
+            });
             results.push({ environment: item.environment, stillValid: false });
           }
         } catch {
           checked++;
-          plan.nodeStates.set(stateKey, { nodeKey, status: 'not-started', environment: item.environment });
+          plan.nodeStates.set(stateKey, {
+            nodeKey,
+            status: 'not-started',
+            environment: item.environment,
+            ...(existing?.userInputs ? { userInputs: existing.userInputs } : {}),
+          });
           results.push({ environment: item.environment, stillValid: false });
         }
       }
@@ -3422,6 +3649,7 @@ export function createApiRouter(
                   nodeKey: item.nodeKey,
                   status: 'not-started',
                   environment: item.environment,
+                  ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                 });
                 wsHandler.broadcastStepProgress(
                   projectId, item.nodeKey, 'step', 'ready',
@@ -3455,6 +3683,7 @@ export function createApiRouter(
                     environment: item.environment,
                     completedAt: Date.now(),
                     resourcesProduced: fbSync.resourcesProduced,
+                    ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                   });
                   wsHandler.broadcastStepProgress(
                     projectId,
@@ -3485,6 +3714,7 @@ export function createApiRouter(
                     nodeKey: item.nodeKey,
                     status: 'not-started',
                     environment: item.environment,
+                    ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                   });
                   wsHandler.broadcastStepProgress(
                     projectId,
@@ -3514,6 +3744,7 @@ export function createApiRouter(
                 const handlerContext = {
                   projectId: currentPlan.projectId,
                   upstreamArtifacts: { ...upstreamResources },
+                  userInputs: existingState?.userInputs,
                   getToken: async (providerId: string) => {
                     if (providerId === 'gcp') {
                       return gcpConnectionService.getAccessToken(currentPlan.projectId, `sync:${baseStepKey}`);
@@ -3550,6 +3781,7 @@ export function createApiRouter(
                       environment: item.environment,
                       completedAt: Date.now(),
                       resourcesProduced: produced,
+                      ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                     });
                     wsHandler.broadcastStepProgress(
                       projectId,
@@ -3580,6 +3812,7 @@ export function createApiRouter(
                       nodeKey: item.nodeKey,
                       status: 'not-started',
                       environment: item.environment,
+                      ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                     });
                     wsHandler.broadcastStepProgress(
                       projectId,
@@ -3595,6 +3828,7 @@ export function createApiRouter(
                     nodeKey: item.nodeKey,
                     status: 'not-started',
                     environment: item.environment,
+                    ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                   });
                   wsHandler.broadcastStepProgress(
                     projectId,
@@ -3649,6 +3883,7 @@ export function createApiRouter(
                   environment: item.environment,
                   completedAt: Date.now(),
                   resourcesProduced: result.resourcesProduced,
+                  ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                 });
                 wsHandler.broadcastStepProgress(
                   projectId, item.nodeKey, 'step', 'success',
@@ -3660,6 +3895,7 @@ export function createApiRouter(
                   nodeKey: item.nodeKey,
                   status: 'not-started',
                   environment: item.environment,
+                  ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                 });
                 wsHandler.broadcastStepProgress(
                   projectId, item.nodeKey, 'step', 'ready',
@@ -3672,6 +3908,7 @@ export function createApiRouter(
                 nodeKey: item.nodeKey,
                 status: 'not-started',
                 environment: item.environment,
+                ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
               });
               wsHandler.broadcastStepProgress(
                 projectId, item.nodeKey, 'step', 'ready',

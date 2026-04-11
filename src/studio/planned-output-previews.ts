@@ -7,6 +7,8 @@ import { computeCanonicalNodeOrder, propagateJourneyPhases } from '../provisioni
 import { buildStudioGcpProjectId, GCP_PROVISIONER_SERVICE_ACCOUNT_ID } from '../core/gcp-connection.js';
 import type { ProjectModule } from './project-manager.js';
 import { projectPrimaryDomain, projectResourceSlug } from './project-identity.js';
+import { globalPluginRegistry } from '../plugins/plugin-registry.js';
+import type { ResourcePreviewContext } from '../plugins/plugin-types.js';
 
 function mergeCompletedUpstream(plan: ProvisioningPlan): Record<string, string> {
   const out: Record<string, string> = {};
@@ -22,24 +24,38 @@ const SENSITIVE = new Set([
   'github_token', 'expo_token', 'service_account_json', 'apns_key_p8', 'asc_api_key_p8', 'gcp_billing_account_id',
 ]);
 
+function interpolateTemplate(template: string, ctx: ResourcePreviewContext): string {
+  return template
+    .replace(/\{slug\}/g, ctx.slug)
+    .replace(/\{domain\}/g, ctx.domain)
+    .replace(/\{bundleId\}/g, ctx.bundleId)
+    .replace(/\{easAccount\}/g, ctx.easAccount)
+    .replace(/\{githubOwner\}/g, ctx.githubOwner)
+    .replace(/\{upstream\.([a-z0-9_]+)\}/g, (_, k: string) => ctx.upstream[k] ?? '');
+}
+
 function previewFor(
   resourceKey: string,
   nodeKey: string,
-  ctx: {
-    upstream: Record<string, string>;
-    slug: string;
-    domain: string;
-    bundleId: string;
-    expectedGcpId: string;
-    linkedGcpId: string;
-    githubOwner: string;
-    easAccount: string;
-  },
+  ctx: ResourcePreviewContext,
 ): string {
   if (SENSITIVE.has(resourceKey)) {
     return 'Assigned when you complete this step (stored securely)';
   }
-  const gcp =
+
+  // Registry-driven lookup — plugins can define previewTemplate or previewText
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    const display = globalPluginRegistry.getResourceDisplay(resourceKey);
+    if (display?.previewTemplate) {
+      return typeof display.previewTemplate === 'function'
+        ? display.previewTemplate(ctx)
+        : interpolateTemplate(display.previewTemplate, ctx);
+    }
+    if (display?.previewText) {
+      return display.previewText;
+    }
+  }
+  const gcp: string =
     ctx.upstream['gcp_project_id']?.trim() ||
     ctx.upstream['firebase_project_id']?.trim() ||
     ctx.linkedGcpId;

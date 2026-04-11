@@ -26,6 +26,7 @@ import {
   getProvidersForModules,
   getStepKeysForModules,
 } from './module-catalog.js';
+import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 
 // ---------------------------------------------------------------------------
 // User Actions (Gates)
@@ -265,24 +266,6 @@ export const FIREBASE_STEPS: ProvisioningStepNode[] = [
   },
   {
     type: 'step',
-    key: 'firebase:enable-services',
-    label: 'Enable Firebase Services',
-    description: 'Enable requested services: Auth, Firestore, Storage, FCM, Analytics, etc.',
-    provider: 'firebase',
-    environmentScope: 'per-environment',
-    automationLevel: 'full',
-    dependencies: [{ nodeKey: 'firebase:enable-firebase', required: true }],
-    produces: [
-      {
-        key: 'enabled_services',
-        label: 'Enabled Services',
-        description: 'Comma-separated list of enabled Firebase services',
-      },
-    ],
-    estimatedDurationMs: 20000,
-  },
-  {
-    type: 'step',
     key: 'firebase:register-ios-app',
     label: 'Register iOS App',
     description:
@@ -321,15 +304,134 @@ export const FIREBASE_STEPS: ProvisioningStepNode[] = [
   },
   {
     type: 'step',
+    key: 'firebase:create-firestore-db',
+    label: 'Create Firestore Database',
+    description: 'Enable Firestore APIs and create a Firestore database instance in native or datastore mode at the selected region.',
+    provider: 'firebase',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    dependencies: [{ nodeKey: 'firebase:enable-firebase', required: true }],
+    inputFields: [
+      {
+        key: 'database_id',
+        label: 'Database ID',
+        description: 'Firestore database ID. Defaults to your app name. Use "(default)" for the GCP default database.',
+        type: 'text',
+        placeholder: 'my-app',
+        defaultValue: '{slug}',
+        required: true,
+      },
+      {
+        key: 'location_id',
+        label: 'Location',
+        description: 'GCP region for the Firestore database. Cannot be changed after creation.',
+        type: 'select',
+        defaultValue: 'us-central1',
+        options: [
+          'us-central1',
+          'us-east1',
+          'us-east4',
+          'us-west1',
+          'europe-west1',
+          'europe-west2',
+          'europe-west3',
+          'asia-east1',
+          'asia-northeast1',
+          'asia-south1',
+          'australia-southeast1',
+          'southamerica-east1',
+        ],
+        required: true,
+      },
+      {
+        key: 'database_type',
+        label: 'Mode',
+        description: 'Firestore mode. Native is the standard document database; Datastore mode is for Datastore-compatible workloads.',
+        type: 'select',
+        defaultValue: 'FIRESTORE_NATIVE',
+        options: ['FIRESTORE_NATIVE', 'DATASTORE_MODE'],
+        required: true,
+      },
+    ],
+    produces: [
+      {
+        key: 'firestore_database_id',
+        label: 'Firestore Database',
+        description: 'Firestore database ID (e.g. "(default)")',
+      },
+      {
+        key: 'firestore_location',
+        label: 'Firestore Location',
+        description: 'GCP region where the database is hosted',
+      },
+    ],
+    estimatedDurationMs: 30000,
+  },
+  {
+    type: 'step',
     key: 'firebase:configure-firestore-rules',
     label: 'Configure Firestore Rules',
     description: 'Deploy Firestore security rules for the target environment.',
     provider: 'firebase',
     environmentScope: 'per-environment',
     automationLevel: 'full',
-    dependencies: [{ nodeKey: 'firebase:enable-services', required: true }],
+    dependencies: [{ nodeKey: 'firebase:create-firestore-db', required: true }],
     produces: [],
     estimatedDurationMs: 3000,
+  },
+  {
+    type: 'step',
+    key: 'firebase:enable-auth',
+    label: 'Enable Firebase Auth',
+    description: 'Enable the Firebase Authentication API on the GCP project.',
+    provider: 'firebase',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    dependencies: [{ nodeKey: 'firebase:enable-firebase', required: true }],
+    produces: [
+      {
+        key: 'enabled_auth_api',
+        label: 'Auth API',
+        description: 'identitytoolkit.googleapis.com enabled',
+      },
+    ],
+    estimatedDurationMs: 10000,
+  },
+  {
+    type: 'step',
+    key: 'firebase:enable-storage',
+    label: 'Enable Cloud Storage',
+    description: 'Enable the Cloud Storage and Firebase Rules APIs on the GCP project.',
+    provider: 'firebase',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    dependencies: [{ nodeKey: 'firebase:enable-firebase', required: true }],
+    produces: [
+      {
+        key: 'enabled_storage_api',
+        label: 'Storage API',
+        description: 'storage.googleapis.com + firebaserules.googleapis.com enabled',
+      },
+    ],
+    estimatedDurationMs: 10000,
+  },
+  {
+    type: 'step',
+    key: 'firebase:enable-fcm',
+    label: 'Enable Firebase Messaging',
+    description: 'Enable the Firebase Cloud Messaging API on the GCP project.',
+    provider: 'firebase',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    dependencies: [{ nodeKey: 'firebase:enable-firebase', required: true }],
+    produces: [
+      {
+        key: 'enabled_fcm_api',
+        label: 'FCM API',
+        description: 'fcmregistrations.googleapis.com enabled',
+      },
+    ],
+    estimatedDurationMs: 10000,
   },
   {
     type: 'step',
@@ -339,7 +441,7 @@ export const FIREBASE_STEPS: ProvisioningStepNode[] = [
     provider: 'firebase',
     environmentScope: 'per-environment',
     automationLevel: 'full',
-    dependencies: [{ nodeKey: 'firebase:enable-services', required: true }],
+    dependencies: [{ nodeKey: 'firebase:enable-storage', required: true }],
     produces: [],
     estimatedDurationMs: 3000,
   },
@@ -591,7 +693,7 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
     bridgeTarget: 'firebase',
     dependencies: [
       { nodeKey: 'apple:generate-apns-key', required: true },
-      { nodeKey: 'firebase:enable-services', required: true, description: 'FCM must be enabled' },
+      { nodeKey: 'firebase:enable-fcm', required: true, description: 'FCM must be enabled' },
     ],
     produces: [],
     estimatedDurationMs: 3000,
@@ -877,12 +979,41 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
     automationLevel: 'full',
     dependencies: [
       {
-        nodeKey: 'firebase:enable-services',
+        nodeKey: 'firebase:enable-auth',
         required: true,
-        description: 'Firebase Auth must be enabled',
+        description: 'Firebase Auth API must be enabled',
+      },
+      {
+        nodeKey: 'user:setup-gcp-billing',
+        required: true,
+        description: 'GCP billing must be linked — Identity Platform requires an active billing account',
       },
     ],
     produces: [],
+    estimatedDurationMs: 5000,
+  },
+  {
+    type: 'step',
+    key: 'oauth:enable-google-sign-in',
+    label: 'Enable Google Sign-In',
+    description: 'Enable Google as a sign-in provider in Firebase Authentication.',
+    provider: 'oauth',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    dependencies: [
+      {
+        nodeKey: 'oauth:enable-auth-providers',
+        required: true,
+        description: 'Identity Platform must be initialised first',
+      },
+    ],
+    produces: [
+      {
+        key: 'google_sign_in_enabled',
+        label: 'Google Sign-In',
+        description: 'Google sign-in provider enabled in Firebase Auth',
+      },
+    ],
     estimatedDurationMs: 5000,
   },
   {
@@ -896,6 +1027,14 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
     dependencies: [
       { nodeKey: 'oauth:enable-auth-providers', required: true },
       { nodeKey: 'firebase:create-gcp-project', required: true },
+      { nodeKey: 'firebase:register-ios-app', required: true },
+      { nodeKey: 'firebase:register-android-app', required: true },
+      {
+        nodeKey: 'google-play:add-fingerprints-to-firebase',
+        required: true,
+        description:
+          'Android OAuth client IDs are generated after Play signing fingerprints are linked to Firebase.',
+      },
     ],
     produces: [
       {
@@ -983,7 +1122,7 @@ export const FIREBASE_TEARDOWN_STEPS: ProvisioningStepNode[] = [
     environmentScope: 'global',
     automationLevel: 'assisted',
     direction: 'teardown',
-    teardownOf: 'firebase:enable-services',
+    teardownOf: 'firebase:enable-fcm',
     dependencies: [],
     produces: [],
   },
@@ -1002,14 +1141,14 @@ export const FIREBASE_TEARDOWN_STEPS: ProvisioningStepNode[] = [
   },
   {
     type: 'step',
-    key: 'firebase:delete-firestore-data',
-    label: 'Delete Firestore Data',
-    description: 'Delete Firestore database data and security rules.',
+    key: 'firebase:delete-firestore-db',
+    label: 'Delete Firestore Database',
+    description: 'Delete the Firestore database instance and all its data.',
     provider: 'firebase',
     environmentScope: 'global',
-    automationLevel: 'assisted',
+    automationLevel: 'full',
     direction: 'teardown',
-    teardownOf: 'firebase:configure-firestore-rules',
+    teardownOf: 'firebase:create-firestore-db',
     dependencies: [],
     produces: [],
   },
@@ -1025,7 +1164,7 @@ export const FIREBASE_TEARDOWN_STEPS: ProvisioningStepNode[] = [
     teardownOf: 'firebase:create-gcp-project',
     dependencies: [
       { nodeKey: 'firebase:delete-storage-buckets', required: true },
-      { nodeKey: 'firebase:delete-firestore-data', required: true },
+      { nodeKey: 'firebase:delete-firestore-db', required: true },
       { nodeKey: 'firebase:disable-messaging', required: true },
     ],
     produces: [],
@@ -1197,7 +1336,11 @@ export const OAUTH_TEARDOWN_STEPS: ProvisioningStepNode[] = [
 // Master catalog: all nodes by provider
 // ---------------------------------------------------------------------------
 
-const STEPS_BY_PROVIDER: Record<ProviderType, ProvisioningStepNode[]> = {
+/**
+ * Static fallback — used before the plugin registry is populated.
+ * After registerBuiltinPlugins() runs, use globalPluginRegistry.getStepsForProvider().
+ */
+const STATIC_STEPS_BY_PROVIDER: Record<string, ProvisioningStepNode[]> = {
   firebase: FIREBASE_STEPS,
   github: GITHUB_STEPS,
   eas: EAS_STEPS,
@@ -1207,12 +1350,31 @@ const STEPS_BY_PROVIDER: Record<ProviderType, ProvisioningStepNode[]> = {
   oauth: OAUTH_STEPS,
 };
 
-/** Flat catalog for enriching persisted plans with fields added after first save (e.g. `interactiveAction`). */
-export const ALL_PROVISIONING_STEPS: ProvisioningStepNode[] = (
-  Object.keys(STEPS_BY_PROVIDER) as ProviderType[]
-).flatMap((k) => STEPS_BY_PROVIDER[k]);
+/** @deprecated Use globalPluginRegistry.getStepsForProvider() after plugin bootstrap */
+export function getStepsForProvider(provider: string): ProvisioningStepNode[] {
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    return globalPluginRegistry.getStepsForProvider(provider);
+  }
+  return STATIC_STEPS_BY_PROVIDER[provider] ?? [];
+}
 
-const TEARDOWN_STEPS_BY_PROVIDER: Record<ProviderType, ProvisioningStepNode[]> = {
+/** Flat catalog for enriching persisted plans with fields added after first save (e.g. `interactiveAction`). */
+export const ALL_PROVISIONING_STEPS: ProvisioningStepNode[] = Object.values(
+  STATIC_STEPS_BY_PROVIDER,
+).flat();
+
+/**
+ * Dynamic version — returns all steps from registry when bootstrapped.
+ * Falls back to static arrays when registry is empty.
+ */
+export function getAllProvisioningSteps(): ProvisioningStepNode[] {
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    return globalPluginRegistry.getAllSteps();
+  }
+  return ALL_PROVISIONING_STEPS;
+}
+
+const STATIC_TEARDOWN_STEPS_BY_PROVIDER: Record<string, ProvisioningStepNode[]> = {
   firebase: FIREBASE_TEARDOWN_STEPS,
   github: GITHUB_TEARDOWN_STEPS,
   eas: EAS_TEARDOWN_STEPS,
@@ -1221,6 +1383,14 @@ const TEARDOWN_STEPS_BY_PROVIDER: Record<ProviderType, ProvisioningStepNode[]> =
   cloudflare: CLOUDFLARE_TEARDOWN_STEPS,
   oauth: OAUTH_TEARDOWN_STEPS,
 };
+
+/** @deprecated Use globalPluginRegistry.getTeardownStepsForProvider() after plugin bootstrap */
+export function getTeardownStepsForProvider(provider: string): ProvisioningStepNode[] {
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    return globalPluginRegistry.getTeardownStepsForProvider(provider);
+  }
+  return STATIC_TEARDOWN_STEPS_BY_PROVIDER[provider] ?? [];
+}
 
 /**
  * Drop nodes whose required dependencies are absent from the same list.
@@ -1255,28 +1425,32 @@ export function pruneNodesWithUnresolvedDependencies(nodes: ProvisioningNode[]):
  * is in the selected set, or if it has no dependents and its own provider
  * is in the set.
  */
-function getRelevantUserActions(selectedProviders: ProviderType[]): UserActionNode[] {
-  const selectedSet = new Set<ProviderType>(selectedProviders);
+function getRelevantUserActions(selectedProviders: string[]): UserActionNode[] {
+  const allActions = globalPluginRegistry.hasPlugin('firebase-core')
+    ? globalPluginRegistry.getAllUserActions()
+    : USER_ACTIONS;
+
+  const selectedSet = new Set<string>(selectedProviders);
 
   // Build a set of all step keys for the selected providers
   const selectedStepKeys = new Set<string>();
   for (const provider of selectedProviders) {
-    for (const step of STEPS_BY_PROVIDER[provider]) {
+    for (const step of getStepsForProvider(provider)) {
       selectedStepKeys.add(step.key);
     }
   }
 
   // A user action is relevant if any selected step depends on it
-  return USER_ACTIONS.filter((action) => {
+  return allActions.filter((action) => {
     if (action.provider && selectedSet.has(action.provider)) return true;
     // Also include if any selected step directly depends on this action
     for (const provider of selectedProviders) {
-      for (const step of STEPS_BY_PROVIDER[provider]) {
+      for (const step of getStepsForProvider(provider)) {
         if (step.dependencies.some((dep) => dep.nodeKey === action.key)) return true;
       }
     }
     // Include transitive: other user actions that depend on this one
-    for (const otherAction of USER_ACTIONS) {
+    for (const otherAction of allActions) {
       if (
         otherAction.key !== action.key &&
         otherAction.dependencies.some((dep) => dep.nodeKey === action.key)
@@ -1294,7 +1468,7 @@ const coreProvisioningContributor: ProvisioningContributor = {
   contributeNodes(ctx: ProvisioningContributorContext): ProvisioningNode[] {
     const steps: ProvisioningStepNode[] = [];
     for (const provider of ctx.selectedProviders) {
-      steps.push(...STEPS_BY_PROVIDER[provider]);
+      steps.push(...getStepsForProvider(provider));
     }
     const nodes = [...getRelevantUserActions(ctx.selectedProviders), ...steps];
     return pruneNodesWithUnresolvedDependencies(nodes);
@@ -1369,7 +1543,7 @@ export function buildTeardownPlan(
 ): ProvisioningPlan {
   const steps: ProvisioningStepNode[] = [];
   for (const provider of selectedProviders) {
-    steps.push(...TEARDOWN_STEPS_BY_PROVIDER[provider]);
+    steps.push(...getTeardownStepsForProvider(provider));
   }
 
   const nodes: ProvisioningNode[] = [...steps];
@@ -1457,7 +1631,7 @@ export function recomputePlanForModules(
 export function getAllNodesForProviders(providers: ProviderType[]): ProvisioningNode[] {
   const steps: ProvisioningStepNode[] = [];
   for (const provider of providers) {
-    steps.push(...STEPS_BY_PROVIDER[provider]);
+    steps.push(...getStepsForProvider(provider));
   }
   const userActions = getRelevantUserActions(providers);
   return [...userActions, ...steps];
@@ -1466,7 +1640,7 @@ export function getAllNodesForProviders(providers: ProviderType[]): Provisioning
 export function getAllTeardownNodesForProviders(providers: ProviderType[]): ProvisioningStepNode[] {
   const steps: ProvisioningStepNode[] = [];
   for (const provider of providers) {
-    steps.push(...TEARDOWN_STEPS_BY_PROVIDER[provider]);
+    steps.push(...getTeardownStepsForProvider(provider));
   }
   return steps;
 }

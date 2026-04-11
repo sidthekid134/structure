@@ -1,5 +1,10 @@
 import { buildProvisioningPlan, pruneNodesWithUnresolvedDependencies } from '../provisioning/step-registry.js';
 import type { ProvisioningNode } from '../provisioning/graph.types.js';
+import { registerBuiltinPlugins } from '../plugins/builtin/index.js';
+
+beforeAll(() => {
+  registerBuiltinPlugins();
+});
 
 describe('pruneNodesWithUnresolvedDependencies', () => {
   it('removes nodes in dependency order until all required edges resolve', () => {
