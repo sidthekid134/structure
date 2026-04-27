@@ -18,6 +18,19 @@ export type EnvironmentScope = 'global' | 'per-environment';
 export type StepDirection = 'provision' | 'teardown';
 
 // ---------------------------------------------------------------------------
+// Mobile platform tagging
+// ---------------------------------------------------------------------------
+
+/**
+ * The set of mobile platforms a project can target. Steps, modules, and
+ * user-action nodes may opt into a subset; an absent `platforms` mask means
+ * the node applies to all platforms (i.e. it has no iOS/Android coupling).
+ */
+export type MobilePlatform = 'ios' | 'android';
+
+export const ALL_MOBILE_PLATFORMS: MobilePlatform[] = ['ios', 'android'];
+
+// ---------------------------------------------------------------------------
 // Automation level
 // ---------------------------------------------------------------------------
 
@@ -91,7 +104,7 @@ export interface ResourceOutput {
 // Step input fields — user-configurable parameters for a step
 // ---------------------------------------------------------------------------
 
-export type StepInputFieldType = 'text' | 'select';
+export type StepInputFieldType = 'text' | 'select' | 'p8';
 
 export interface StepInputField {
   key: string;
@@ -140,6 +153,12 @@ export interface UserActionNode {
   completionPortalLinks?: CompletionPortalLink[];
   /** Optional tie-break within the same topological layer (lower runs first). */
   orderHint?: number;
+  /**
+   * Which mobile platforms this action applies to. Omitted = all platforms.
+   * The plan builder drops user actions whose platform mask doesn't intersect
+   * the project's `platforms` selection.
+   */
+  platforms?: MobilePlatform[];
 }
 
 export interface ProvisioningStepNode {
@@ -164,6 +183,14 @@ export interface ProvisioningStepNode {
   orderHint?: number;
   /** Configurable input fields — user-provided parameters for this step. */
   inputFields?: StepInputField[];
+  /**
+   * Which mobile platforms this step applies to. Omitted = all platforms.
+   * The plan builder drops steps whose platform mask doesn't intersect the
+   * project's `platforms` selection. Required dependencies on filtered-out
+   * upstream nodes are silently relaxed so that platform-specific cousins
+   * don't block their cross-platform peers.
+   */
+  platforms?: MobilePlatform[];
 }
 
 export type ProvisioningNode = UserActionNode | ProvisioningStepNode;
@@ -190,6 +217,8 @@ export interface NodeState {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+  /** Operator guidance when a step pauses in waiting-on-user status. */
+  userPrompt?: string;
   resourcesProduced?: Record<string, string>;
   /** User-provided input values for steps with inputFields. */
   userInputs?: Record<string, string>;
@@ -247,6 +276,12 @@ export interface ProvisioningPlan {
   projectId: string;
   environments: string[];
   selectedModules: SelectedModules;
+  /**
+   * Mobile platforms this plan targets. Used by the plan builder to drop
+   * platform-irrelevant nodes and relax dependencies that point at them.
+   * Empty array means "platform filtering disabled" (treat as all platforms).
+   */
+  platforms: MobilePlatform[];
   nodes: ProvisioningNode[];
   nodeStates: Map<string, NodeState>; // keyed by nodeKey (or nodeKey:env for per-env)
 }
@@ -259,6 +294,7 @@ export interface ProvisioningPlanSnapshot {
   projectId: string;
   environments: string[];
   selectedModules: SelectedModules;
+  platforms: MobilePlatform[];
   nodes: ProvisioningNode[];
   nodeStates: Record<string, NodeState>; // Map serialized as plain object
 }

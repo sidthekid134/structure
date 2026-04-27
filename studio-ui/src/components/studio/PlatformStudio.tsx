@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import {
   ALL_REGISTRY_PLUGINS,
@@ -11,12 +11,15 @@ import {
   CreateProjectModal,
   DEFAULT_ENVIRONMENTS,
   DEFAULT_MODULE_IDS,
+  DEFAULT_PLATFORMS,
   type CreateProjectForm,
 } from './CreateProjectModal';
+import { AppleIntegrationFlow } from './AppleIntegrationFlow';
+import { CloudflareIntegrationFlow } from './CloudflareIntegrationFlow';
 import { IntegrationModal } from './IntegrationModal';
 import { MainHeader } from './MainHeader';
 import { OrgOverview } from './OrgOverview';
-import { ProjectDetailView } from './ProjectDetailView';
+import { ProjectDetailView, type ProjectSubtab } from './ProjectDetailView';
 import { RegistryView } from './RegistryView';
 import { Sidebar } from './Sidebar';
 import { Toast } from './Toast';
@@ -36,15 +39,67 @@ import type {
   StudioView,
 } from './types';
 
+const DEFAULT_PROJECT_SUBTAB: ProjectSubtab = 'modules';
+const PROJECT_SUBTABS: readonly ProjectSubtab[] = ['modules', 'setup', 'dashboard', 'settings'];
+const PROJECT_SCOPED_VIEWS: readonly StudioView[] = [
+  'project',
+  'project-setup',
+  'project-modules',
+  'project-dashboard',
+  'project-settings',
+  'project-providers',
+  'runs',
+  'infrastructure',
+];
+
+const isProjectSubtab = (value: string | null | undefined): value is ProjectSubtab =>
+  typeof value === 'string' && PROJECT_SUBTABS.includes(value as ProjectSubtab);
+
+const parseStudioHashRoute = (
+  hash: string,
+): { view: StudioView; activeProjectId: string | null; projectSubtab: ProjectSubtab } => {
+  const cleaned = hash.startsWith('#') ? hash.slice(1) : hash;
+  const [section, projectIdRaw, projectSubtabRaw] = cleaned
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => decodeURIComponent(segment));
+
+  if (section === 'registry') {
+    return { view: 'registry', activeProjectId: null, projectSubtab: DEFAULT_PROJECT_SUBTAB };
+  }
+
+  if (section === 'project' && projectIdRaw) {
+    return {
+      view: 'project',
+      activeProjectId: projectIdRaw,
+      projectSubtab: isProjectSubtab(projectSubtabRaw) ? projectSubtabRaw : DEFAULT_PROJECT_SUBTAB,
+    };
+  }
+
+  return { view: 'overview', activeProjectId: null, projectSubtab: DEFAULT_PROJECT_SUBTAB };
+};
+
+const buildStudioHashRoute = (view: StudioView, activeProjectId: string | null, projectSubtab: ProjectSubtab): string => {
+  if (view === 'registry') {
+    return '#/registry';
+  }
+  if (PROJECT_SCOPED_VIEWS.includes(view) && activeProjectId) {
+    return `#/project/${encodeURIComponent(activeProjectId)}/${projectSubtab}`;
+  }
+  return '#/overview';
+};
+
 export default function PlatformStudio() {
+  const initialRoute = useMemo(() => parseStudioHashRoute(window.location.hash), []);
   const [isDark, setIsDark] = useState(() => {
     const stored = localStorage.getItem('studio-theme');
     if (stored !== null) return stored === 'dark';
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
-  const [view, setView] = useState<StudioView>('overview');
+  const [view, setView] = useState<StudioView>(initialRoute.view);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(initialRoute.activeProjectId);
+  const [projectSubtab, setProjectSubtab] = useState<ProjectSubtab>(initialRoute.projectSubtab);
 
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -56,6 +111,7 @@ export default function PlatformStudio() {
     domain: '',
     description: '',
     environments: DEFAULT_ENVIRONMENTS,
+    platforms: DEFAULT_PLATFORMS,
     templateId: 'mobile-app',
     modules: DEFAULT_MODULE_IDS,
   });
@@ -64,9 +120,16 @@ export default function PlatformStudio() {
     firebase: false,
     expo: false,
     github: false,
+    apple: false,
+    cloudflare: false,
   });
   const [activeIntegration, setActiveIntegration] = useState<ProviderId | null>(null);
   const [firebaseDetails, setFirebaseDetails] = useState<FirebaseConnectionDetails | null>(null);
+  const [appleDetails, setAppleDetails] = useState<{
+    team_id?: string;
+    asc_issuer_id?: string;
+    asc_api_key_id?: string;
+  } | null>(null);
   const [githubProjectInitialized, setGithubProjectInitialized] = useState(false);
   const [expoProjectInitialized, setExpoProjectInitialized] = useState(false);
   const [integrationDependencyStatus, setIntegrationDependencyStatus] = useState<
@@ -139,7 +202,24 @@ export default function PlatformStudio() {
       github:
         hasConfiguredIntegration(organization.integrations, ['github']) ||
         hasConfiguredIntegration(projectIntegrations, ['github']),
+      apple:
+        hasConfiguredIntegration(organization.integrations, ['apple']) ||
+        hasConfiguredIntegration(projectIntegrations, ['apple']),
+      cloudflare:
+        hasConfiguredIntegration(organization.integrations, ['cloudflare']) ||
+        hasConfiguredIntegration(projectIntegrations, ['cloudflare']),
     });
+
+    const appleRecord = organization.integrations?.['apple'] as IntegrationStatusRecord | undefined;
+    if (appleRecord && appleRecord.status === 'configured' && appleRecord.config) {
+      setAppleDetails({
+        team_id: appleRecord.config['team_id'],
+        asc_issuer_id: appleRecord.config['asc_issuer_id'],
+        asc_api_key_id: appleRecord.config['asc_api_key_id'],
+      });
+    } else {
+      setAppleDetails(null);
+    }
   };
   const refreshIntegrationDependencyStatus = async (): Promise<void> => {
     if (!activeProjectId) {
@@ -198,6 +278,42 @@ export default function PlatformStudio() {
       });
       await refreshConnectedProviders();
       notify('Firebase integration connected via SA key', 'ok');
+      return;
+    }
+    if (providerId === 'apple') {
+      const teamId = fields['appleTeamId']?.trim();
+      const ascIssuerId = fields['ascIssuerId']?.trim();
+      const ascApiKeyId = fields['ascApiKeyId']?.trim();
+      const ascApiKeyP8 = fields['ascApiKeyP8']?.trim();
+      if (!teamId || !ascIssuerId || !ascApiKeyId || !ascApiKeyP8) {
+        throw new Error(
+          'Apple connect requires Team ID, App Store Connect Issuer ID, Key ID, and .p8 contents.',
+        );
+      }
+      await api<{ ascCredentials: 'stored_in_vault' }>(
+        '/api/organization/integrations/apple/connect',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ teamId, ascIssuerId, ascApiKeyId, ascApiKeyP8 }),
+        },
+      );
+      await refreshConnectedProviders();
+      notify('Apple connected — Team ID + ASC Team Key stored. Automated provisioning enabled.', 'ok');
+      return;
+    }
+    if (providerId === 'cloudflare') {
+      const token = fields['cloudflareApiToken']?.trim();
+      if (!token) {
+        throw new Error('Cloudflare API token is required.');
+      }
+      await api('/api/organization/integrations/cloudflare/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      await refreshConnectedProviders();
+      notify('Cloudflare integration connected', 'ok');
       return;
     }
     throw new Error(`${providerId} connect flow is not implemented yet.`);
@@ -275,6 +391,29 @@ export default function PlatformStudio() {
       notify('Firebase/GCP integration disconnected', 'ok');
       return;
     }
+    if (providerId === 'apple') {
+      await api('/api/organization/integrations/apple', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'pending',
+          notes: '',
+          config: {},
+          replaceConfig: true,
+        }),
+      });
+      await refreshConnectedProviders();
+      notify('Apple integration disconnected', 'ok');
+      return;
+    }
+    if (providerId === 'cloudflare') {
+      await api('/api/organization/integrations/cloudflare/connection', {
+        method: 'DELETE',
+      });
+      await refreshConnectedProviders();
+      notify('Cloudflare integration disconnected', 'ok');
+      return;
+    }
     throw new Error(`${providerId} disconnect flow is not implemented yet.`);
   };
   const handleTriggerSetup = async (providerId: ProviderId): Promise<void> => {
@@ -299,20 +438,72 @@ export default function PlatformStudio() {
     if (plugin.providerId === 'firebase') return connectedProviders.firebase;
     if (plugin.providerId === 'expo') return connectedProviders.expo;
     if (plugin.providerId === 'github') return connectedProviders.github;
+    if (plugin.providerId === 'apple') return connectedProviders.apple;
+    if (plugin.providerId === 'cloudflare') return connectedProviders.cloudflare;
     return false;
   };
   const getProviderConfig = (plugin: RegistryPlugin): IntegrationConfig | null => {
-    if (plugin.providerId === 'firebase' || plugin.providerId === 'expo' || plugin.providerId === 'github') {
+    if (
+      plugin.providerId === 'firebase' ||
+      plugin.providerId === 'expo' ||
+      plugin.providerId === 'github' ||
+      plugin.providerId === 'apple' ||
+      plugin.providerId === 'cloudflare'
+    ) {
       return INTEGRATION_CONFIGS.find((c) => c.id === plugin.providerId) ?? null;
     }
     return null;
   };
   const activeIntegrationConfig = activeIntegration ? INTEGRATION_CONFIGS.find((c) => c.id === activeIntegration) ?? null : null;
+  const navigateStudio = useCallback(
+    (next: {
+      view?: StudioView;
+      activeProjectId?: string | null;
+      projectSubtab?: ProjectSubtab;
+      replaceHistory?: boolean;
+    }) => {
+      const nextView = next.view ?? view;
+      const nextProjectId = next.activeProjectId === undefined ? activeProjectId : next.activeProjectId;
+      const nextProjectSubtab = next.projectSubtab ?? projectSubtab;
+
+      setView(nextView);
+      setActiveProjectId(nextProjectId);
+      setProjectSubtab(nextProjectSubtab);
+
+      const nextHash = buildStudioHashRoute(nextView, nextProjectId, nextProjectSubtab);
+      if (window.location.hash !== nextHash) {
+        if (next.replaceHistory) {
+          window.history.replaceState(null, '', nextHash);
+        } else {
+          window.history.pushState(null, '', nextHash);
+        }
+      }
+    },
+    [activeProjectId, projectSubtab, view],
+  );
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
     localStorage.setItem('studio-theme', isDark ? 'dark' : 'light');
   }, [isDark]);
+
+  useEffect(() => {
+    const expectedHash = buildStudioHashRoute(view, activeProjectId, projectSubtab);
+    if (window.location.hash !== expectedHash) {
+      window.history.replaceState(null, '', expectedHash);
+    }
+  }, [activeProjectId, projectSubtab, view]);
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const route = parseStudioHashRoute(window.location.hash);
+      setView(route.view);
+      setActiveProjectId(route.activeProjectId);
+      setProjectSubtab(route.projectSubtab);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -344,6 +535,14 @@ export default function PlatformStudio() {
     if (projectDetail) syncRunSockets(projectDetail);
   }, [projectDetail]);
 
+  useEffect(() => {
+    if (!activeProjectId) {
+      setProjectDetail(null);
+      return;
+    }
+    void refreshProjectDetail(activeProjectId).catch((error: Error) => notify(error.message, 'error'));
+  }, [activeProjectId]);
+
   function notify(text: string, tone: 'ok' | 'error' = 'ok'): void {
     setToast({ text, tone });
     setTimeout(() => setToast(null), 2800);
@@ -353,12 +552,18 @@ export default function PlatformStudio() {
     const payload = await api<{ projects: ProjectSummary[] }>('/api/projects');
     setProjects(payload.projects);
     if (!activeProjectId && payload.projects.length > 0) {
-      setActiveProjectId(payload.projects[0].id);
-      await refreshProjectDetail(payload.projects[0].id);
+      navigateStudio({
+        view: 'project',
+        activeProjectId: payload.projects[0].id,
+        projectSubtab: DEFAULT_PROJECT_SUBTAB,
+        replaceHistory: true,
+      });
     }
     if (activeProjectId && !payload.projects.some((project) => project.id === activeProjectId)) {
       setActiveProjectId(null);
       setProjectDetail(null);
+      setProjectSubtab(DEFAULT_PROJECT_SUBTAB);
+      setView('overview');
     }
   }
 
@@ -419,6 +624,7 @@ export default function PlatformStudio() {
         bundleId,
         description: createForm.description.trim(),
         environments: createForm.environments,
+        platforms: createForm.platforms,
         modules: createForm.modules,
       }),
     });
@@ -429,12 +635,16 @@ export default function PlatformStudio() {
       domain: '',
       description: '',
       environments: DEFAULT_ENVIRONMENTS,
+      platforms: DEFAULT_PLATFORMS,
       templateId: 'mobile-app',
       modules: DEFAULT_MODULE_IDS,
     });
     await refreshProjects();
-    setActiveProjectId(payload.project.id);
-    await refreshProjectDetail(payload.project.id);
+    navigateStudio({
+      view: 'project',
+      activeProjectId: payload.project.id,
+      projectSubtab: DEFAULT_PROJECT_SUBTAB,
+    });
     notify('Project created.');
   }
 
@@ -469,6 +679,7 @@ export default function PlatformStudio() {
     setFirebaseDetails(null);
     setProjectDetail(null);
     setActiveProjectId(null);
+    setProjectSubtab(DEFAULT_PROJECT_SUBTAB);
     setView('overview');
     await refreshProjects();
     notify('Project deleted. Infrastructure teardown skipped.', 'ok');
@@ -492,11 +703,12 @@ export default function PlatformStudio() {
           activeProjectId={activeProjectId}
           view={view}
           onShowCreate={() => setShowCreate(true)}
-          onViewChange={setView}
+          onViewChange={(nextView) => navigateStudio({ view: nextView })}
           onSelectProject={(projectId) => {
-            setActiveProjectId(projectId);
-            setView('project');
-            void refreshProjectDetail(projectId);
+            navigateStudio({
+              view: 'project',
+              activeProjectId: projectId,
+            });
           }}
         />
 
@@ -525,9 +737,10 @@ export default function PlatformStudio() {
               <OrgOverview
                 projects={projects}
                 onSelectProject={(id) => {
-                  setActiveProjectId(id);
-                  setView('project');
-                  void refreshProjectDetail(id);
+                  navigateStudio({
+                    view: 'project',
+                    activeProjectId: id,
+                  });
                 }}
                 connectedProviders={connectedProviders}
                 onOpenIntegration={setActiveIntegration}
@@ -536,23 +749,16 @@ export default function PlatformStudio() {
               />
             )}
 
-            {(view === 'project' || view === 'project-providers' || view === 'infrastructure' || view === 'runs') && projectDetail && (
+            {view === 'project' && projectDetail && (
               <ProjectDetailView
                 projectDetail={projectDetail}
-                projectTab={
-                  view === 'infrastructure'
-                    ? 'infrastructure'
-                    : view === 'runs'
-                      ? 'deployments'
-                      : view === 'project-providers'
-                        ? 'providers'
-                        : 'overview'
-                }
+                projectTab={projectSubtab}
                 onProjectTabChange={(tab) => {
-                  if (tab === 'overview') setView('project');
-                  else if (tab === 'providers') setView('project-providers');
-                  else if (tab === 'infrastructure') setView('infrastructure');
-                  else setView('runs');
+                  navigateStudio({
+                    view: 'project',
+                    activeProjectId: activeProjectId ?? projectDetail.project.id,
+                    projectSubtab: tab,
+                  });
                 }}
                 connectedProviders={connectedProviders}
                 firebaseConnectionDetails={firebaseDetails}
@@ -578,6 +784,7 @@ export default function PlatformStudio() {
                     if (k === 'firebase') pluginIds.push(...PROVIDER_PLUGIN_MAP.firebase);
                     else if (k === 'expo') pluginIds.push(...PROVIDER_PLUGIN_MAP.expo);
                     else if (k === 'github') pluginIds.push(...PROVIDER_PLUGIN_MAP.github);
+                    else if (k === 'apple') pluginIds.push(...(PROVIDER_PLUGIN_MAP.apple ?? []));
                     else pluginIds.push(k);
                   }
                   return pluginIds;
@@ -624,7 +831,34 @@ export default function PlatformStudio() {
         {toast && <Toast text={toast.text} tone={toast.tone} />}
 
         <AnimatePresence>
-          {activeIntegration && activeIntegrationConfig && activeIntegration !== 'firebase' && (
+          {activeIntegration === 'apple' && (
+            <AppleIntegrationFlow
+              key="apple-flow"
+              isConnected={connectedProviders.apple}
+              connectionDetails={appleDetails}
+              onClose={() => setActiveIntegration(null)}
+              onConnect={async (fields) => {
+                await handleConnect('apple', fields);
+              }}
+              onDisconnect={async () => {
+                await handleDisconnect('apple');
+              }}
+            />
+          )}
+          {activeIntegration === 'cloudflare' && (
+            <CloudflareIntegrationFlow
+              key="cloudflare-flow"
+              isConnected={connectedProviders.cloudflare}
+              onClose={() => setActiveIntegration(null)}
+              onConnect={async (fields) => {
+                await handleConnect('cloudflare', fields);
+              }}
+              onDisconnect={async () => {
+                await handleDisconnect('cloudflare');
+              }}
+            />
+          )}
+          {activeIntegration && activeIntegrationConfig && activeIntegration !== 'firebase' && activeIntegration !== 'apple' && activeIntegration !== 'cloudflare' && (
             <IntegrationModal
               key={activeIntegration}
               config={activeIntegrationConfig}

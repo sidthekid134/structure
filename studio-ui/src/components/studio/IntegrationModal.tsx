@@ -30,6 +30,7 @@ import type {
   GcpOAuthStepStatus,
   IntegrationConfig,
   IntegrationDependencyProviderStatus,
+  IntegrationField,
   IntegrationPlannedResourceStatus,
   ProviderId,
   SetupPlanStepStatus,
@@ -79,7 +80,9 @@ export function IntegrationModal({
   const [manualError, setManualError] = useState<string | null>(null);
   const [copiedValueKey, setCopiedValueKey] = useState<string | null>(null);
   const LogoIcon = config.logo;
-  const allFilled = config.fields.every((f) => (fieldValues[f.key] ?? '').trim().length > 0);
+  const allFilled = config.fields.every(
+    (f) => f.optional || (fieldValues[f.key] ?? '').trim().length > 0,
+  );
   const allDependenciesReady =
     (dependencyStatus?.dependencies.length ?? 0) > 0 &&
     (dependencyStatus?.dependencies.every((dependency) => dependency.status === 'ready') ?? false);
@@ -333,6 +336,55 @@ export function IntegrationModal({
 
   const affectedPluginIds = PROVIDER_PLUGIN_MAP[config.id] ?? [];
   const affectedPlugins = ALL_REGISTRY_PLUGINS.filter((p) => affectedPluginIds.includes(p.id));
+
+  const renderField = (field: IntegrationField) => (
+    <div key={field.key} className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-xs font-semibold text-foreground">{field.label}</label>
+        <span
+          className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+            field.optional
+              ? 'border-border text-muted-foreground bg-muted/40'
+              : 'border-primary/30 text-primary bg-primary/5'
+          }`}
+        >
+          {field.optional ? 'Optional' : 'Required'}
+        </span>
+      </div>
+      {field.type === 'textarea' ? (
+        <textarea
+          rows={5}
+          placeholder={field.placeholder}
+          value={fieldValues[field.key] ?? ''}
+          onChange={(e) => setFieldValues((v) => ({ ...v, [field.key]: e.target.value }))}
+          className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-mono text-[11px] leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none"
+        />
+      ) : (
+        <div className="relative">
+          <input
+            type={field.type === 'password' && !revealedFields[field.key] ? 'password' : 'text'}
+            placeholder={field.placeholder}
+            value={fieldValues[field.key] ?? ''}
+            onChange={(e) => setFieldValues((v) => ({ ...v, [field.key]: e.target.value }))}
+            className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-mono text-[12px] focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all pr-10"
+          />
+          {field.type === 'password' && (
+            <button
+              type="button"
+              onClick={() => setRevealedFields((v) => ({ ...v, [field.key]: !v[field.key] }))}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {revealedFields[field.key] ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          )}
+        </div>
+      )}
+      <p className="text-[11px] text-muted-foreground flex gap-1.5 leading-relaxed">
+        <Info size={11} className="shrink-0 mt-0.5" />
+        <span>{field.hint}</span>
+      </p>
+    </div>
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/55" onClick={onClose}>
@@ -624,43 +676,7 @@ export function IntegrationModal({
                       Paste a service account JSON key that you've already created in the Google Cloud Console.
                     </p>
                   </div>
-                  {config.fields.map((field) => (
-                    <div key={field.key} className="space-y-1.5">
-                      <label className="text-xs font-semibold text-foreground">{field.label}</label>
-                      {field.type === 'textarea' ? (
-                        <textarea
-                          rows={5}
-                          placeholder={field.placeholder}
-                          value={fieldValues[field.key] ?? ''}
-                          onChange={(e) => setFieldValues((v) => ({ ...v, [field.key]: e.target.value }))}
-                          className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-mono text-[11px] leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none"
-                        />
-                      ) : (
-                        <div className="relative">
-                          <input
-                            type={field.type === 'password' && !revealedFields[field.key] ? 'password' : 'text'}
-                            placeholder={field.placeholder}
-                            value={fieldValues[field.key] ?? ''}
-                            onChange={(e) => setFieldValues((v) => ({ ...v, [field.key]: e.target.value }))}
-                            className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-mono text-[12px] focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all pr-10"
-                          />
-                          {field.type === 'password' && (
-                            <button
-                              type="button"
-                              onClick={() => setRevealedFields((v) => ({ ...v, [field.key]: !v[field.key] }))}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                            >
-                              {revealedFields[field.key] ? <EyeOff size={14} /> : <Eye size={14} />}
-                            </button>
-                          )}
-                        </div>
-                      )}
-                      <p className="text-[11px] text-muted-foreground flex gap-1.5 leading-relaxed">
-                        <Info size={11} className="shrink-0 mt-0.5" />
-                        <span>{field.hint}</span>
-                      </p>
-                    </div>
-                  ))}
+                  {config.fields.map((field) => renderField(field))}
                 </div>
               )}
             </div>
@@ -668,43 +684,7 @@ export function IntegrationModal({
 
           {!isConnected && !config.supportsOAuth && (
             <div className="space-y-4">
-              {config.fields.map((field) => (
-                <div key={field.key} className="space-y-1.5">
-                  <label className="text-xs font-semibold text-foreground">{field.label}</label>
-                  {field.type === 'textarea' ? (
-                    <textarea
-                      rows={5}
-                      placeholder={field.placeholder}
-                      value={fieldValues[field.key] ?? ''}
-                      onChange={(e) => setFieldValues((v) => ({ ...v, [field.key]: e.target.value }))}
-                      className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-mono text-[11px] leading-relaxed focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all resize-none"
-                    />
-                  ) : (
-                    <div className="relative">
-                      <input
-                        type={field.type === 'password' && !revealedFields[field.key] ? 'password' : 'text'}
-                        placeholder={field.placeholder}
-                        value={fieldValues[field.key] ?? ''}
-                        onChange={(e) => setFieldValues((v) => ({ ...v, [field.key]: e.target.value }))}
-                        className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-mono text-[12px] focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all pr-10"
-                      />
-                      {field.type === 'password' && (
-                        <button
-                          type="button"
-                          onClick={() => setRevealedFields((v) => ({ ...v, [field.key]: !v[field.key] }))}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          {revealedFields[field.key] ? <EyeOff size={14} /> : <Eye size={14} />}
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  <p className="text-[11px] text-muted-foreground flex gap-1.5 leading-relaxed">
-                    <Info size={11} className="shrink-0 mt-0.5" />
-                    <span>{field.hint}</span>
-                  </p>
-                </div>
-              ))}
+              {config.fields.map((field) => renderField(field))}
             </div>
           )}
 

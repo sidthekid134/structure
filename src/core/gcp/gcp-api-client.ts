@@ -455,10 +455,15 @@ export function provisionerSaEmail(gcpProjectId: string): string {
   return `${GCP_PROVISIONER_SA_ID}@${gcpProjectId}.iam.gserviceaccount.com`;
 }
 
+function serviceAccountLookupPath(saEmail: string): string {
+  // IAM lookups by email are most reliable with the wildcard project segment.
+  return `/v1/projects/-/serviceAccounts/${encodeURIComponent(saEmail)}`;
+}
+
 export async function ensureProvisionerServiceAccount(accessToken: string, gcpProjectId: string): Promise<string> {
   const saEmail = provisionerSaEmail(gcpProjectId);
   try {
-    await gcpRequest('GET', 'iam.googleapis.com', `/v1/projects/${gcpProjectId}/serviceAccounts/${encodeURIComponent(saEmail)}`, accessToken);
+    await gcpRequest('GET', 'iam.googleapis.com', serviceAccountLookupPath(saEmail), accessToken);
     return saEmail;
   } catch (err) {
     if (!(err instanceof GcpHttpError) || err.statusCode !== 404) throw err;
@@ -841,11 +846,11 @@ export async function deleteFirestoreDatabase(
 /**
  * Compute the Firebase Rules release name for a Firestore database.
  * The default database uses `cloud.firestore`; named databases use
- * `cloud.firestore/databases/{databaseId}`.
+ * `cloud.firestore/{databaseId}`.
  */
 function firestoreReleaseName(databaseId?: string): string {
   if (!databaseId || databaseId === '(default)') return 'cloud.firestore';
-  return `cloud.firestore/databases/${databaseId}`;
+  return `cloud.firestore/${databaseId}`;
 }
 
 /** Deploy Firestore security rules to the given GCP project and database. */
@@ -855,38 +860,67 @@ export async function deployFirestoreRules(
   rulesContent: string,
   databaseId?: string,
 ): Promise<void> {
+  const sourcePayload: {
+    files: Array<{ name: string; content: string }>;
+  } = {
+    files: [{ name: 'firestore.rules', content: rulesContent }],
+  };
+
   const createRes = await gcpRequest(
     'POST', 'firebaserules.googleapis.com',
     `/v1/projects/${gcpProjectId}/rulesets`,
     accessToken,
-    JSON.stringify({ source: { files: [{ name: 'firestore.rules', content: rulesContent }] } }),
+    JSON.stringify({ source: sourcePayload }),
   );
   const ruleset = JSON.parse(createRes.body) as { name?: string };
   if (!ruleset.name) throw new Error(`Firestore ruleset creation returned no name: ${createRes.body}`);
 
   const releaseName = firestoreReleaseName(databaseId);
-  const releaseBody = JSON.stringify({
-    release: { name: `projects/${gcpProjectId}/releases/${releaseName}`, rulesetName: ruleset.name },
+  const releaseResourceName = `projects/${gcpProjectId}/releases/${releaseName}`;
+  const createReleaseBody = JSON.stringify({
+    name: releaseResourceName,
+    rulesetName: ruleset.name,
+  });
+  const patchReleaseBody = JSON.stringify({
+    release: {
+      name: releaseResourceName,
+      rulesetName: ruleset.name,
+    },
+    updateMask: 'rulesetName',
   });
 
   // Firebase auto-creates the `cloud.firestore` release for the default database but does NOT
-  // auto-create releases for named databases. Try PUT (update) first; fall back to POST (create)
+  // auto-create releases for named databases. Try PATCH (update) first; fall back to POST (create)
   // when the release doesn't exist yet (404).
   try {
     await gcpRequest(
-      'PUT', 'firebaserules.googleapis.com',
-      `/v1/projects/${gcpProjectId}/releases/${encodeURIComponent(releaseName)}`,
+      'PATCH', 'firebaserules.googleapis.com',
+      `/v1/projects/${gcpProjectId}/releases/${releaseName}`,
       accessToken,
-      releaseBody,
+      patchReleaseBody,
     );
   } catch (err) {
     if (err instanceof GcpHttpError && err.statusCode === 404) {
-      await gcpRequest(
-        'POST', 'firebaserules.googleapis.com',
-        `/v1/projects/${gcpProjectId}/releases`,
-        accessToken,
-        releaseBody,
-      );
+      try {
+        await gcpRequest(
+          'POST', 'firebaserules.googleapis.com',
+          `/v1/projects/${gcpProjectId}/releases`,
+          accessToken,
+          createReleaseBody,
+        );
+      } catch (createErr) {
+        // If the release was created concurrently, update it in place.
+        if (createErr instanceof GcpHttpError && createErr.statusCode === 409) {
+          await gcpRequest(
+            'PATCH', 'firebaserules.googleapis.com',
+            `/v1/projects/${gcpProjectId}/releases/${releaseName}`,
+            accessToken,
+            patchReleaseBody,
+          );
+        } else {
+          throw createErr;
+        }
+      }
     } else {
       throw err;
     }
@@ -906,25 +940,48 @@ export async function deployStorageRules(accessToken: string, gcpProjectId: stri
   if (!ruleset.name) throw new Error(`Storage ruleset creation returned no name: ${createRes.body}`);
 
   const releaseName = `firebase.storage/${bucket}`;
-  const releaseBody = JSON.stringify({
-    release: { name: `projects/${gcpProjectId}/releases/${releaseName}`, rulesetName: ruleset.name },
+  const releaseResourceName = `projects/${gcpProjectId}/releases/${releaseName}`;
+  const createReleaseBody = JSON.stringify({
+    name: releaseResourceName,
+    rulesetName: ruleset.name,
+  });
+  const patchReleaseBody = JSON.stringify({
+    release: {
+      name: releaseResourceName,
+      rulesetName: ruleset.name,
+    },
+    updateMask: 'rulesetName',
   });
 
   try {
     await gcpRequest(
-      'PUT', 'firebaserules.googleapis.com',
-      `/v1/projects/${gcpProjectId}/releases/${encodeURIComponent(releaseName)}`,
+      'PATCH', 'firebaserules.googleapis.com',
+      `/v1/projects/${gcpProjectId}/releases/${releaseName}`,
       accessToken,
-      releaseBody,
+      patchReleaseBody,
     );
   } catch (err) {
     if (err instanceof GcpHttpError && err.statusCode === 404) {
-      await gcpRequest(
-        'POST', 'firebaserules.googleapis.com',
-        `/v1/projects/${gcpProjectId}/releases`,
-        accessToken,
-        releaseBody,
-      );
+      try {
+        await gcpRequest(
+          'POST', 'firebaserules.googleapis.com',
+          `/v1/projects/${gcpProjectId}/releases`,
+          accessToken,
+          createReleaseBody,
+        );
+      } catch (createErr) {
+        // If the release was created concurrently, update it in place.
+        if (createErr instanceof GcpHttpError && createErr.statusCode === 409) {
+          await gcpRequest(
+            'PATCH', 'firebaserules.googleapis.com',
+            `/v1/projects/${gcpProjectId}/releases/${releaseName}`,
+            accessToken,
+            patchReleaseBody,
+          );
+        } else {
+          throw createErr;
+        }
+      }
     } else {
       throw err;
     }
@@ -939,7 +996,7 @@ export async function getActiveFirestoreRulesetName(
 ): Promise<string | null> {
   const releaseName = firestoreReleaseName(databaseId);
   try {
-    const res = await gcpRequest('GET', 'firebaserules.googleapis.com', `/v1/projects/${gcpProjectId}/releases/${encodeURIComponent(releaseName)}`, accessToken);
+    const res = await gcpRequest('GET', 'firebaserules.googleapis.com', `/v1/projects/${gcpProjectId}/releases/${releaseName}`, accessToken);
     const release = JSON.parse(res.body) as { rulesetName?: string };
     return release.rulesetName?.trim() || null;
   } catch (err) {
@@ -948,12 +1005,40 @@ export async function getActiveFirestoreRulesetName(
   }
 }
 
+/**
+ * Returns the active Firestore rules source text for the target release, or null
+ * when no release/ruleset is active.
+ */
+export async function getActiveFirestoreRulesSource(
+  accessToken: string,
+  gcpProjectId: string,
+  databaseId?: string,
+): Promise<string | null> {
+  const rulesetName = await getActiveFirestoreRulesetName(accessToken, gcpProjectId, databaseId);
+  if (!rulesetName) return null;
+
+  const resourcePath = rulesetName.startsWith('projects/')
+    ? `/v1/${rulesetName}`
+    : `/v1/projects/${gcpProjectId}/rulesets/${encodeURIComponent(rulesetName)}`;
+
+  const res = await gcpRequest('GET', 'firebaserules.googleapis.com', resourcePath, accessToken);
+  const ruleset = JSON.parse(res.body) as {
+    source?: {
+      files?: Array<{ name?: string; content?: string }>;
+    };
+  };
+  const files = ruleset.source?.files ?? [];
+  const firestoreFile = files.find((file) => file.name === 'firestore.rules');
+  const fallbackFile = files[0];
+  return firestoreFile?.content ?? fallbackFile?.content ?? null;
+}
+
 /** Returns the active ruleset name for the firebase.storage release, or null if none is set. */
 export async function getActiveStorageRulesetName(accessToken: string, gcpProjectId: string): Promise<string | null> {
   const bucket = `${gcpProjectId}.appspot.com`;
   const releaseName = `firebase.storage/${bucket}`;
   try {
-    const res = await gcpRequest('GET', 'firebaserules.googleapis.com', `/v1/projects/${gcpProjectId}/releases/${encodeURIComponent(releaseName)}`, accessToken);
+    const res = await gcpRequest('GET', 'firebaserules.googleapis.com', `/v1/projects/${gcpProjectId}/releases/${releaseName}`, accessToken);
     const release = JSON.parse(res.body) as { rulesetName?: string };
     return release.rulesetName?.trim() || null;
   } catch (err) {
@@ -1078,13 +1163,15 @@ export async function configureFirebaseOAuthProvider(
     displayName: provider === 'google.com' ? 'Google' : 'Apple',
   };
 
-  const idpConfigId = provider === 'google.com' ? 'google.com' : 'apple.com';
+  // Firebase Auth expects Apple OAuth IdP configs under `oidc.apple`.
+  // Using `apple.com` here fails with INVALID_CONFIG_ID.
+  const idpConfigId = provider === 'google.com' ? 'google.com' : 'oidc.apple';
 
   try {
     await gcpRequest(
       'PATCH',
       'identitytoolkit.googleapis.com',
-      `/v2/projects/${gcpProjectId}/oauthIdpConfigs/${idpConfigId}?updateMask=enabled,clientId,clientSecret`,
+      `/v2/projects/${gcpProjectId}/oauthIdpConfigs/${encodeURIComponent(idpConfigId)}?updateMask=enabled,clientId,clientSecret`,
       accessToken,
       JSON.stringify(body),
     );
@@ -1093,7 +1180,7 @@ export async function configureFirebaseOAuthProvider(
       await gcpRequest(
         'POST',
         'identitytoolkit.googleapis.com',
-        `/v2/projects/${gcpProjectId}/oauthIdpConfigs?oauthIdpConfigId=${idpConfigId}`,
+        `/v2/projects/${gcpProjectId}/oauthIdpConfigs?oauthIdpConfigId=${encodeURIComponent(idpConfigId)}`,
         accessToken,
         JSON.stringify(body),
       );
@@ -1133,7 +1220,19 @@ export async function addFirebaseAuthorizedDomain(
 }
 
 /**
- * Configures Apple Sign-In as a Firebase Auth OIDC provider.
+ * Configures Apple Sign-In as a Firebase Auth provider.
+ *
+ * Apple is a built-in supported IdP in Firebase Identity Toolkit, so it is
+ * configured via `defaultSupportedIdpConfigs/apple.com` (NOT via
+ * `oauthIdpConfigs`, which is reserved for custom OIDC providers prefixed
+ * with `oidc.`). Supplying `appleSignInConfig.codeFlowConfig` (team ID, key
+ * ID, and the .p8 private key contents) lets Firebase mint and refresh the
+ * Apple-required client_secret JWT server-side, which makes the
+ * web/redirect path work (Firebase handler URL → Apple → Firebase
+ * exchanges the code at appleid.apple.com/auth/token).
+ *
+ * `bundleIds` is optional but recommended: it allows native iOS Sign in
+ * with Apple to flow through Firebase Auth without additional config.
  */
 export async function configureAppleSignInProvider(
   accessToken: string,
@@ -1141,25 +1240,43 @@ export async function configureAppleSignInProvider(
   teamId: string,
   keyId: string,
   serviceId: string,
+  privateKey?: string,
+  bundleIds?: string[],
 ): Promise<void> {
-  const body = {
+  if (!privateKey?.trim()) {
+    throw new Error(
+      'Apple private key (.p8) is required to configure Firebase Apple provider. ' +
+        'Re-run "Register Sign-In Capability on Apple Auth Key" and ensure the key is vaulted.',
+    );
+  }
+
+  const codeFlowConfig: Record<string, string> = {
+    teamId,
+    keyId,
+    privateKey: privateKey.trim(),
+  };
+  const appleSignInConfig: Record<string, unknown> = { codeFlowConfig };
+  if (bundleIds && bundleIds.length > 0) {
+    appleSignInConfig['bundleIds'] = bundleIds;
+  }
+
+  const body: Record<string, unknown> = {
+    name: `projects/${gcpProjectId}/defaultSupportedIdpConfigs/apple.com`,
     enabled: true,
-    displayName: 'Apple',
-    issuer: 'https://appleid.apple.com',
     clientId: serviceId,
-    responseType: { idToken: true },
-    extraParams: {
-      team_id: teamId,
-      key_id: keyId,
-    },
+    appleSignInConfig,
   };
 
-  const oidcId = 'oidc.apple';
+  // PATCH first; if the IdP config doesn't exist yet, fall back to POST.
+  const updateMask = bundleIds && bundleIds.length > 0
+    ? 'enabled,clientId,appleSignInConfig.codeFlowConfig,appleSignInConfig.bundleIds'
+    : 'enabled,clientId,appleSignInConfig.codeFlowConfig';
+
   try {
     await gcpRequest(
       'PATCH',
       'identitytoolkit.googleapis.com',
-      `/v2/projects/${gcpProjectId}/oauthIdpConfigs/${oidcId}?updateMask=enabled,displayName,issuer,clientId,responseType,extraParams`,
+      `/admin/v2/projects/${gcpProjectId}/defaultSupportedIdpConfigs/apple.com?updateMask=${encodeURIComponent(updateMask)}`,
       accessToken,
       JSON.stringify(body),
     );
@@ -1168,7 +1285,7 @@ export async function configureAppleSignInProvider(
       await gcpRequest(
         'POST',
         'identitytoolkit.googleapis.com',
-        `/v2/projects/${gcpProjectId}/oauthIdpConfigs?oauthIdpConfigId=${oidcId}`,
+        `/admin/v2/projects/${gcpProjectId}/defaultSupportedIdpConfigs?idpId=apple.com`,
         accessToken,
         JSON.stringify(body),
       );
@@ -1176,7 +1293,10 @@ export async function configureAppleSignInProvider(
       throw err;
     }
   }
-  console.log(`[gcp-api] Configured Apple Sign-In for Firebase project "${gcpProjectId}".`);
+
+  console.log(
+    `[gcp-api] Configured Apple Sign-In for Firebase project "${gcpProjectId}" via defaultSupportedIdpConfigs/apple.com (team=${teamId}, key=${keyId}).`,
+  );
 }
 
 /**
@@ -1207,6 +1327,13 @@ export interface FirebaseDefaultSupportedIdpConfig {
   clientSecret?: string;
 }
 
+export interface FirebaseOAuthIdpConfig {
+  name?: string;
+  enabled?: boolean;
+  clientId?: string;
+  displayName?: string;
+}
+
 export async function getFirebaseDefaultSupportedIdpConfig(
   accessToken: string,
   gcpProjectId: string,
@@ -1223,6 +1350,20 @@ export async function getFirebaseDefaultSupportedIdpConfig(
     parsed.name = `projects/${gcpProjectId}/defaultSupportedIdpConfigs/${idpId}`;
   }
   return parsed;
+}
+
+export async function getFirebaseOAuthIdpConfig(
+  accessToken: string,
+  gcpProjectId: string,
+  idpId: string,
+): Promise<FirebaseOAuthIdpConfig> {
+  const res = await gcpRequest(
+    'GET',
+    'identitytoolkit.googleapis.com',
+    `/v2/projects/${gcpProjectId}/oauthIdpConfigs/${encodeURIComponent(idpId)}`,
+    accessToken,
+  );
+  return JSON.parse(res.body) as FirebaseOAuthIdpConfig;
 }
 
 /**
@@ -1334,6 +1475,9 @@ export async function uploadApnsKeyToFirebase(
 
 /**
  * Adds a SHA-1 fingerprint (from Google Play signing) to a Firebase Android app.
+ *
+ * Throws on duplicate adds — callers that want idempotent behavior should
+ * compare against `listFirebaseAndroidShaCertificates` first.
  */
 export async function addSha1FingerprintToFirebase(
   accessToken: string,
@@ -1344,14 +1488,41 @@ export async function addSha1FingerprintToFirebase(
   await gcpRequest(
     'POST',
     'firebase.googleapis.com',
-    `/v1beta1/projects/${gcpProjectId}/androidApps/${androidAppId}:addShaCertificate`,
+    `/v1beta1/projects/${gcpProjectId}/androidApps/${androidAppId}/sha`,
     accessToken,
     JSON.stringify({
       certType: 'SHA_1',
-      shaHash: sha1Fingerprint.replace(/:/g, ''),
+      shaHash: sha1Fingerprint.replace(/:/g, '').toLowerCase(),
     }),
   );
   console.log(`[gcp-api] Added SHA-1 fingerprint to Firebase Android app "${androidAppId}" on project "${gcpProjectId}".`);
+}
+
+export interface FirebaseAndroidShaCertificate {
+  /** Full resource name: projects/{p}/androidApps/{a}/sha/{id} */
+  name: string;
+  shaHash: string; // lowercase hex, no colons
+  certType: 'SHA_1' | 'SHA_256' | 'SHA_CERTIFICATE_TYPE_UNSPECIFIED';
+}
+
+/**
+ * Lists SHA-1 / SHA-256 certificate fingerprints currently attached to a
+ * Firebase Android app. Used by `firebase:register-android-sha1` to short-circuit
+ * when a matching SHA-1 has already been registered (idempotent re-runs).
+ */
+export async function listFirebaseAndroidShaCertificates(
+  accessToken: string,
+  gcpProjectId: string,
+  androidAppId: string,
+): Promise<FirebaseAndroidShaCertificate[]> {
+  const res = await gcpRequest(
+    'GET',
+    'firebase.googleapis.com',
+    `/v1beta1/projects/${gcpProjectId}/androidApps/${androidAppId}/sha`,
+    accessToken,
+  );
+  const parsed = JSON.parse(res.body) as { certificates?: FirebaseAndroidShaCertificate[] };
+  return parsed.certificates ?? [];
 }
 
 // ---------------------------------------------------------------------------

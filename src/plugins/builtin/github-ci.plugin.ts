@@ -2,14 +2,18 @@ import type { PluginDefinition } from '../plugin-types.js';
 import type { ProvisioningStepNode } from '../../provisioning/graph.types.js';
 import { GITHUB_STEPS, GITHUB_TEARDOWN_STEPS } from '../../provisioning/step-registry.js';
 
-// github:inject-secrets is handled by the GitHub adapter but not yet
-// defined as an explicit ProvisioningStepNode in step-registry.ts.
+// github:inject-secrets is implemented by both the GitHub adapter
+// (orchestrated full runs) and a StepHandler (targeted runs / reset delete path).
+//
+// Owns ENV-LEVEL secrets only. Repo-level secrets (EXPO_TOKEN) are written by
+// `eas:store-token-in-github`. See github-step-handlers.ts for the partitioning
+// rationale.
 const injectSecretsStep: ProvisioningStepNode = {
   type: 'step',
   key: 'github:inject-secrets',
-  label: 'Inject Repository Secrets',
+  label: 'Inject Environment Secrets',
   description:
-    'Store Firebase, Expo, and other service credentials as GitHub Actions repository secrets.',
+    'Store FIREBASE_SERVICE_ACCOUNT as a GitHub Actions environment-level secret in every project environment (preview, production, …). EXPO_TOKEN is written separately at the repository level by `eas:store-token-in-github` so it acts as a shared fallback for every workflow job.',
   provider: 'github',
   environmentScope: 'global',
   automationLevel: 'full',

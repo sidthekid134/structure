@@ -115,7 +115,7 @@ export function requirePrerequisites(
 function getModuleInstruction(module: RequiredModule): string {
   const instructions: Record<RequiredModule, string> = {
     'firebase-core':
-      'Complete Firebase Core setup: connect a GCP project via "Connect with Google" and run the Firebase provisioning steps.',
+      'Complete GCP Core setup: connect a GCP project via "Connect with Google" and run the provisioning steps.',
     'firebase-auth':
       'Enable Firebase Auth: go to the Firebase Auth tab and enable Identity Toolkit.',
     'apple-signing':

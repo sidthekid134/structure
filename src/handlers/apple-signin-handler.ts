@@ -22,6 +22,8 @@ export interface AppleSignInConfigureInput {
   key_id: string;
   service_id: string;
   access_token: string;
+  private_key?: string;
+  bundle_ids?: string[];
 }
 
 export interface AppleKeyUploadInput {
@@ -131,6 +133,8 @@ export async function configureAppleSignIn(
     input.team_id,
     input.key_id,
     input.service_id,
+    input.private_key,
+    input.bundle_ids,
   );
 
   credentialStore.storeProviderCredential({

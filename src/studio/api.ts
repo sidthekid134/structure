@@ -19,6 +19,7 @@
 
 import { Router, Request, Response } from 'express';
 import * as path from 'path';
+import JSZip from 'jszip';
 import { EventLog, OperationRecord } from '../orchestration/event-log.js';
 import { WsHandler } from './ws-handler.js';
 import { VaultManager } from '../vault.js';
@@ -43,11 +44,13 @@ import {
 } from '../provisioning/step-registry.js';
 import { StepResolver } from '../provisioning/step-resolver.js';
 import { buildPlanViewModel } from '../provisioning/journey-phases.js';
-import type { ProvisioningPlan, ProvisioningNode, NodeState } from '../provisioning/graph.types.js';
+import type { ProvisioningPlan, ProvisioningNode, NodeState, CompletionPortalLink } from '../provisioning/graph.types.js';
 import type {
   ProviderType,
   GitHubManifestConfig,
   FirebaseManifestConfig,
+  AppleManifestConfig,
+  CloudflareManifestConfig,
   BranchProtectionRule,
   ProviderManifest,
   ProviderConfig,
@@ -68,7 +71,16 @@ import { getDriftStatus, startDriftReconcile } from '../core/drift.js';
 import { GitHubAdapter, HttpGitHubApiClient } from '../providers/github.js';
 import { FirebaseAdapter, StubFirebaseApiClient } from '../providers/firebase.js';
 import { EasAdapter } from '../providers/eas.js';
+import {
+  AppleAdapter,
+  verifyAscApiCredentials,
+  appleAuthKeysVaultPath,
+  validateAppleKeyId,
+  type AppleAuthKeyRegistry,
+} from '../providers/apple.js';
+import { CloudflareAdapter, HttpCloudflareApiClient } from '../providers/cloudflare.js';
 import { OAuthAdapter, StudioOAuthApiClient } from '../providers/oauth.js';
+import { resolveCloudflareDomainTarget } from '../core/cloudflare-domain-target.js';
 import { ExpoGraphqlEasApiClient } from '../providers/expo-graphql-eas-client.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { Orchestrator } from '../orchestration/orchestrator.js';
@@ -81,6 +93,8 @@ import { GITHUB_STEP_HANDLERS } from '../provisioning/github-step-handlers.js';
 import { FIREBASE_STEP_HANDLERS } from '../core/gcp/gcp-step-handlers.js';
 import {
   createVaultReader,
+  createVaultWriter,
+  buildGitHubWorkflowTemplates,
   buildEasManifestConfig,
   planUsesEasProvider,
   parseGithubRepoUrl,
@@ -88,11 +102,20 @@ import {
 } from './api-helpers.js';
 import {
   applyProjectDomainToUpstreamArtifacts,
-  projectDomainUpstreamSeed,
+  buildInitialUpstreamSeed,
   projectPrimaryDomain,
   projectResourceSlug,
 } from './project-identity.js';
 import { buildPlannedOutputPreviewByNodeKey } from './planned-output-previews.js';
+import { buildManualInstructionsByNodeKey } from './manual-step-instructions.js';
+import { buildAuthIntegrationKitBundle } from './auth-integration-kit.js';
+import { buildProjectEnvBundle } from './project-env-file.js';
+import {
+  findStepSecretDescriptor,
+  getStepSecretDescriptors,
+  readStepSecretStatuses,
+  readStepSecretValue,
+} from './step-vault-secrets.js';
 import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 import {
   appendExpoManualDeleteIfRobotBlocked,
@@ -103,6 +126,10 @@ import {
   getFirebaseAuthStatus,
   addAuthorizedDomain,
 } from '../handlers/firebase-auth-handler.js';
+import {
+  downloadFirebaseAndroidAppConfig,
+  downloadFirebaseIosAppConfig,
+} from '../core/gcp/gcp-api-client.js';
 import {
   createOAuthClientHandler,
   listOAuthClients,
@@ -117,6 +144,7 @@ import {
   bridgePlayFingerprintToFirebase,
 } from '../handlers/cross-provider-bridge-handler.js';
 import { validateAppleP8Key } from '../validators/apple-key-validator.js';
+import { validateTeamId, validateKeyId } from '../validators/firebase-input-validator.js';
 import { getBillingSetupInstructions } from '../handlers/billing-gate-handler.js';
 import { validatePrerequisites } from '../services/prerequisite-validator.js';
 import type { RequiredModule } from '../services/prerequisite-validator.js';
@@ -146,6 +174,38 @@ const GCP_BOOTSTRAP_PHASE_IDS: readonly GcpBootstrapPhaseId[] = [
 
 function isGcpBootstrapPhaseId(value: string): value is GcpBootstrapPhaseId {
   return (GCP_BOOTSTRAP_PHASE_IDS as readonly string[]).includes(value);
+}
+
+function isGitHubAuthFailure(error: Error): boolean {
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('github api /user failed (401)') ||
+    (message.includes('github api /user failed') && message.includes('bad credentials'))
+  );
+}
+
+function extractFirebaseApiKeyFromAndroidConfig(jsonText: string): string | null {
+  try {
+    const parsed = JSON.parse(jsonText) as {
+      client?: Array<{ api_key?: Array<{ current_key?: string }> }>;
+    };
+    const clients = parsed.client ?? [];
+    for (const client of clients) {
+      const key = client.api_key?.find(
+        (entry) => typeof entry.current_key === 'string' && entry.current_key.trim().length > 0,
+      )?.current_key;
+      if (key) return key.trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function extractFirebaseApiKeyFromIosConfig(plistText: string): string | null {
+  const match = plistText.match(/<key>\s*API_KEY\s*<\/key>\s*<string>\s*([^<]+)\s*<\/string>/);
+  const key = match?.[1]?.trim();
+  return key && key.length > 0 ? key : null;
 }
 
 /** Structured [studio-api] lines for operator visibility (avoid logging raw secrets). */
@@ -250,8 +310,11 @@ export function createApiRouter(
     'github',
     'eas',
     'apple',
+    'cloudflare',
     'google-play',
   ]);
+
+  const ORGANIZATION_CREDENTIAL_SCOPE_ID = '__organization__';
 
   function collectDependentNodeKeys(rootKey: string, nodes: ProvisioningNode[]): Set<string> {
     const dependents = new Set<string>();
@@ -340,18 +403,37 @@ export function createApiRouter(
   const loadPersistedPlan = (projectId: string): ProvisioningPlan | null => {
     const snapshot = projectManager.loadPlan(projectId);
     if (!snapshot) return null;
-    return StepResolver.restorePlan(snapshot as {
+    const restored = StepResolver.restorePlan(snapshot as {
       projectId: string;
       environments: string[];
       selectedModules?: string[];
       nodes: ProvisioningPlan['nodes'];
       nodeStates: Record<string, NodeState>;
     });
+    pruneConnectedCloudflareTokenGate(restored, projectId);
+    return restored;
   };
 
   const savePersistedPlan = (projectId: string, plan: ProvisioningPlan): void => {
+    pruneConnectedCloudflareTokenGate(plan, projectId);
     projectManager.savePlan(projectId, StepResolver.snapshotPlan(plan));
   };
+
+  function pruneConnectedCloudflareTokenGate(plan: ProvisioningPlan, projectId: string): void {
+    const hasConnectedCloudflareToken = !!getCloudflareTokenForProject(projectId);
+    if (!hasConnectedCloudflareToken) return;
+
+    const gateKey = 'user:provide-cloudflare-token';
+    if (!plan.nodes.some((node) => node.key === gateKey)) return;
+
+    plan.nodes = plan.nodes
+      .filter((node) => node.key !== gateKey)
+      .map((node) => ({
+        ...node,
+        dependencies: node.dependencies.filter((dep) => dep.nodeKey !== gateKey),
+      }));
+    plan.nodeStates.delete(gateKey);
+  }
 
   function enrichPlanForResponse(plan: ProvisioningPlan) {
     const mod = projectManager.getProject(plan.projectId);
@@ -364,11 +446,12 @@ export function createApiRouter(
     const expoAccount =
       mod.project.easAccount?.trim() ||
       org.integrations.eas?.config?.['expoAccountSlug']?.trim() ||
+      easConnectionService.getStoredExpoUsername() ||
       easConnectionService.getStoredExpoAccountNames()[0] ||
       '';
     const expoGithubLink =
       expoAccount && projectSlug
-        ? `https://expo.dev/accounts/${encodeURIComponent(expoAccount)}/projects/${encodeURIComponent(projectSlug)}/github`
+        ? `https://expo.dev/accounts/${expoAccount}/projects/${projectSlug}/github`
         : '';
 
     /** Resolve project tokens in inputField defaultValues. */
@@ -380,22 +463,111 @@ export function createApiRouter(
         .replace(/\{domain\}/g, projectDomain);
     }
 
-    const nodes = plan.nodes.map((node) => {
+    // Collect every resource produced across this plan's node states so we
+    // can resolve {upstream.<key>} placeholders in plugin-supplied portal
+    // hrefTemplates BEFORE shipping nodes to the UI. The SetupWizard reads
+    // `currentNode.completionPortalLinks` directly and filters out anything
+    // without a static `href`, so unresolved hrefTemplate links would be
+    // silently dropped on the client side.
+    const upstreamResources: Record<string, string> = {};
+    for (const state of plan.nodeStates.values()) {
+      if (!state.resourcesProduced) continue;
+      for (const [key, value] of Object.entries(state.resourcesProduced)) {
+        if (typeof value === 'string' && value && !upstreamResources[key]) {
+          upstreamResources[key] = value;
+        }
+      }
+    }
+
+    function resolveServerHrefTemplate(template: string): string | null {
+      const required = new Set<string>();
+      const re = /\{upstream\.([a-z0-9_]+)\}/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(template)) !== null) required.add(m[1]!);
+      for (const key of required) {
+        if (!upstreamResources[key]) return null;
+      }
+      return template.replace(
+        /\{upstream\.([a-z0-9_]+)\}/g,
+        (_, k: string) => upstreamResources[k] ?? '',
+      );
+    }
+
+    function pluginPortalLinksForNode(nodeKey: string): CompletionPortalLink[] {
+      const raw = globalPluginRegistry.getCompletionPortalLinks(nodeKey);
+      if (!raw || raw.length === 0) return [];
+      const resolved: CompletionPortalLink[] = [];
+      for (const link of raw) {
+        if (link.href) {
+          resolved.push({ label: link.label, href: link.href, hrefTemplate: link.hrefTemplate });
+          continue;
+        }
+        if (link.hrefTemplate) {
+          const href = resolveServerHrefTemplate(link.hrefTemplate);
+          if (!href) continue; // upstream not yet known — drop until it is
+          resolved.push({ label: link.label, href, hrefTemplate: link.hrefTemplate });
+        }
+      }
+      return resolved;
+    }
+
+    function mergePortalLinks(
+      base: CompletionPortalLink[] | undefined,
+      extra: CompletionPortalLink[],
+    ): CompletionPortalLink[] {
+      const seen = new Set<string>();
+      const out: CompletionPortalLink[] = [];
+      for (const list of [base ?? [], extra]) {
+        for (const link of list) {
+          const key = `${link.label}::${link.href ?? link.hrefTemplate ?? ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(link);
+        }
+      }
+      return out;
+    }
+
+    const hideCloudflareTokenGate = !!getOrganizationCloudflareToken();
+    const hiddenNodeKeys = new Set<string>(
+      hideCloudflareTokenGate ? ['user:provide-cloudflare-token'] : [],
+    );
+    const responsePlanNodes = plan.nodes
+      .filter((node) => !hiddenNodeKeys.has(node.key))
+      .map((node) => ({
+        ...node,
+        dependencies: node.dependencies.filter((dep) => !hiddenNodeKeys.has(dep.nodeKey)),
+      }));
+    const responseNodeStates = new Map(
+      Array.from(plan.nodeStates.entries()).filter(([stateKey]) => !hiddenNodeKeys.has(stateKey)),
+    );
+    const responsePlan: ProvisioningPlan = {
+      ...plan,
+      nodes: responsePlanNodes,
+      nodeStates: responseNodeStates,
+    };
+
+    const nodes = responsePlan.nodes.map((node) => {
+      const pluginLinks = pluginPortalLinksForNode(node.key);
       if (node.type === 'user-action' && node.key === 'user:install-expo-github-app') {
         return {
           ...node,
           helpUrl: expoGithubLink || node.helpUrl,
-          completionPortalLinks: [
-            ...(expoGithubLink
-              ? [{ label: 'Open Expo project GitHub settings', href: expoGithubLink }]
-              : []),
-            ...(node.completionPortalLinks ?? []),
-          ],
+          completionPortalLinks: mergePortalLinks(
+            [
+              ...(expoGithubLink
+                ? [{ label: 'Open Expo project GitHub settings', href: expoGithubLink }]
+                : []),
+              ...(node.completionPortalLinks ?? []),
+            ],
+            pluginLinks,
+          ),
         };
       }
       // Resolve project tokens in inputFields defaultValues
+      let next = node;
       if (node.type === 'step' && node.inputFields?.length) {
-        return {
+        next = {
           ...node,
           inputFields: node.inputFields.map((field) => ({
             ...field,
@@ -404,21 +576,26 @@ export function createApiRouter(
           })),
         };
       }
-      return node;
+      if (pluginLinks.length === 0) return next;
+      return {
+        ...next,
+        completionPortalLinks: mergePortalLinks(next.completionPortalLinks, pluginLinks),
+      };
     });
-    const enriched = StepResolver.enrichPlanSnapshot({ ...plan, nodes });
+    const enriched = StepResolver.enrichPlanSnapshot({ ...responsePlan, nodes });
     const allNodeKeys = enriched.nodes
       .map((n) => n.key)
       .concat(
         enriched.nodes
           .filter((n) => n.type === 'step' && n.environmentScope === 'per-environment')
-          .flatMap((n) => plan.environments.map((env) => `${n.key}@${env}`)),
+          .flatMap((n) => responsePlan.environments.map((env) => `${n.key}@${env}`)),
       );
     const stepKeys = enriched.nodes.map((n) => n.key);
 
     return {
       ...enriched,
-      plannedOutputPreviewByNodeKey: buildPlannedOutputPreviewByNodeKey(plan, mod, orgGh),
+      plannedOutputPreviewByNodeKey: buildPlannedOutputPreviewByNodeKey(responsePlan, mod, orgGh),
+      manualInstructionsByNodeKey: buildManualInstructionsByNodeKey(responsePlan, mod),
       stepCapabilities: globalPluginRegistry.getAllStepCapabilities(stepKeys),
       stepActions: globalPluginRegistry.getAllStepActions(stepKeys),
       pluginDisplayMeta: globalPluginRegistry.getAllPluginDisplayMeta(),
@@ -426,6 +603,102 @@ export function createApiRouter(
       resourceDisplayByKey: globalPluginRegistry.getAllResourceDisplay(),
       portalLinksByNodeKey: globalPluginRegistry.getAllCompletionPortalLinks(),
       journeyPhaseTitles: globalPluginRegistry.getJourneyPhaseTitles(),
+    };
+  }
+
+  async function checkExpoGitHubInstallForContext(context: StepContext): Promise<{
+    linked: boolean;
+    githubOwner?: string;
+    githubRepo?: string;
+  }> {
+    const expoToken = easConnectionService.getStoredExpoToken();
+    if (!expoToken?.trim()) return { linked: false };
+
+    const easProjectId = context.upstreamResources['eas_project_id']?.trim();
+    const repoUrl = context.upstreamResources['github_repo_url']?.trim();
+    if (!easProjectId || !repoUrl) return { linked: false };
+
+    let owner: string;
+    let repo: string;
+    try {
+      const parsed = parseGithubRepoUrl(repoUrl);
+      owner = parsed.owner;
+      repo = parsed.repo;
+    } catch {
+      return { linked: false };
+    }
+
+    const mod = projectManager.getProject(context.projectId);
+    const org = projectManager.getOrganization();
+    const easOrg =
+      mod.project.easAccount?.trim() ||
+      (org.integrations.eas?.config?.['expoAccountSlug'] as string | undefined)?.trim() ||
+      undefined;
+
+    const expoClient = new ExpoGraphqlEasApiClient(expoToken);
+    const linked = await expoClient.isGitHubRepositoryLinkedToApp({
+      expoAppId: easProjectId,
+      organization: easOrg,
+      githubOwner: owner,
+      githubRepoName: repo,
+    });
+    return { linked, githubOwner: owner, githubRepo: repo };
+  }
+
+  function getOrganizationCloudflareToken(): string | undefined {
+    return (
+      credentialService.retrieveCredential(ORGANIZATION_CREDENTIAL_SCOPE_ID, 'cloudflare_token')?.trim() ||
+      undefined
+    );
+  }
+
+  function getCloudflareTokenForProject(_projectId: string): string | undefined {
+    const projectScoped =
+      credentialService.retrieveCredential(_projectId, 'cloudflare_token')?.trim() || undefined;
+    return projectScoped || getOrganizationCloudflareToken();
+  }
+
+  function buildCloudflareAdapter(projectId: string): CloudflareAdapter {
+    const token = getCloudflareTokenForProject(projectId);
+    if (!token) {
+      throw new Error(
+        `Cloudflare API token is missing for "${projectId}". Complete "Connect Cloudflare API Token" before running Cloudflare steps.`,
+      );
+    }
+    return new CloudflareAdapter(new HttpCloudflareApiClient(token));
+  }
+
+  async function checkCloudflareZoneOwnershipForContext(context: StepContext): Promise<{
+    owned: boolean;
+    zoneId?: string;
+    accountId?: string;
+    zoneStatus?: string;
+    zoneDomain?: string;
+    appDomain?: string;
+    nameservers?: string[];
+  }> {
+    const token = getCloudflareTokenForProject(context.projectId);
+    if (!token) return { owned: false };
+
+    const cloudflareConfig = buildCloudflareManifestConfig(context.projectId);
+    const zoneDomain = cloudflareConfig.zone_domain ?? cloudflareConfig.domain;
+    const api = new HttpCloudflareApiClient(token);
+    const zone = await api.getZone(zoneDomain);
+    if (!zone) {
+      return {
+        owned: false,
+        zoneDomain,
+        appDomain: cloudflareConfig.domain,
+      };
+    }
+    return {
+      owned: true,
+      zoneId: zone.id,
+      accountId: zone.accountId,
+      zoneStatus: zone.status,
+      zoneDomain,
+      appDomain: cloudflareConfig.domain,
+      nameservers: zone.nameServers,
     };
   }
 
@@ -440,12 +713,99 @@ export function createApiRouter(
     };
   }
 
+  function buildAppleManifestConfig(projectId: string, plan?: ProvisioningPlan): AppleManifestConfig {
+    const module = projectManager.getProject(projectId);
+    const organization = projectManager.getOrganization();
+    const bundleId = module.project.bundleId?.trim();
+    if (!bundleId) {
+      throw new Error(
+        `Apple provisioning requires a project bundle ID. Set bundleId for "${projectId}" before running Apple steps.`,
+      );
+    }
+    const integrationTeamId = module.integrations.apple?.config?.['team_id']?.trim();
+    const orgIntegrationTeamId = organization.integrations.apple?.config?.['team_id']?.trim();
+    const storedTeamId = credentialService.retrieveCredential(projectId, 'apple_team_id')?.trim();
+    const planTeamId =
+      plan?.nodeStates.get('user:enroll-apple-developer')?.resourcesProduced?.['apple_team_id']?.trim();
+    const teamId = integrationTeamId || orgIntegrationTeamId || storedTeamId || planTeamId;
+    if (!teamId) {
+      throw new Error(
+        `Apple provisioning requires apple_team_id. Provide it through credentials or Apple integration settings for "${projectId}".`,
+      );
+    }
+    return {
+      provider: 'apple',
+      bundle_id: bundleId,
+      team_id: teamId,
+      app_name: module.project.name?.trim() || projectResourceSlug(module.project) || projectId,
+      enable_apns: true,
+      certificate_type: 'distribution',
+    };
+  }
+
+  function buildCloudflareManifestConfig(projectId: string): CloudflareManifestConfig {
+    const module = projectManager.getProject(projectId);
+    const rawDomain = projectPrimaryDomain(module.project);
+    if (!rawDomain) {
+      throw new Error(
+        `Cloudflare and deep-link provisioning require a project domain. Set a domain for "${projectId}" first.`,
+      );
+    }
+    const target = resolveCloudflareDomainTarget(rawDomain);
+    return {
+      provider: 'cloudflare',
+      domain: target.appDomain,
+      zone_domain: target.zoneDomain,
+      domain_mode: target.mode,
+      dns_record_name: target.dnsRecordName,
+      deep_link_routes: [
+        '/',
+        '/auth/*',
+        '/__/auth/handler',
+        '/.well-known/apple-app-site-association',
+        '/.well-known/assetlinks.json',
+      ],
+      ssl_mode: 'strict',
+    };
+  }
+
+  function buildOauthManifestConfig(projectId: string, plan: ProvisioningPlan): ProviderConfig {
+    const hasGoogleOauthSteps = plan.nodes.some(
+      (n) =>
+        n.provider === 'oauth' &&
+        (n.key === 'oauth:enable-google-sign-in' ||
+          n.key === 'oauth:register-oauth-client-web' ||
+          n.key === 'oauth:register-oauth-client-ios' ||
+          n.key === 'oauth:register-oauth-client-android' ||
+          n.key === 'oauth:configure-redirect-uris'),
+    );
+    return {
+      provider: 'oauth',
+      oauth_provider: hasGoogleOauthSteps ? 'google' : 'apple',
+      redirect_uri: '',
+      scopes: [],
+      firebase_project_id: projectId,
+    };
+  }
+
   function planUsesFirebaseProvider(plan: ProvisioningPlan): boolean {
     return plan.nodes.some((n) => n.provider === 'firebase');
   }
 
+  function planUsesGithubProvider(plan: ProvisioningPlan): boolean {
+    return plan.nodes.some((n) => n.provider === 'github');
+  }
+
   function planUsesOauthProvider(plan: ProvisioningPlan): boolean {
     return plan.nodes.some((n) => n.provider === 'oauth');
+  }
+
+  function planUsesAppleProvider(plan: ProvisioningPlan): boolean {
+    return plan.nodes.some((n) => n.provider === 'apple');
+  }
+
+  function planUsesCloudflareProvider(plan: ProvisioningPlan): boolean {
+    return plan.nodes.some((n) => n.provider === 'cloudflare');
   }
 
   function getRunsForProject(projectId: string): OperationRecord[] {
@@ -528,9 +888,24 @@ export function createApiRouter(
       }
       res.json(result);
     } catch (err) {
-      console.error('[studio-github] Stored GitHub token validation failed:', (err as Error).message);
+      const error = err as Error;
+      if (isGitHubAuthFailure(error)) {
+        const disconnected = gitHubConnectionService.disconnect();
+        console.warn(
+          '[studio-github] Stored token rejected by GitHub (401). Cleared token and reset integration to pending.',
+        );
+        res.status(401).json({
+          error:
+            'Stored GitHub token is invalid or expired. Reconnect GitHub in Integrations, then sync again.',
+          needsReconnect: true,
+          provider: 'github',
+          connected: disconnected.connected,
+        });
+        return;
+      }
+      console.error('[studio-github] Stored GitHub token validation failed:', error.message);
       res.status(502).json({
-        error: `Failed to validate stored GitHub token: ${(err as Error).message}`,
+        error: `Failed to validate stored GitHub token: ${error.message}`,
       });
     }
   });
@@ -588,6 +963,99 @@ export function createApiRouter(
       res.status(502).json({
         error: `Failed to disable EAS connection: ${(err as Error).message}`,
       });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/integrations/cloudflare/connection — validate stored Cloudflare token
+  // -------------------------------------------------------------------------
+  router.get('/integrations/cloudflare/connection', async (_req: Request, res: Response) => {
+    try {
+      const token = getOrganizationCloudflareToken();
+      if (!token) {
+        res.json({ connected: false });
+        return;
+      }
+      const client = new HttpCloudflareApiClient(token);
+      const verified = await client.verifyToken();
+      res.json({
+        connected: verified.status.toLowerCase() === 'active',
+        details: { status: verified.status },
+      });
+    } catch (err) {
+      res.status(502).json({ error: `Failed to validate Cloudflare token: ${(err as Error).message}` });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/organization/integrations/cloudflare/connect — store token + verify
+  // -------------------------------------------------------------------------
+  router.post('/organization/integrations/cloudflare/connect', async (req: Request, res: Response) => {
+    try {
+      const token = (req.body?.token as string | undefined)?.trim();
+      if (!token) {
+        res.status(400).json({ error: 'Cloudflare API token is required.' });
+        return;
+      }
+      const client = new HttpCloudflareApiClient(token);
+      const verified = await client.verifyToken();
+      if (verified.status.toLowerCase() !== 'active') {
+        res.status(400).json({ error: `Cloudflare token is not active (status=${verified.status}).` });
+        return;
+      }
+      const organization = projectManager.getOrganization();
+      if (!organization.integrations.cloudflare) {
+        projectManager.addOrganizationIntegration('cloudflare');
+      }
+      credentialService.storeCredential({
+        project_id: ORGANIZATION_CREDENTIAL_SCOPE_ID,
+        credential_type: 'cloudflare_token',
+        value: token,
+        metadata: { scope: 'organization' },
+      });
+      const updated = projectManager.updateOrganizationIntegration('cloudflare', {
+        status: 'configured',
+        notes: 'Cloudflare API token configured at organization scope.',
+        config: { token_source: 'organization_vault' },
+        replaceConfig: true,
+      });
+      res.json({
+        integration: updated.integrations.cloudflare,
+        tokenStored: true,
+      });
+    } catch (err) {
+      res.status(400).json({ error: `Failed to connect Cloudflare: ${(err as Error).message}` });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // DELETE /api/organization/integrations/cloudflare/connection — remove token
+  // -------------------------------------------------------------------------
+  router.delete('/organization/integrations/cloudflare/connection', (_req: Request, res: Response) => {
+    try {
+      const summary = credentialService.getCredentialSummary(
+        ORGANIZATION_CREDENTIAL_SCOPE_ID,
+        'cloudflare_token',
+      );
+      if (summary) {
+        credentialService.deleteCredential(summary.id);
+      }
+      const organization = projectManager.getOrganization();
+      if (!organization.integrations.cloudflare) {
+        projectManager.addOrganizationIntegration('cloudflare');
+      }
+      const updated = projectManager.updateOrganizationIntegration('cloudflare', {
+        status: 'pending',
+        notes: '',
+        config: {},
+        replaceConfig: true,
+      });
+      res.json({
+        removed: !!summary,
+        integration: updated.integrations.cloudflare,
+      });
+    } catch (err) {
+      res.status(500).json({ error: `Failed to disconnect Cloudflare: ${(err as Error).message}` });
     }
   });
 
@@ -1116,7 +1584,11 @@ export function createApiRouter(
             case 'firebase-auth':
             case 'oauth-social': {
               const firebaseConfig = credentialStore.getFirebaseAuthConfig(projectId);
-              return firebaseConfig?.identity_toolkit_enabled ?? false;
+              const toolkitEnabled = firebaseConfig?.identity_toolkit_enabled ?? false;
+              if (module === 'firebase-auth') return toolkitEnabled;
+              const appleSignInConfigured =
+                credentialStore.getProviderCredentialByType(projectId, 'apple_sign_in') !== null;
+              return toolkitEnabled && appleSignInConfigured;
             }
             default:
               return false;
@@ -1246,6 +1718,28 @@ export function createApiRouter(
           { project_id: projectId, p8_file_buffer: fileBuffer, key_id, team_id, key_purpose: purpose },
           credentialStore,
         );
+        const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
+        if (vaultPassphrase) {
+          if (purpose === 'sign_in') {
+            vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_sign_in_key_id`, key_id);
+            vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_team_id`, team_id);
+            vaultManager.setCredential(
+              vaultPassphrase,
+              'firebase',
+              `${projectId}/apple_sign_in_p8`,
+              fileBuffer.toString('utf8'),
+            );
+          } else {
+            vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apns_key_id`, key_id);
+            vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_team_id`, team_id);
+            vaultManager.setCredential(
+              vaultPassphrase,
+              'firebase',
+              `${projectId}/apns_key_p8`,
+              fileBuffer.toString('utf8'),
+            );
+          }
+        }
         res.status(201).json(result);
       } catch (err) {
         const message = (err as Error).message;
@@ -1259,6 +1753,262 @@ export function createApiRouter(
           return;
         }
         res.status(502).json({ error: `Failed to upload Apple key: ${message}` });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/apple/auth-keys/:keyId/p8
+  // Streams the previously-uploaded Apple Auth Key PEM back to the user as
+  // an `AuthKey_<KEYID>.p8` download so they can re-upload it to a portal
+  // (e.g. Firebase Cloud Messaging) that needs the original .p8 bytes.
+  //
+  // The PEM is read from the unified Apple Auth Key registry vaulted at
+  // `<projectId>/apple/auth-keys`, with a fallback to the legacy single-purpose
+  // paths used by the Studio REST upload endpoint above so projects that only
+  // ever uploaded through the legacy form still get a working download.
+  //
+  // No JSON wrapping — the response body is the raw PEM and the browser
+  // saves it under the exact filename Apple uses (Firebase derives the Key
+  // ID from the filename).
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/apple/auth-keys/:keyId/p8',
+    async (req: Request, res: Response) => {
+      try {
+        const { projectId } = req.params;
+        const keyId = req.params['keyId']?.toUpperCase() ?? '';
+        const validationError = validateAppleKeyId(keyId);
+        if (validationError) {
+          res.status(400).json({ error: validationError });
+          return;
+        }
+
+        const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
+        if (!passphrase) {
+          res.status(500).json({
+            error: 'STUDIO_VAULT_PASSPHRASE is not configured; cannot decrypt the Apple Auth Key vault.',
+          });
+          return;
+        }
+
+        let pem: string | null = null;
+
+        const registryRaw = vaultManager.getCredential(
+          passphrase,
+          'firebase',
+          appleAuthKeysVaultPath(projectId),
+        );
+        if (registryRaw) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(registryRaw);
+          } catch {
+            res.status(500).json({
+              error:
+                `Apple auth key registry at ${appleAuthKeysVaultPath(projectId)} is corrupt JSON. ` +
+                'Inspect the project vault entry; do not re-run any Apple key step until it is repaired.',
+            });
+            return;
+          }
+          const registry = parsed as Partial<AppleAuthKeyRegistry>;
+          const record = registry?.keys?.[keyId];
+          if (record?.p8) {
+            pem = record.p8;
+          }
+        }
+
+        if (!pem) {
+          // Fallback: legacy upload endpoint stored the PEM as a single-purpose
+          // vault entry instead of the unified registry. Try both APNs and SIWA
+          // legacy slots (the apple step handler migrates these into the
+          // registry on its next run, but we shouldn't make the user run a
+          // step just to get a download).
+          const legacyApns = vaultManager.getCredential(
+            passphrase,
+            'firebase',
+            `${projectId}/apns_key_p8`,
+          );
+          const legacyApnsId = vaultManager
+            .getCredential(passphrase, 'firebase', `${projectId}/apns_key_id`)
+            ?.toUpperCase();
+          if (legacyApns && legacyApnsId === keyId) {
+            pem = legacyApns;
+          } else {
+            const legacySiwa = vaultManager.getCredential(
+              passphrase,
+              'firebase',
+              `${projectId}/apple_sign_in_p8`,
+            );
+            const legacySiwaId = vaultManager
+              .getCredential(passphrase, 'firebase', `${projectId}/apple_sign_in_key_id`)
+              ?.toUpperCase();
+            if (legacySiwa && legacySiwaId === keyId) {
+              pem = legacySiwa;
+            }
+          }
+        }
+
+        if (!pem) {
+          res.status(404).json({
+            error: `No Apple Auth Key with id "${keyId}" is vaulted for project "${projectId}".`,
+          });
+          return;
+        }
+
+        res.setHeader('Content-Type', 'application/x-pem-file');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="AuthKey_${keyId}.p8"`,
+        );
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(pem);
+      } catch (err) {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/integration-kit/auth/zip
+  // Packages auth outputs into a downloadable zip for app-repo handoff.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/integration-kit/auth/zip',
+    async (req: Request, res: Response) => {
+      try {
+        const { projectId } = req.params;
+        const plan = loadPersistedPlan(projectId);
+        if (!plan) {
+          res.status(404).json({ error: `No active provisioning plan for project "${projectId}".` });
+          return;
+        }
+        const projectModule = projectManager.getProject(projectId);
+        const bundle = buildAuthIntegrationKitBundle(plan, projectModule);
+        const zip = new JSZip();
+        for (const file of bundle.files) {
+          zip.file(file.path, file.contents);
+        }
+        const archive = await zip.generateAsync({
+          type: 'nodebuffer',
+          compression: 'DEFLATE',
+          compressionOptions: { level: 9 },
+        });
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${bundle.zipFileName}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(archive);
+      } catch (err) {
+        const message = (err as Error).message;
+        if (message.includes('required provisioning outputs are missing')) {
+          res.status(409).json({ error: message });
+          return;
+        }
+        res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/integration-kit/auth/prompt
+  // Standalone plaintext prompt with embedded auth values for coding LLM use.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/integration-kit/auth/prompt',
+    (req: Request, res: Response) => {
+      try {
+        const { projectId } = req.params;
+        const plan = loadPersistedPlan(projectId);
+        if (!plan) {
+          res.status(404).json({ error: `No active provisioning plan for project "${projectId}".` });
+          return;
+        }
+        const projectModule = projectManager.getProject(projectId);
+        const bundle = buildAuthIntegrationKitBundle(plan, projectModule);
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${bundle.promptFileName}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(bundle.promptText);
+      } catch (err) {
+        const message = (err as Error).message;
+        if (message.includes('required provisioning outputs are missing')) {
+          res.status(409).json({ error: message });
+          return;
+        }
+        res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/integration-kit/env
+  // Builds a project-level .env template from provisioned outputs + vault.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/integration-kit/env',
+    async (req: Request, res: Response) => {
+      try {
+        const { projectId } = req.params;
+        const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
+        if (!passphrase) {
+          res.status(500).json({
+            error:
+              'STUDIO_VAULT_PASSPHRASE is not configured; cannot decrypt vault-backed project secrets.',
+          });
+          return;
+        }
+        const plan = loadPersistedPlan(projectId);
+        if (!plan) {
+          res.status(404).json({ error: `No active provisioning plan for project "${projectId}".` });
+          return;
+        }
+        const projectModule = projectManager.getProject(projectId);
+        const upstream = collectCompletedUpstreamArtifacts(plan);
+        applyProjectDomainToUpstreamArtifacts(upstream, projectModule.project);
+        const gcpProjectId =
+          upstream['firebase_project_id']?.trim() || upstream['gcp_project_id']?.trim() || '';
+        const firebaseAndroidAppId = upstream['firebase_android_app_id']?.trim() || '';
+        const firebaseIosAppId = upstream['firebase_ios_app_id']?.trim() || '';
+        let derivedFirebaseApiKey = '';
+        if (gcpProjectId) {
+          try {
+            const accessToken = await gcpConnectionService.getAccessToken(projectId);
+            if (firebaseAndroidAppId) {
+              const androidConfig = await downloadFirebaseAndroidAppConfig(
+                accessToken,
+                gcpProjectId,
+                firebaseAndroidAppId,
+              );
+              derivedFirebaseApiKey = extractFirebaseApiKeyFromAndroidConfig(androidConfig) ?? '';
+            }
+            if (!derivedFirebaseApiKey && firebaseIosAppId) {
+              const iosConfig = await downloadFirebaseIosAppConfig(
+                accessToken,
+                gcpProjectId,
+                firebaseIosAppId,
+              );
+              derivedFirebaseApiKey = extractFirebaseApiKeyFromIosConfig(iosConfig) ?? '';
+            }
+          } catch {
+            // Best-effort enrichment only; exporter still works with vault-only values.
+          }
+        }
+        const bundle = buildProjectEnvBundle(
+          plan,
+          projectModule,
+          (providerId, key) => vaultManager.getCredential(passphrase, providerId, key),
+          {
+            firebaseApiKey: derivedFirebaseApiKey,
+          },
+        );
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${bundle.fileName}"`);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Studio-Missing-Required-Env-Keys', String(bundle.missingRequiredKeys.length));
+        res.send(bundle.contents);
+      } catch (err) {
+        const message = (err as Error).message;
+        res.status(500).json({ error: message });
       }
     },
   );
@@ -1297,6 +2047,13 @@ export function createApiRouter(
           { project_id: projectId, gcp_project_id, team_id, key_id, service_id, access_token: accessToken },
           credentialStore,
         );
+        const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
+        if (vaultPassphrase) {
+          vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/gcp_project_id`, gcp_project_id);
+          vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_team_id`, team_id);
+          vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_sign_in_key_id`, key_id);
+          vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_sign_in_service_id`, service_id);
+        }
         res.json(result);
       } catch (err) {
         const message = (err as Error).message;
@@ -1421,7 +2178,7 @@ export function createApiRouter(
       const provider = req.body?.provider as IntegrationProvider;
       if (!validOrganizationIntegrationProviders.has(provider)) {
         res.status(400).json({
-          error: `Unsupported organization module "${provider}". Allowed: github, eas, apple, google-play. Firebase/GCP is project-scoped and must be configured per project.`,
+          error: `Unsupported organization module "${provider}". Allowed: github, eas, apple, cloudflare, google-play. Firebase/GCP is project-scoped and must be configured per project.`,
         });
         return;
       }
@@ -1440,7 +2197,7 @@ export function createApiRouter(
       const { provider } = req.params;
       if (!validOrganizationIntegrationProviders.has(provider as IntegrationProvider)) {
         res.status(400).json({
-          error: `Unsupported organization module "${provider}". Allowed: github, eas, apple, google-play. Firebase/GCP is project-scoped and must be configured per project.`,
+          error: `Unsupported organization module "${provider}". Allowed: github, eas, apple, cloudflare, google-play. Firebase/GCP is project-scoped and must be configured per project.`,
         });
         return;
       }
@@ -1451,17 +2208,109 @@ export function createApiRouter(
         });
         return;
       }
+      if (provider === 'cloudflare' && configPatch && configPatch['api_token']) {
+        res.status(400).json({
+          error: 'Cloudflare API tokens cannot be stored in module config. Use /api/organization/integrations/cloudflare/connect.',
+        });
+        return;
+      }
       const organization = projectManager.updateOrganizationIntegration(
         provider as IntegrationProvider,
         {
           status: req.body?.status as IntegrationConfigRecord['status'] | undefined,
           notes: req.body?.notes as string | undefined,
           config: configPatch,
+          replaceConfig: req.body?.replaceConfig as boolean | undefined,
         },
       );
       res.json(organization.integrations[provider as IntegrationProvider]);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/organization/integrations/apple/connect
+  // -------------------------------------------------------------------------
+  // Org-level Apple Developer connection: stores team_id (+ optional account
+  // email) in the org integration config and persists optional App Store
+  // Connect API credentials in the encrypted vault under the shared `apple/*`
+  // scope so all projects can read them through `createVaultReader`.
+  router.post('/organization/integrations/apple/connect', async (req: Request, res: Response) => {
+    try {
+      const teamId = (req.body?.teamId as string | undefined)?.trim();
+      const ascIssuerId = (req.body?.ascIssuerId as string | undefined)?.trim();
+      const ascApiKeyId = (req.body?.ascApiKeyId as string | undefined)?.trim();
+      const ascApiKeyP8 = (req.body?.ascApiKeyP8 as string | undefined)?.trim();
+
+      if (!teamId || !ascIssuerId || !ascApiKeyId || !ascApiKeyP8) {
+        res.status(400).json({
+          error:
+            'Apple connection requires teamId, ascIssuerId, ascApiKeyId, and ascApiKeyP8. ' +
+            'Studio only supports the automated flow — every field must be supplied.',
+        });
+        return;
+      }
+      validateTeamId(teamId);
+      validateKeyId(ascApiKeyId);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ascIssuerId)) {
+        res.status(400).json({
+          error:
+            'Invalid ascIssuerId. App Store Connect Issuer IDs are UUIDs ' +
+            '(e.g. 57246542-96fe-1a63-e053-0824d011072a). Find it at ' +
+            'https://appstoreconnect.apple.com/access/integrations/api → Team Keys tab.',
+        });
+        return;
+      }
+      validateAppleP8Key(Buffer.from(ascApiKeyP8, 'utf8'));
+
+      // Verify the credentials against Apple before persisting. Hitting
+      // /v1/users?limit=1 catches mismatched issuer ID, key ID, or wrong
+      // .p8 type now instead of mid-provisioning.
+      await verifyAscApiCredentials({
+        issuerId: ascIssuerId,
+        keyId: ascApiKeyId,
+        privateKeyP8: ascApiKeyP8,
+      });
+
+      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
+      if (!vaultPassphrase) {
+        res.status(400).json({
+          error:
+            'STUDIO_VAULT_PASSPHRASE is required to store the App Store Connect API key. Set the environment variable and retry.',
+        });
+        return;
+      }
+
+      const organization = projectManager.getOrganization();
+      if (!organization.integrations.apple) {
+        projectManager.addOrganizationIntegration('apple');
+      }
+
+      vaultManager.setCredential(vaultPassphrase, 'apple', 'apple/team_id', teamId);
+      vaultManager.setCredential(vaultPassphrase, 'apple', 'apple/asc_issuer_id', ascIssuerId);
+      vaultManager.setCredential(vaultPassphrase, 'apple', 'apple/asc_api_key_id', ascApiKeyId);
+      vaultManager.setCredential(vaultPassphrase, 'apple', 'apple/asc_api_key_p8', ascApiKeyP8);
+
+      const updated = projectManager.updateOrganizationIntegration('apple', {
+        status: 'configured',
+        notes: 'Apple Team ID + App Store Connect Team Key configured at organization scope.',
+        config: {
+          team_id: teamId,
+          asc_issuer_id: ascIssuerId,
+          asc_api_key_id: ascApiKeyId,
+          asc_api_key_source: 'organization_vault',
+        },
+        replaceConfig: true,
+      });
+
+      res.json({
+        integration: updated.integrations.apple,
+        ascCredentials: 'stored_in_vault',
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      res.status(400).json({ error: message });
     }
   });
 
@@ -1579,6 +2428,14 @@ export function createApiRouter(
               value = projectResourceSlug(module.project) || null;
             } else if (dependency.key === 'project_domain') {
               value = projectPrimaryDomain(module.project) || null;
+            } else if (dependency.key === 'apple_team_id') {
+              value =
+                module.integrations.apple?.config?.['team_id']?.trim() ||
+                organization.integrations.apple?.config?.['team_id']?.trim() ||
+                credentialService.retrieveCredential(projectId, 'apple_team_id')?.trim() ||
+                null;
+            } else if (dependency.key === 'default_test_users') {
+              value = module.integrations.apple?.config?.['default_test_users']?.trim() || null;
             } else if (dependency.key === 'github_pat') {
               const github = organization.integrations.github;
               value =
@@ -1591,6 +2448,17 @@ export function createApiRouter(
                 eas?.status === 'configured'
                   ? 'Configured in organization credential vault'
                   : null;
+            } else if (dependency.key === 'cloudflare_token') {
+              const projectCloudflareToken = credentialService
+                .retrieveCredential(projectId, 'cloudflare_token')
+                ?.trim();
+              const cloudflare = organization.integrations.cloudflare;
+              value =
+                projectCloudflareToken
+                  ? 'Configured as project-scoped override token'
+                  : cloudflare?.status === 'configured'
+                    ? 'Configured in organization credential vault'
+                    : null;
             } else if (dependency.key === 'gcp_auth_method') {
               const firebase = module.integrations.firebase;
               value =
@@ -1761,7 +2629,7 @@ export function createApiRouter(
   // Returns the ProvisioningPlan (nodes + nodeStates snapshot) for the project.
   // Creates a new plan if one does not yet exist.
   // -------------------------------------------------------------------------
-  router.get('/projects/:projectId/provisioning/plan', (req: Request, res: Response) => {
+  router.get('/projects/:projectId/provisioning/plan', async (req: Request, res: Response) => {
     try {
       const { projectId } = req.params;
       const module = projectManager.getProject(projectId);
@@ -1775,15 +2643,50 @@ export function createApiRouter(
       if (!plan) {
         // Build a default plan using all configured providers
         const providers: ProviderType[] = selectedProviders ?? ['firebase', 'github', 'eas'];
-        plan = buildProvisioningPlan(projectId, providers, environments);
+        plan = buildProvisioningPlan(
+          projectId,
+          providers,
+          environments,
+          undefined,
+          module.project.platforms ?? [],
+        );
         savePersistedPlan(projectId, plan);
         createdNewPlan = true;
       }
 
       // Pre-mark credential gates as completed when the org tokens are already stored,
       // so the UI reflects the actual state without requiring a run first.
+      // IMPORTANT: this GET handler runs concurrently with the background
+      // orchestrator triggered by POST /run/nodes. If we unconditionally save
+      // a stale snapshot here, we will race-overwrite step status updates
+      // (`completed` -> `in-progress` regression). Track every mutation and
+      // only persist when something actually changed, AND skip persistence
+      // entirely while a step is in-progress so we never clobber an
+      // orchestrator write with a snapshot loaded before that write landed.
+      let planMutated = false;
+      const planHasInProgressStep = Array.from(plan.nodeStates.values()).some(
+        (state) => state.status === 'in-progress',
+      );
+
       const githubTokenForPlan = gitHubConnectionService.getStoredGitHubToken();
-      if (githubTokenForPlan) {
+      const githubGateState = plan.nodeStates.get('user:provide-github-pat');
+      if (!githubTokenForPlan && githubGateState?.status === 'completed') {
+        const legacyToken = githubGateState.resourcesProduced?.['github_token']?.trim();
+        if (legacyToken && legacyToken !== '[stored in vault]') {
+          gitHubConnectionService.storeGitHubToken(legacyToken);
+          plan.nodeStates.set('user:provide-github-pat', {
+            ...githubGateState,
+            resourcesProduced: {
+              ...(githubGateState.resourcesProduced ?? {}),
+              github_token: '[stored in vault]',
+            },
+          });
+          planMutated = true;
+        }
+      }
+
+      const githubTokenAfterBackfill = gitHubConnectionService.getStoredGitHubToken();
+      if (githubTokenAfterBackfill) {
         const gateState = plan.nodeStates.get('user:provide-github-pat');
         if (gateState && gateState.status === 'not-started') {
           plan.nodeStates.set('user:provide-github-pat', {
@@ -1792,11 +2695,29 @@ export function createApiRouter(
             completedAt: Date.now(),
             resourcesProduced: { github_token: '[stored in vault]' },
           });
+          planMutated = true;
         }
       }
 
       const expoTokenForPlan = easConnectionService.getStoredExpoToken();
-      if (expoTokenForPlan) {
+      const expoGateState = plan.nodeStates.get('user:provide-expo-token');
+      if (!expoTokenForPlan && expoGateState?.status === 'completed') {
+        const legacyToken = expoGateState.resourcesProduced?.['expo_token']?.trim();
+        if (legacyToken && legacyToken !== '[stored in vault]') {
+          easConnectionService.storeExpoToken(legacyToken);
+          plan.nodeStates.set('user:provide-expo-token', {
+            ...expoGateState,
+            resourcesProduced: {
+              ...(expoGateState.resourcesProduced ?? {}),
+              expo_token: '[stored in vault]',
+            },
+          });
+          planMutated = true;
+        }
+      }
+
+      const expoTokenAfterBackfill = easConnectionService.getStoredExpoToken();
+      if (expoTokenAfterBackfill) {
         const gateState = plan.nodeStates.get('user:provide-expo-token');
         if (gateState && gateState.status === 'not-started') {
           plan.nodeStates.set('user:provide-expo-token', {
@@ -1805,10 +2726,77 @@ export function createApiRouter(
             completedAt: Date.now(),
             resourcesProduced: { expo_token: '[stored in vault]' },
           });
+          planMutated = true;
         }
       }
 
-      savePersistedPlan(projectId, plan);
+      // Backfill legacy/manual Cloudflare ownership gate outputs when the gate
+      // is already marked completed but no zone activation metadata was stored.
+      // This keeps the UI artifact box populated for older plans completed
+      // before ownership verification outputs were persisted.
+      const cloudflareOwnershipGate = plan.nodeStates.get('user:confirm-dns-nameservers');
+      if (
+        cloudflareOwnershipGate?.status === 'completed' &&
+        (!cloudflareOwnershipGate.resourcesProduced?.['cloudflare_zone_status'] ||
+          !cloudflareOwnershipGate.resourcesProduced?.['cloudflare_account_id'])
+      ) {
+        try {
+          const upstream = collectCompletedUpstreamArtifacts(plan);
+          applyProjectDomainToUpstreamArtifacts(upstream, module.project);
+          const checked = await checkCloudflareZoneOwnershipForContext({
+            projectId,
+            environment: 'global',
+            upstreamResources: upstream,
+            vaultRead: async () => null,
+            vaultWrite: async () => { },
+          });
+          const produced = {
+            ...(cloudflareOwnershipGate.resourcesProduced ?? {}),
+            ...(checked.zoneId ? { cloudflare_zone_id: checked.zoneId } : {}),
+            ...(checked.accountId ? { cloudflare_account_id: checked.accountId } : {}),
+            ...(checked.zoneStatus ? { cloudflare_zone_status: checked.zoneStatus } : {}),
+            ...(checked.zoneDomain ? { cloudflare_zone_domain: checked.zoneDomain } : {}),
+            ...(checked.appDomain ? { cloudflare_app_domain: checked.appDomain } : {}),
+            ...(checked.nameservers?.length
+              ? { cloudflare_zone_nameservers: checked.nameservers.join(',') }
+              : {}),
+          };
+          if (Object.keys(produced).length !== Object.keys(cloudflareOwnershipGate.resourcesProduced ?? {}).length) {
+            plan.nodeStates.set('user:confirm-dns-nameservers', {
+              ...cloudflareOwnershipGate,
+              resourcesProduced: produced,
+            });
+            planMutated = true;
+            console.info(
+              `[studio-cloudflare] Backfilled ownership outputs for "${projectId}" (zoneStatus=${produced['cloudflare_zone_status'] ?? 'unknown'}).`,
+            );
+          }
+        } catch (err) {
+          console.warn(
+            `[studio-cloudflare] Could not backfill ownership outputs for "${projectId}": ${(err as Error).message}`,
+          );
+        }
+      }
+
+      // Legacy backfill: token may exist without stored account metadata if it
+      // was uploaded through older user-action flows. Hydrate once so dynamic
+      // Expo URLs (account/project GitHub settings) can resolve correctly.
+      const hasExpoIdentity =
+        !!easConnectionService.getStoredExpoUsername() ||
+        easConnectionService.getStoredExpoAccountNames().length > 0;
+      if (!hasExpoIdentity && expoTokenAfterBackfill) {
+        try {
+          await easConnectionService.syncExpoIntegrationFromCredentialStore();
+        } catch (err) {
+          console.warn(
+            `[studio-eas] Could not backfill Expo account metadata for "${projectId}": ${(err as Error).message}`,
+          );
+        }
+      }
+
+      if (planMutated && !planHasInProgressStep) {
+        savePersistedPlan(projectId, plan);
+      }
       logStudioApiAction('provisioning/plan GET', {
         projectId,
         createdNewPlan,
@@ -1839,7 +2827,13 @@ export function createApiRouter(
         ? normalizeExpoEnvironments(req.body?.environments as string[] | undefined)
         : normalizeExpoEnvironments(module.project.environments);
 
-      const plan = buildProvisioningPlan(projectId, providers, environments);
+      const plan = buildProvisioningPlan(
+        projectId,
+        providers,
+        environments,
+        undefined,
+        module.project.platforms ?? [],
+      );
       savePersistedPlan(projectId, plan);
 
       res.json(enrichPlanForResponse(plan));
@@ -1866,9 +2860,10 @@ export function createApiRouter(
       const resolvedModules = resolveModuleDependencies(modules);
 
       const previousPlan = loadPersistedPlan(projectId);
+      const projectPlatforms = moduleRecord.project.platforms ?? [];
       const nextPlan = previousPlan
-        ? recomputePlanForModules(previousPlan, resolvedModules)
-        : buildProvisioningPlanForModules(projectId, resolvedModules, environments);
+        ? recomputePlanForModules(previousPlan, resolvedModules, projectPlatforms)
+        : buildProvisioningPlanForModules(projectId, resolvedModules, environments, projectPlatforms);
 
       savePersistedPlan(projectId, nextPlan);
       res.json(enrichPlanForResponse(nextPlan));
@@ -1899,7 +2894,13 @@ export function createApiRouter(
           : (persistedPlan?.selectedModules as ModuleId[] | undefined) ?? [],
       );
       const providers = getProvidersForModules(selectedModules);
-      const teardownPlan = buildTeardownPlan(projectId, providers, environments, selectedModules);
+      const teardownPlan = buildTeardownPlan(
+        projectId,
+        providers,
+        environments,
+        selectedModules,
+        moduleRecord.project.platforms ?? [],
+      );
 
       savePersistedPlan(projectId, teardownPlan);
       res.json(enrichPlanForResponse(teardownPlan));
@@ -1927,9 +2928,10 @@ export function createApiRouter(
 
       const module = projectManager.getProject(projectId);
       const githubToken = gitHubConnectionService.getStoredGitHubToken();
+      const planTouchesGithub = planUsesGithubProvider(plan);
       const planTouchesEas = plan.nodes.some((n) => n.provider === 'eas');
       const expoTokenForTeardown = easConnectionService.getStoredExpoToken();
-      if (!githubToken) {
+      if (planTouchesGithub && !githubToken) {
         res.status(400).json({
           error:
             'GitHub is not connected. Connect a GitHub PAT via the organization settings before running teardown.',
@@ -1944,41 +2946,43 @@ export function createApiRouter(
         return;
       }
 
-      const org = projectManager.getOrganization();
-      const orgGithubConfig = org.integrations.github?.config ?? {};
-      const githubOwner =
-        module.project.githubOrg?.trim() ||
-        orgGithubConfig['owner_default']?.trim() ||
-        orgGithubConfig['username']?.trim() ||
-        module.project.slug;
-
       const defaultBranchRules: BranchProtectionRule[] = [
         { branch: 'main', require_reviews: true, dismiss_stale_reviews: true, require_status_checks: true },
         { branch: 'develop', require_reviews: false, dismiss_stale_reviews: false, require_status_checks: true },
       ];
-      const githubManifestConfig: GitHubManifestConfig = {
-        provider: 'github',
-        owner: githubOwner,
-        repo_name: projectResourceSlug(module.project),
-        branch_protection_rules: defaultBranchRules,
-        environments: (plan.environments as Array<'development' | 'preview' | 'production'>),
-        workflow_templates: ['build', 'deploy'],
-      };
-      const manifestProviders: ProviderConfig[] = [githubManifestConfig];
+      const manifestProviders: ProviderConfig[] = [];
+      if (planTouchesGithub) {
+        const org = projectManager.getOrganization();
+        const orgGithubConfig = org.integrations.github?.config ?? {};
+        const githubOwner =
+          module.project.githubOrg?.trim() ||
+          orgGithubConfig['owner_default']?.trim() ||
+          orgGithubConfig['username']?.trim() ||
+          module.project.slug;
+        const githubManifestConfig: GitHubManifestConfig = {
+          provider: 'github',
+          owner: githubOwner,
+          repo_name: projectResourceSlug(module.project),
+          branch_protection_rules: defaultBranchRules,
+          environments: (plan.environments as Array<'development' | 'preview' | 'production'>),
+          workflow_templates: buildGitHubWorkflowTemplates(plan),
+        };
+        manifestProviders.push(githubManifestConfig);
+      }
       if (planUsesFirebaseProvider(plan)) {
         manifestProviders.push(buildFirebaseManifestConfig(projectId));
       }
       if (planTouchesEas && expoTokenForTeardown) {
         manifestProviders.push(buildEasManifestConfig(projectManager, projectId, plan));
       }
+      if (planUsesAppleProvider(plan)) {
+        manifestProviders.push(buildAppleManifestConfig(projectId, plan));
+      }
+      if (planUsesCloudflareProvider(plan)) {
+        manifestProviders.push(buildCloudflareManifestConfig(projectId));
+      }
       if (planUsesOauthProvider(plan)) {
-        manifestProviders.push({
-          provider: 'oauth',
-          oauth_provider: 'google',
-          redirect_uri: '',
-          scopes: [],
-          firebase_project_id: projectId,
-        });
+        manifestProviders.push(buildOauthManifestConfig(projectId, plan));
       }
       const manifest: ProviderManifest = {
         version: PLATFORM_CORE_VERSION,
@@ -1987,16 +2991,24 @@ export function createApiRouter(
       };
 
       const registry = new ProviderRegistry();
-      const httpClient = new HttpGitHubApiClient(githubToken);
-      registry.register('github', new GitHubAdapter(httpClient));
+      const httpClient = githubToken ? new HttpGitHubApiClient(githubToken) : null;
+      if (planTouchesGithub && httpClient) {
+        registry.register('github', new GitHubAdapter(httpClient));
+      }
       if (planUsesFirebaseProvider(plan)) {
         registry.register('firebase', new FirebaseAdapter(new StubFirebaseApiClient(), gcpConnectionService));
       }
       if (planTouchesEas && expoTokenForTeardown) {
         registry.register(
           'eas',
-          new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForTeardown), undefined, httpClient),
+          new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForTeardown), undefined, httpClient ?? undefined),
         );
+      }
+      if (planUsesAppleProvider(plan)) {
+        registry.register('apple', new AppleAdapter());
+      }
+      if (planUsesCloudflareProvider(plan)) {
+        registry.register('cloudflare', buildCloudflareAdapter(projectId));
       }
       if (planUsesOauthProvider(plan)) {
         registry.register(
@@ -2016,7 +3028,9 @@ export function createApiRouter(
         if (!currentPlan) return;
 
         for await (const event of orchestrator.teardownBySteps(currentPlan, manifest, {}, vaultRead)) {
-          const stateKey = event.environment ? `${event.nodeKey}@${event.environment}` : event.nodeKey;
+          const normalizedEnvironment =
+            event.environment && event.environment !== 'global' ? event.environment : undefined;
+          const stateKey = normalizedEnvironment ? `${event.nodeKey}@${normalizedEnvironment}` : event.nodeKey;
           currentPlan.nodeStates.set(stateKey, {
             nodeKey: event.nodeKey,
             status:
@@ -2031,8 +3045,9 @@ export function createApiRouter(
                       : event.status === 'blocked'
                         ? 'blocked'
                         : 'in-progress',
-            environment: event.environment,
+            environment: normalizedEnvironment,
             error: event.error,
+            userPrompt: event.userPrompt,
             resourcesProduced: event.resourcesProduced,
             completedAt: event.status === 'success' || event.status === 'skipped' ? Date.now() : undefined,
           });
@@ -2043,7 +3058,7 @@ export function createApiRouter(
             event.nodeKey,
             event.nodeType,
             event.status,
-            event.environment,
+            normalizedEnvironment,
             event.resourcesProduced,
             event.error,
             event.userPrompt,
@@ -2112,80 +3127,113 @@ export function createApiRouter(
         }
 
         const resourcesProduced = req.body?.resourcesProduced as Record<string, string> | undefined;
+        let normalizedResourcesProduced = resourcesProduced;
+
+        if (nodeKey === 'user:provide-github-pat') {
+          const githubToken = resourcesProduced?.['github_token']?.trim();
+          if (!githubToken) {
+            res.status(400).json({ error: 'Missing "github_token" in resourcesProduced.' });
+            return;
+          }
+          gitHubConnectionService.storeGitHubToken(githubToken);
+          normalizedResourcesProduced = {
+            ...(resourcesProduced ?? {}),
+            github_token: '[stored in vault]',
+          };
+        }
+
+        if (nodeKey === 'user:provide-expo-token') {
+          const expoToken = resourcesProduced?.['expo_token']?.trim();
+          if (!expoToken) {
+            res.status(400).json({ error: 'Missing "expo_token" in resourcesProduced.' });
+            return;
+          }
+          // Validate + persist token and account metadata (username/orgs) so
+          // downstream UI links can target the correct Expo account.
+          await easConnectionService.connect(expoToken);
+          normalizedResourcesProduced = {
+            ...(resourcesProduced ?? {}),
+            expo_token: '[stored in vault]',
+          };
+        }
 
         let verifiedGithubOwner: string | undefined;
         let verifiedGithubRepo: string | undefined;
+        let verifiedCloudflareResources: Record<string, string> | undefined;
         if (nodeKey === 'user:install-expo-github-app') {
-          const expoToken = easConnectionService.getStoredExpoToken();
-          if (!expoToken?.trim()) {
-            res.status(400).json({
-              error:
-                'No Expo token in the organization vault. Connect EAS and add an Expo access token before verifying.',
-            });
-            return;
-          }
           const upstream = collectCompletedUpstreamArtifacts(plan);
           applyProjectDomainToUpstreamArtifacts(upstream, projectManager.getProject(projectId).project);
-          const easProjectId = upstream['eas_project_id']?.trim();
-          if (!easProjectId) {
-            res.status(400).json({
-              error:
-                'Missing EAS project id from earlier steps. Complete "Create EAS Project" first, then verify again.',
-            });
-            return;
-          }
-          const repoUrl = upstream['github_repo_url']?.trim();
-          if (!repoUrl) {
-            res.status(400).json({
-              error:
-                'Missing GitHub repository URL from earlier steps. Complete "Create GitHub Repository" first.',
-            });
-            return;
-          }
-          let owner: string;
-          let repo: string;
-          try {
-            const parsed = parseGithubRepoUrl(repoUrl);
-            owner = parsed.owner;
-            repo = parsed.repo;
-          } catch (parseErr) {
-            res.status(400).json({ error: (parseErr as Error).message });
-            return;
-          }
-          const mod = projectManager.getProject(projectId);
-          const org = projectManager.getOrganization();
-          const easOrg =
-            mod.project.easAccount?.trim() ||
-            (org.integrations.eas?.config?.['expoAccountSlug'] as string | undefined)?.trim() ||
-            undefined;
-          const expoClient = new ExpoGraphqlEasApiClient(expoToken);
-          const linked = await expoClient.isGitHubRepositoryLinkedToApp({
-            expoAppId: easProjectId,
-            organization: easOrg,
-            githubOwner: owner,
-            githubRepoName: repo,
+          const checked = await checkExpoGitHubInstallForContext({
+            projectId,
+            environment: 'global',
+            upstreamResources: upstream,
+            vaultRead: async () => null,
+            vaultWrite: async () => { },
           });
-          if (!linked) {
+          if (!checked.linked || !checked.githubOwner || !checked.githubRepo) {
             res.status(400).json({
               error:
-                `Expo project "${easProjectId}" is not linked to GitHub repository "${owner}/${repo}" on expo.dev yet. ` +
+                `Expo project "${upstream['eas_project_id']?.trim() || '[unknown]'}" is not linked to GitHub repository "${upstream['github_repo_url']?.trim() || '[unknown]'}" on expo.dev yet. ` +
                 'Open your app on expo.dev → GitHub settings, connect that repository (Expo GitHub App must have access), then verify again. ' +
                 'Docs: https://docs.expo.dev/eas-update/github-integration/',
             });
             return;
           }
-          verifiedGithubOwner = owner;
-          verifiedGithubRepo = repo;
+          verifiedGithubOwner = checked.githubOwner;
+          verifiedGithubRepo = checked.githubRepo;
+        }
+
+        if (nodeKey === 'user:confirm-dns-nameservers') {
+          const upstream = collectCompletedUpstreamArtifacts(plan);
+          applyProjectDomainToUpstreamArtifacts(upstream, projectManager.getProject(projectId).project);
+          const checked = await checkCloudflareZoneOwnershipForContext({
+            projectId,
+            environment: 'global',
+            upstreamResources: upstream,
+            vaultRead: async () => null,
+            vaultWrite: async () => { },
+          });
+
+          if (!checked.owned) {
+            res.status(400).json({
+              error:
+                `Cloudflare zone "${checked.zoneDomain || upstream['cloudflare_zone_domain'] || '[unknown]'}" is not accessible with the configured token yet. ` +
+                'Create/verify the zone first, then try again.',
+            });
+            return;
+          }
+          if (checked.zoneStatus !== 'active') {
+            res.status(400).json({
+              error:
+                `Cloudflare zone "${checked.zoneDomain || '[unknown]'}" is currently "${checked.zoneStatus || 'unknown'}". ` +
+                'Wait until zone status is "active" (nameserver delegation propagated), then complete this step again.',
+            });
+            return;
+          }
+
+          verifiedCloudflareResources = {
+            ...(checked.zoneId ? { cloudflare_zone_id: checked.zoneId } : {}),
+            ...(checked.accountId ? { cloudflare_account_id: checked.accountId } : {}),
+            ...(checked.zoneStatus ? { cloudflare_zone_status: checked.zoneStatus } : {}),
+            ...(checked.zoneDomain ? { cloudflare_zone_domain: checked.zoneDomain } : {}),
+            ...(checked.appDomain ? { cloudflare_app_domain: checked.appDomain } : {}),
+            ...(checked.nameservers?.length
+              ? { cloudflare_zone_nameservers: checked.nameservers.join(',') }
+              : {}),
+          };
         }
 
         const mergedProduced: Record<string, string> = {
-          ...(resourcesProduced ?? state.resourcesProduced ?? {}),
+          ...(normalizedResourcesProduced ?? state.resourcesProduced ?? {}),
           ...(nodeKey === 'user:install-expo-github-app' && verifiedGithubOwner && verifiedGithubRepo
             ? {
                 expo_github_repo_linked: 'true',
                 verified_github_owner: verifiedGithubOwner,
                 verified_github_repo: verifiedGithubRepo,
               }
+            : {}),
+          ...(nodeKey === 'user:confirm-dns-nameservers' && verifiedCloudflareResources
+            ? verifiedCloudflareResources
             : {}),
         };
 
@@ -2337,12 +3385,19 @@ export function createApiRouter(
       if (planIsRunning) {
         plan = existingPlan!;
       } else {
-        plan = buildProvisioningPlan(projectId, planProviders, environments);
+        plan = buildProvisioningPlan(
+          projectId,
+          planProviders,
+          environments,
+          undefined,
+          module.project.platforms ?? [],
+        );
         savePersistedPlan(projectId, plan);
       }
 
       // Read the stored GitHub PAT from the credential vault
       const githubToken = gitHubConnectionService.getStoredGitHubToken();
+      const planTouchesGithub = planUsesGithubProvider(plan);
 
       // Build the gate resolver — handles GCP auth, GitHub PAT, Expo token
       // auto-completion during orchestration instead of ad-hoc pre-marking.
@@ -2350,46 +3405,49 @@ export function createApiRouter(
         gcpConnectionService,
         easConnectionService,
         getGitHubToken: () => gitHubConnectionService.getStoredGitHubToken(),
+        getCloudflareToken: (id) => getCloudflareTokenForProject(id),
+        checkCloudflareZoneOwnership: checkCloudflareZoneOwnershipForContext,
+        checkExpoGitHubInstall: checkExpoGitHubInstallForContext,
       });
-
-      // Determine GitHub owner: project's githubOrg, or org's default owner, or project slug
-      const org = projectManager.getOrganization();
-      const orgGithubConfig = org.integrations.github?.config ?? {};
-      const githubOwner =
-        module.project.githubOrg?.trim() ||
-        orgGithubConfig['owner_default']?.trim() ||
-        orgGithubConfig['username']?.trim() ||
-        module.project.slug;
-      const repoName = projectResourceSlug(module.project);
 
       // Build provider manifest for GitHub
       const defaultBranchRules: BranchProtectionRule[] = [
         { branch: 'main', require_reviews: true, dismiss_stale_reviews: true, require_status_checks: true },
         { branch: 'develop', require_reviews: false, dismiss_stale_reviews: false, require_status_checks: true },
       ];
-      const githubManifestConfig: GitHubManifestConfig = {
-        provider: 'github',
-        owner: githubOwner,
-        repo_name: repoName,
-        branch_protection_rules: defaultBranchRules,
-        environments: (plan.environments as Array<'development' | 'preview' | 'production'>),
-        workflow_templates: ['build', 'deploy'],
-      };
-      const manifestProviders: ProviderConfig[] = [githubManifestConfig];
+      const manifestProviders: ProviderConfig[] = [];
+      if (planTouchesGithub) {
+        const org = projectManager.getOrganization();
+        const orgGithubConfig = org.integrations.github?.config ?? {};
+        const githubOwner =
+          module.project.githubOrg?.trim() ||
+          orgGithubConfig['owner_default']?.trim() ||
+          orgGithubConfig['username']?.trim() ||
+          module.project.slug;
+        const githubManifestConfig: GitHubManifestConfig = {
+          provider: 'github',
+          owner: githubOwner,
+          repo_name: projectResourceSlug(module.project),
+          branch_protection_rules: defaultBranchRules,
+          environments: (plan.environments as Array<'development' | 'preview' | 'production'>),
+          workflow_templates: buildGitHubWorkflowTemplates(plan),
+        };
+        manifestProviders.push(githubManifestConfig);
+      }
       if (planUsesFirebaseProvider(plan)) {
         manifestProviders.push(buildFirebaseManifestConfig(projectId));
       }
       if (planUsesEasProvider(plan)) {
         manifestProviders.push(buildEasManifestConfig(projectManager, projectId, plan));
       }
+      if (planUsesAppleProvider(plan)) {
+        manifestProviders.push(buildAppleManifestConfig(projectId, plan));
+      }
+      if (planUsesCloudflareProvider(plan)) {
+        manifestProviders.push(buildCloudflareManifestConfig(projectId));
+      }
       if (planUsesOauthProvider(plan)) {
-        manifestProviders.push({
-          provider: 'oauth',
-          oauth_provider: 'google',
-          redirect_uri: '',
-          scopes: [],
-          firebase_project_id: projectId,
-        });
+        manifestProviders.push(buildOauthManifestConfig(projectId, plan));
       }
       const manifest: ProviderManifest = {
         version: PLATFORM_CORE_VERSION,
@@ -2398,7 +3456,7 @@ export function createApiRouter(
       };
 
       // Require a real GitHub token — refuse to run with stubs.
-      if (!githubToken) {
+      if (planTouchesGithub && !githubToken) {
         res.status(400).json({
           error: 'GitHub is not connected. Connect a GitHub PAT via the organization settings before running provisioning.',
         });
@@ -2415,16 +3473,24 @@ export function createApiRouter(
       }
 
       const registry = new ProviderRegistry();
-      const httpClient = new HttpGitHubApiClient(githubToken);
-      registry.register('github', new GitHubAdapter(httpClient));
+      const httpClient = githubToken ? new HttpGitHubApiClient(githubToken) : null;
+      if (planTouchesGithub && httpClient) {
+        registry.register('github', new GitHubAdapter(httpClient));
+      }
       if (planUsesFirebaseProvider(plan)) {
         registry.register('firebase', new FirebaseAdapter(new StubFirebaseApiClient(), gcpConnectionService));
       }
       if (planUsesEasProvider(plan) && expoTokenForFullRun) {
         registry.register(
           'eas',
-          new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForFullRun), undefined, httpClient),
+          new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForFullRun), undefined, httpClient ?? undefined),
         );
+      }
+      if (planUsesAppleProvider(plan)) {
+        registry.register('apple', new AppleAdapter());
+      }
+      if (planUsesCloudflareProvider(plan)) {
+        registry.register('cloudflare', buildCloudflareAdapter(projectId));
       }
       if (planUsesOauthProvider(plan)) {
         registry.register(
@@ -2438,6 +3504,7 @@ export function createApiRouter(
       }
 
       const vaultRead = createVaultReader(vaultManager);
+      const vaultWrite = createVaultWriter(vaultManager);
 
       const orchestrator = new Orchestrator(registry, eventLog);
 
@@ -2455,15 +3522,20 @@ export function createApiRouter(
           for await (const event of orchestrator.provisionBySteps(
             currentPlan,
             manifest,
-            { initialUpstreamResources: projectDomainUpstreamSeed(module.project) },
+            {
+              initialUpstreamResources: buildInitialUpstreamSeed(
+                module.project,
+                projectManager.getOrganization(),
+              ),
+            },
             vaultRead,
-            undefined,
+            vaultWrite,
             undefined,
             gateResolver,
           )) {
-            const stateKey = event.environment
-              ? `${event.nodeKey}@${event.environment}`
-              : event.nodeKey;
+            const normalizedEnvironment =
+              event.environment && event.environment !== 'global' ? event.environment : undefined;
+            const stateKey = normalizedEnvironment ? `${event.nodeKey}@${normalizedEnvironment}` : event.nodeKey;
 
             currentPlan.nodeStates.set(stateKey, {
               nodeKey: event.nodeKey,
@@ -2480,8 +3552,9 @@ export function createApiRouter(
                         : event.status === 'blocked'
                           ? 'blocked'
                           : 'in-progress',
-              environment: event.environment,
+              environment: normalizedEnvironment,
               error: event.error,
+              userPrompt: event.userPrompt,
               resourcesProduced: event.resourcesProduced,
               completedAt: event.status === 'success' || event.status === 'skipped' ? Date.now() : undefined,
             });
@@ -2491,7 +3564,7 @@ export function createApiRouter(
               event.nodeKey,
               event.nodeType,
               event.status,
-              event.environment,
+              normalizedEnvironment,
               event.resourcesProduced,
               event.error,
               event.userPrompt,
@@ -2708,10 +3781,22 @@ export function createApiRouter(
             Object.assign(upstreamArtifacts, state.resourcesProduced);
           }
         }
-        applyProjectDomainToUpstreamArtifacts(
-          upstreamArtifacts,
-          projectManager.getProject(projectId).project,
-        );
+        try {
+          applyProjectDomainToUpstreamArtifacts(
+            upstreamArtifacts,
+            projectManager.getProject(projectId).project,
+          );
+        } catch (err) {
+          const errno = err as NodeJS.ErrnoException;
+          if (errno.code !== 'ENOENT') throw err;
+          // Some legacy runs may still have a persisted plan while the
+          // module.json was removed. Domain enrichment is optional for steps
+          // like oauth:configure-apple-sign-in, so skip it instead of hard
+          // failing the entire targeted run.
+          console.warn(
+            `[plan/run/nodes] studio="${projectId}" | Project module missing while applying domain enrichment; continuing without project domain context.`,
+          );
+        }
 
         // ── Handler-direct execution for firebase/* steps ──────────────────
         for (const nk of handlerBacked) {
@@ -2729,6 +3814,7 @@ export function createApiRouter(
           const existingState = currentPlan.nodeStates.get(stateKey);
           const context = {
             projectId,
+            environment,
             upstreamArtifacts: { ...upstreamArtifacts },
             userInputs: existingState?.userInputs,
             async getToken(providerId: string): Promise<string> {
@@ -2768,7 +3854,8 @@ export function createApiRouter(
                 userInputs: existingState?.userInputs,
               });
               wsHandler.broadcastStepProgress(projectId, baseKey, 'step', 'success', environment, resources);
-              console.log(`[plan/run/nodes] studio="${projectId}" | ✓ "${baseKey}" completed.`);
+              const summary = result.message ? ` — ${result.message}` : '';
+              console.log(`[plan/run/nodes] studio="${projectId}" | ✓ "${baseKey}" completed.${summary}`);
             } else {
               // reconciled=false, suggestsReauth=true means the GCP token is invalid.
               // Since we are in an async background block we cannot return needsReauth
@@ -2802,52 +3889,62 @@ export function createApiRouter(
         const needsGithubOrchestration = orchBaseKeys.some((b) => b.startsWith('github:'));
         const needsEasOrchestration = orchBaseKeys.some((b) => b.startsWith('eas:'));
         const needsOauthOrchestration = orchBaseKeys.some((b) => b.startsWith('oauth:'));
+        const needsAppleOrchestration = orchBaseKeys.some((b) => b.startsWith('apple:'));
+        const needsCloudflareOrchestration = orchBaseKeys.some((b) => b.startsWith('cloudflare:'));
         const canRunOrchestrator =
           orchestratorBacked.length > 0 &&
           (!needsGithubOrchestration || !!githubToken) &&
           (!needsEasOrchestration || !!expoTokenForOrchestrator);
 
         if (canRunOrchestrator) {
+          const projectModule = projectManager.getProject(projectId);
           const nodesGateResolver = buildProvisioningGateResolver({
             gcpConnectionService,
             easConnectionService,
             getGitHubToken: () => gitHubConnectionService.getStoredGitHubToken(),
+            getCloudflareToken: (id) => getCloudflareTokenForProject(id),
+            checkCloudflareZoneOwnership: checkCloudflareZoneOwnershipForContext,
+            checkExpoGitHubInstall: checkExpoGitHubInstallForContext,
           });
 
-          const module = projectManager.getProject(projectId);
           const org = projectManager.getOrganization();
           const orgGithubConfig = org.integrations.github?.config ?? {};
+          const module = needsGithubOrchestration
+            ? projectModule
+            : null;
           const githubOwner =
-            module.project.githubOrg?.trim() ||
+            module?.project.githubOrg?.trim() ||
             orgGithubConfig['owner_default']?.trim() ||
             orgGithubConfig['username']?.trim() ||
-            module.project.slug;
+            module?.project.slug ||
+            projectId;
 
           const manifestProviders: ProviderConfig[] = [];
           if (needsGithubOrchestration && githubToken) {
+            const githubProject = module ?? projectManager.getProject(projectId);
             manifestProviders.push({
               provider: 'github',
               owner: githubOwner,
-              repo_name: projectResourceSlug(module.project),
+              repo_name: projectResourceSlug(githubProject.project),
               branch_protection_rules: [
                 { branch: 'main', require_reviews: true, dismiss_stale_reviews: true, require_status_checks: true },
                 { branch: 'develop', require_reviews: false, dismiss_stale_reviews: false, require_status_checks: true },
               ],
               environments: currentPlan.environments as Array<'development' | 'preview' | 'production'>,
-              workflow_templates: ['build', 'deploy'],
+              workflow_templates: buildGitHubWorkflowTemplates(currentPlan),
             });
           }
           if (needsEasOrchestration && expoTokenForOrchestrator) {
             manifestProviders.push(buildEasManifestConfig(projectManager, projectId, currentPlan));
           }
+          if (needsAppleOrchestration) {
+            manifestProviders.push(buildAppleManifestConfig(projectId, currentPlan));
+          }
+          if (needsCloudflareOrchestration) {
+            manifestProviders.push(buildCloudflareManifestConfig(projectId));
+          }
           if (needsOauthOrchestration) {
-            manifestProviders.push({
-              provider: 'oauth',
-              oauth_provider: 'google',
-              redirect_uri: '',
-              scopes: [],
-              firebase_project_id: projectId,
-            });
+            manifestProviders.push(buildOauthManifestConfig(projectId, currentPlan));
           }
 
           const manifest: ProviderManifest = {
@@ -2867,6 +3964,12 @@ export function createApiRouter(
               new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForOrchestrator), undefined, ghForEas),
             );
           }
+          if (needsAppleOrchestration) {
+            registry.register('apple', new AppleAdapter());
+          }
+          if (needsCloudflareOrchestration) {
+            registry.register('cloudflare', buildCloudflareAdapter(projectId));
+          }
           if (needsOauthOrchestration) {
             registry.register(
               'oauth',
@@ -2880,19 +3983,35 @@ export function createApiRouter(
 
           const orchestrator = new Orchestrator(registry, eventLog);
           const vaultRead = createVaultReader(vaultManager);
+          const vaultWrite = createVaultWriter(vaultManager);
           const nodeKeysFilter = new Set(orchestratorBacked);
 
           try {
             for await (const event of orchestrator.provisionBySteps(
               currentPlan,
               manifest,
-              { initialUpstreamResources: projectDomainUpstreamSeed(module.project) },
+              {
+                initialUpstreamResources: buildInitialUpstreamSeed(
+                  projectModule.project,
+                  projectManager.getOrganization(),
+                ),
+              },
               vaultRead,
-              undefined,
+              vaultWrite,
               nodeKeysFilter,
               nodesGateResolver,
             )) {
-              const stateKey = event.environment ? `${event.nodeKey}@${event.environment}` : event.nodeKey;
+              const normalizedEnvironment =
+                event.environment && event.environment !== 'global' ? event.environment : undefined;
+              const stateKey = normalizedEnvironment ? `${event.nodeKey}@${normalizedEnvironment}` : event.nodeKey;
+              // Preserve userInputs across the event-driven state rewrite.
+              // Without this, every status transition the orchestrator emits
+              // would clobber the user-supplied configuration map persisted
+              // by PUT /inputs, and any retry / re-edit / re-render of the
+              // wizard would render empty fields (or, worse, the executor
+              // would see no inputs and bounce the user back into a
+              // "Missing input" waiting-on-user prompt).
+              const previousState = currentPlan.nodeStates.get(stateKey);
               currentPlan.nodeStates.set(stateKey, {
                 nodeKey: event.nodeKey,
                 status:
@@ -2902,14 +4021,16 @@ export function createApiRouter(
                   event.status === 'resolving' ? 'resolving' :
                   event.status === 'skipped' ? 'skipped' :
                   event.status === 'blocked' ? 'blocked' : 'in-progress',
-                environment: event.environment,
+                environment: normalizedEnvironment,
                 error: event.error,
+                userPrompt: event.userPrompt,
                 resourcesProduced: event.resourcesProduced,
                 completedAt: event.status === 'success' || event.status === 'skipped' ? Date.now() : undefined,
+                ...(previousState?.userInputs ? { userInputs: previousState.userInputs } : {}),
               });
               wsHandler.broadcastStepProgress(
                 projectId, event.nodeKey, event.nodeType, event.status,
-                event.environment, event.resourcesProduced, event.error, event.userPrompt,
+                normalizedEnvironment, event.resourcesProduced, event.error, event.userPrompt,
               );
               if (event.status === 'failure' && event.error) {
                 console.error(
@@ -3051,12 +4172,17 @@ export function createApiRouter(
 
           try {
             const result = await handler.delete(handlerContext);
-            if (!result.reconciled && result.message) {
-              revertWarnings.push(`${stepKey}: ${result.message}`);
+            console.log(
+              `[studio-api] node/reset ${stepKey}: handler.delete reconciled=${result.reconciled}` +
+                (result.message ? ` (${result.message})` : ''),
+            );
+            if (!result.reconciled) {
+              const msg = result.message ?? 'handler.delete returned reconciled=false with no message.';
+              revertWarnings.push(`${stepKey}: ${msg}`);
               appendExpoManualDeleteIfRobotBlocked(
                 revertManualActions,
                 stepKey,
-                result.message,
+                msg,
                 projectManager,
                 projectId,
                 easConnectionService.getStoredExpoAccountNames(),
@@ -3078,6 +4204,50 @@ export function createApiRouter(
 
         if (revertWarnings.length > 0) {
           console.warn(`[studio-api] node/reset: partial revert for ${projectId}: ${revertWarnings.join('; ')}`);
+        }
+      }
+
+      if (allKeysToReset.includes('apple:revoke-signing-assets')) {
+        revertManualActions.push({
+          stepKey: 'apple:revoke-signing-assets',
+          title: 'Revoke Apple signing assets manually',
+          body:
+            'Revoke certificates, provisioning profiles, APNs keys, and App Store Connect API keys in Apple Developer and App Store Connect.',
+          primaryUrl: 'https://developer.apple.com/account/resources',
+          primaryLabel: 'Open Apple Developer resources',
+        });
+      }
+      if (allKeysToReset.includes('apple:remove-app-store-listing')) {
+        revertManualActions.push({
+          stepKey: 'apple:remove-app-store-listing',
+          title: 'Remove App Store Connect listing manually',
+          body:
+            'Archive or remove the App Store listing in App Store Connect. Apple may not allow permanent deletion for published apps.',
+          primaryUrl: 'https://appstoreconnect.apple.com/apps',
+          primaryLabel: 'Open App Store Connect apps',
+        });
+      }
+
+      // Reverting credential-upload gates should also remove org-scoped tokens
+      // from vault so subsequent steps cannot continue using stale credentials.
+      if (allKeysToReset.includes('user:provide-github-pat')) {
+        try {
+          const disconnected = gitHubConnectionService.disconnect();
+          console.log(
+            `[studio-api] node/reset: revoked GitHub PAT for ${projectId} (removed=${disconnected.removed}).`,
+          );
+        } catch (err) {
+          revertWarnings.push(`user:provide-github-pat: ${(err as Error).message}`);
+        }
+      }
+      if (allKeysToReset.includes('user:provide-expo-token')) {
+        try {
+          const disconnected = easConnectionService.disconnect();
+          console.log(
+            `[studio-api] node/reset: revoked Expo token for ${projectId} (removed=${disconnected.removed}).`,
+          );
+        } catch (err) {
+          revertWarnings.push(`user:provide-expo-token: ${(err as Error).message}`);
         }
       }
 
@@ -3150,6 +4320,85 @@ export function createApiRouter(
       res.status(500).json({ error: (err as Error).message });
     }
   });
+
+  // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/provisioning/steps/:stepKey/secrets
+  // Returns metadata describing every vault-stored secret a step uploads to a
+  // third-party (e.g. EXPO_TOKEN to GitHub repo secrets). No plaintext is
+  // returned — only `present` and `length` so the UI can show whether the
+  // value is available before offering a "Copy" button.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/projects/:projectId/provisioning/steps/:stepKey/secrets',
+    (req: Request, res: Response) => {
+      const { projectId, stepKey } = req.params;
+      const descriptors = getStepSecretDescriptors(stepKey);
+      if (descriptors.length === 0) {
+        res.json({ stepKey, secrets: [] });
+        return;
+      }
+
+      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
+      if (!passphrase) {
+        res.status(500).json({
+          error:
+            'STUDIO_VAULT_PASSPHRASE is not configured; cannot inspect vault-stored secrets.',
+        });
+        return;
+      }
+
+      const statuses = readStepSecretStatuses(vaultManager, passphrase, stepKey, projectId);
+      res.json({ stepKey, secrets: statuses });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:projectId/provisioning/steps/:stepKey/secrets/:secretName/reveal
+  // Returns the plaintext value of a single vault-stored secret so the user
+  // can copy it (e.g. to verify what was uploaded to GitHub Actions, or paste
+  // into a local `eas whoami` to debug a "bearer token is invalid" error).
+  // POST is used (not GET) to keep the value out of browser/proxy caches.
+  // -------------------------------------------------------------------------
+  router.post(
+    '/projects/:projectId/provisioning/steps/:stepKey/secrets/:secretName/reveal',
+    (req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-store');
+      const { projectId, stepKey, secretName } = req.params;
+      const descriptor = findStepSecretDescriptor(stepKey, secretName);
+      if (!descriptor) {
+        res.status(404).json({
+          error: `Step "${stepKey}" does not declare an uploadable secret named "${secretName}".`,
+        });
+        return;
+      }
+
+      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
+      if (!passphrase) {
+        res.status(500).json({
+          error: 'STUDIO_VAULT_PASSPHRASE is not configured; cannot decrypt the vault.',
+        });
+        return;
+      }
+
+      const value = readStepSecretValue(vaultManager, passphrase, descriptor, projectId);
+      if (value === null || value.length === 0) {
+        res.status(404).json({
+          error: `No vault entry stored for ${descriptor.label}. Connect the source integration first.`,
+        });
+        return;
+      }
+
+      res.json({
+        stepKey,
+        name: descriptor.name,
+        label: descriptor.label,
+        contentType: descriptor.contentType,
+        destination: descriptor.destination,
+        value,
+        length: value.length,
+      });
+    },
+  );
 
   // -------------------------------------------------------------------------
   // POST /api/projects/:projectId/provisioning/plan/node/reset/manual-complete
@@ -3318,7 +4567,7 @@ export function createApiRouter(
         repo_name: projectResourceSlug(projModule.project),
         branch_protection_rules: defaultBranchRules,
         environments: (plan.environments as Array<'development' | 'preview' | 'production'>),
-        workflow_templates: ['build', 'deploy'],
+        workflow_templates: buildGitHubWorkflowTemplates(plan),
       };
 
       const githubToken = gitHubConnectionService.getStoredGitHubToken();
@@ -3333,8 +4582,45 @@ export function createApiRouter(
       const stepHandler = globalStepHandlerRegistry.get(nodeKey);
 
       const registry = new ProviderRegistry();
+      const providerConfigsByProvider = new Map<string, ProviderConfig>();
       if (githubToken) {
+        providerConfigsByProvider.set('github', githubManifestConfig);
         registry.register('github', new GitHubAdapter(new HttpGitHubApiClient(githubToken)));
+      }
+      const expoTokenForRevalidate = easConnectionService.getStoredExpoToken();
+      if (planUsesEasProvider(plan) && expoTokenForRevalidate) {
+        const ghForEas = githubToken ? new HttpGitHubApiClient(githubToken) : undefined;
+        providerConfigsByProvider.set('eas', buildEasManifestConfig(projectManager, projectId, plan));
+        registry.register(
+          'eas',
+          new EasAdapter(new ExpoGraphqlEasApiClient(expoTokenForRevalidate), undefined, ghForEas),
+        );
+      }
+      if (planUsesAppleProvider(plan)) {
+        providerConfigsByProvider.set('apple', buildAppleManifestConfig(projectId, plan));
+        registry.register('apple', new AppleAdapter());
+      }
+      if (planUsesCloudflareProvider(plan)) {
+        providerConfigsByProvider.set('cloudflare', buildCloudflareManifestConfig(projectId));
+        registry.register('cloudflare', buildCloudflareAdapter(projectId));
+      }
+      if (planUsesOauthProvider(plan)) {
+        providerConfigsByProvider.set('oauth', buildOauthManifestConfig(projectId, plan));
+        registry.register(
+          'oauth',
+          new OAuthAdapter(
+            new StudioOAuthApiClient((studioProjectId, reason) =>
+              gcpConnectionService.getAccessToken(studioProjectId, reason),
+            ),
+          ),
+        );
+      }
+
+      if (node.provider === 'eas' && !stepHandler && !expoTokenForRevalidate) {
+        res.status(400).json({
+          error: 'Expo / EAS is not connected. Add an Expo access token before revalidating EAS steps.',
+        });
+        return;
       }
 
       if (!stepHandler && !registry.hasAdapter(node.provider)) {
@@ -3382,23 +4668,26 @@ export function createApiRouter(
         const context: StepContext = {
           projectId,
           environment: item.environment ?? 'global',
-          upstreamResources: { ...upstream },
+          upstreamResources: { ...upstream, ...(existing?.userInputs ?? {}) },
           vaultRead,
           vaultWrite: async () => { },
         };
 
-        const configForProvider =
-          node.provider === 'github' ? githubManifestConfig : ({} as GitHubManifestConfig);
+        const configForProvider = providerConfigsByProvider.get(node.provider) ?? ({} as ProviderConfig);
 
         try {
           let stillValid = false;
           let resourcesProduced: Record<string, string> | undefined;
 
           if (stepHandler) {
-            // Use StepHandlerRegistry for Firebase and other registered steps
+            // Use StepHandlerRegistry for Firebase and other registered steps.
+            // Try sync first so handlers can discover/link existing resources
+            // before strict validation (e.g. existing GCP project not yet in vault).
             const handlerContext = {
               projectId,
+              environment: item.environment,
               upstreamArtifacts: { ...upstream },
+              userInputs: existing?.userInputs,
               getToken: async (providerId: string) => {
                 if (providerId === 'gcp') return gcpConnectionService.getAccessToken(projectId, `revalidate:${nodeKey}`);
                 throw new Error(`No token provider for "${providerId}".`);
@@ -3408,7 +4697,25 @@ export function createApiRouter(
               passphrase: vaultPassphrase,
               projectManager,
             };
-            const handlerResult = await stepHandler.validate(handlerContext);
+            let handlerResult = await stepHandler.sync(handlerContext);
+            if (handlerResult === null) {
+              handlerResult = await stepHandler.validate(handlerContext);
+            }
+            if (!handlerResult.reconciled && handlerResult.suggestsReauth) {
+              savePersistedPlan(projectId, plan);
+              const oauthResult = await gcpConnectionService.startProjectOAuthFlow(projectId);
+              console.log(
+                `[studio-api] plan/revalidate: Step "${nodeKey}" requires re-auth — started OAuth session ${oauthResult.sessionId}`,
+              );
+              res.json({
+                ok: false,
+                needsReauth: true,
+                sessionId: oauthResult.sessionId,
+                authUrl: oauthResult.authUrl,
+                projectId,
+              });
+              return;
+            }
             stillValid = handlerResult.reconciled;
             resourcesProduced = handlerResult.resourcesProduced;
           } else if (adapter?.checkStep) {
@@ -3493,7 +4800,13 @@ export function createApiRouter(
       if (!plan) {
         const environments = normalizeExpoEnvironments(_module.project.environments);
         const providers: ProviderType[] = ['firebase', 'github', 'eas'];
-        plan = buildProvisioningPlan(projectId, providers, environments);
+        plan = buildProvisioningPlan(
+          projectId,
+          providers,
+          environments,
+          undefined,
+          _module.project.platforms ?? [],
+        );
         savePersistedPlan(projectId, plan);
       }
 
@@ -3508,17 +4821,36 @@ export function createApiRouter(
       }
 
       // GitHub is optional for sync — Firebase steps sync independently of GitHub.
-      // Register the GitHub adapter only when a token is available so GitHub steps
-      // can also be checked; if not available, GitHub steps are left as-is.
-      const githubToken = gitHubConnectionService.getStoredGitHubToken();
+      // Register the GitHub adapter only when a token is available and still valid.
+      let githubToken = gitHubConnectionService.getStoredGitHubToken();
+      let githubAuthFailureMessage: string | null = null;
+      if (githubToken) {
+        try {
+          await gitHubConnectionService.syncGitHubIntegrationFromCredentialStore();
+        } catch (err) {
+          const error = err as Error;
+          if (isGitHubAuthFailure(error)) {
+            githubAuthFailureMessage = error.message;
+            gitHubConnectionService.disconnect();
+            githubToken = undefined;
+            console.warn(
+              `[studio-api] plan/sync: cleared invalid GitHub PAT after auth failure: ${error.message}`,
+            );
+          } else {
+            throw error;
+          }
+        }
+      }
       logStudioApiAction('provisioning/plan/sync POST', {
         projectId,
         phase: 'start',
         githubTokenPresent: !!githubToken,
+        githubAuthFailure: githubAuthFailureMessage ? 'cleared-invalid-token' : 'none',
         ...summarizeProvisionPlanForLog(plan),
       });
 
       const registry = new ProviderRegistry();
+      const providerConfigsByProvider = new Map<string, ProviderConfig>();
       if (githubToken) {
         const org = projectManager.getOrganization();
         const orgGithubConfig = org.integrations.github?.config ?? {};
@@ -3537,9 +4869,32 @@ export function createApiRouter(
             { branch: 'develop', require_reviews: false, dismiss_stale_reviews: false, require_status_checks: true },
           ],
           environments: plan.environments as Array<'development' | 'preview' | 'production'>,
-          workflow_templates: ['build', 'deploy'],
+          workflow_templates: buildGitHubWorkflowTemplates(plan),
         };
+        providerConfigsByProvider.set('github', githubManifestConfig);
         registry.register('github', new GitHubAdapter(new HttpGitHubApiClient(githubToken)));
+      }
+      if (planUsesAppleProvider(plan)) {
+        const appleConfig = buildAppleManifestConfig(projectId, plan);
+        providerConfigsByProvider.set('apple', appleConfig);
+        registry.register('apple', new AppleAdapter());
+      }
+      if (planUsesCloudflareProvider(plan)) {
+        const cloudflareConfig = buildCloudflareManifestConfig(projectId);
+        providerConfigsByProvider.set('cloudflare', cloudflareConfig);
+        registry.register('cloudflare', buildCloudflareAdapter(projectId));
+      }
+      if (planUsesOauthProvider(plan)) {
+        const oauthConfig = buildOauthManifestConfig(projectId, plan);
+        providerConfigsByProvider.set('oauth', oauthConfig);
+        registry.register(
+          'oauth',
+          new OAuthAdapter(
+            new StudioOAuthApiClient((studioProjectId, reason) =>
+              gcpConnectionService.getAccessToken(studioProjectId, reason),
+            ),
+          ),
+        );
       }
 
       const vaultRead = createVaultReader(vaultManager);
@@ -3550,19 +4905,25 @@ export function createApiRouter(
         gcpConnectionService,
         easConnectionService,
         getGitHubToken: () => gitHubConnectionService.getStoredGitHubToken(),
+        getCloudflareToken: (id) => getCloudflareTokenForProject(id),
+        checkCloudflareZoneOwnership: checkCloudflareZoneOwnershipForContext,
+        checkExpoGitHubInstall: checkExpoGitHubInstallForContext,
       });
 
       const gateNodeKeys = plan.nodes
         .filter((n) => n.type === 'user-action')
         .map((n) => n.key);
+      const gateUpstream = collectCompletedUpstreamArtifacts(plan);
+      applyProjectDomainToUpstreamArtifacts(gateUpstream, projectManager.getProject(projectId).project);
       for (const nodeKey of gateNodeKeys) {
         const existing = plan.nodeStates.get(nodeKey);
-        if (existing?.status === 'completed') continue;
+        const alwaysRecheck = nodeKey === 'user:install-expo-github-app';
+        if (existing?.status === 'completed' && !alwaysRecheck) continue;
         try {
           const gateResult = await syncGateResolver.canResolve(nodeKey, {
             projectId,
             environment: 'global',
-            upstreamResources: {},
+            upstreamResources: { ...gateUpstream },
             vaultRead,
             vaultWrite: async () => { },
           });
@@ -3582,6 +4943,13 @@ export function createApiRouter(
                 }
               }
             }
+            Object.assign(gateUpstream, gateResult.resourcesProduced);
+          } else if (alwaysRecheck && existing?.status === 'completed') {
+            plan.nodeStates.set(nodeKey, {
+              nodeKey,
+              status: 'not-started',
+              ...(existing?.userInputs ? { userInputs: existing.userInputs } : {}),
+            });
           }
         } catch { /* resolver failed — leave gate as-is */ }
       }
@@ -3601,7 +4969,10 @@ export function createApiRouter(
         const executionGroups = StepResolver.resolveExecutionPlan(currentPlan.nodes, currentPlan.environments);
 
         const upstreamResources: Record<string, string> = {
-          ...projectDomainUpstreamSeed(projectManager.getProject(projectId).project),
+          ...buildInitialUpstreamSeed(
+            projectManager.getProject(projectId).project,
+            projectManager.getOrganization(),
+          ),
         };
         const failedNodeKeys = new Set<string>();
 
@@ -3617,7 +4988,11 @@ export function createApiRouter(
             // Firebase steps and any other StepHandler-backed step are re-validated against live APIs.
             const isFirebaseStep = node.provider === 'firebase' && node.type === 'step';
             const stepHasHandler = node.type === 'step' && globalStepHandlerRegistry.has(baseStepKey);
-            if (existingState?.status === 'completed' && !isFirebaseStep && !stepHasHandler) {
+            const adapterCanCheck =
+              node.type === 'step' &&
+              registry.hasAdapter(node.provider) &&
+              !!registry.getAdapter(node.provider).checkStep;
+            if (existingState?.status === 'completed' && !isFirebaseStep && !stepHasHandler && !adapterCanCheck) {
               if (existingState.resourcesProduced) {
                 Object.assign(upstreamResources, existingState.resourcesProduced);
               }
@@ -3743,6 +5118,7 @@ export function createApiRouter(
 
                 const handlerContext = {
                   projectId: currentPlan.projectId,
+                  environment: item.environment,
                   upstreamArtifacts: { ...upstreamResources },
                   userInputs: existingState?.userInputs,
                   getToken: async (providerId: string) => {
@@ -3859,8 +5235,10 @@ export function createApiRouter(
               item.environment,
             );
 
-            // configForProvider is provider-specific manifest config.
-            const configForProvider = {} as ProviderConfig;
+            const configForProvider = providerConfigsByProvider.get(node.provider);
+            if (!configForProvider) {
+              continue;
+            }
 
             const context: StepContext = {
               projectId: currentPlan.projectId,
@@ -3895,11 +5273,12 @@ export function createApiRouter(
                   nodeKey: item.nodeKey,
                   status: 'not-started',
                   environment: item.environment,
+                  error: result.error,
                   ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
                 });
                 wsHandler.broadcastStepProgress(
                   projectId, item.nodeKey, 'step', 'ready',
-                  item.environment,
+                  item.environment, undefined, result.error,
                 );
               }
             } catch {
@@ -3908,11 +5287,12 @@ export function createApiRouter(
                 nodeKey: item.nodeKey,
                 status: 'not-started',
                 environment: item.environment,
+                error: 'Step sync check failed unexpectedly. Re-run provisioning for this step.',
                 ...(existingState?.userInputs ? { userInputs: existingState.userInputs } : {}),
               });
               wsHandler.broadcastStepProgress(
                 projectId, item.nodeKey, 'step', 'ready',
-                item.environment,
+                item.environment, undefined, 'Step sync check failed unexpectedly. Re-run provisioning for this step.',
               );
             }
           }

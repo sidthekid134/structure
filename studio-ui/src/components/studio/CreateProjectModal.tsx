@@ -1,5 +1,5 @@
 import { X } from 'lucide-react';
-import type { ModuleId, ProjectTemplateId } from './types';
+import type { ModuleId, MobilePlatform, ProjectTemplateId } from './types';
 import { isValidAppHostname } from './helpers';
 
 export type CreateProjectForm = {
@@ -8,12 +8,14 @@ export type CreateProjectForm = {
   domain: string;
   description: string;
   environments: string[];
+  platforms: MobilePlatform[];
   templateId: ProjectTemplateId;
   modules: ModuleId[];
 };
 
 export const REQUIRED_ENVIRONMENTS: string[] = ['preview', 'production'];
 export const DEFAULT_ENVIRONMENTS: string[] = [...REQUIRED_ENVIRONMENTS];
+export const DEFAULT_PLATFORMS: MobilePlatform[] = ['ios', 'android'];
 export const DEFAULT_MODULE_IDS: ModuleId[] = [
   'firebase-core',
   'firebase-auth',
@@ -49,11 +51,23 @@ export function CreateProjectModal({
     onChange({ ...form, environments: [...REQUIRED_ENVIRONMENTS] });
   }
 
+  const platforms = form.platforms.length > 0 ? form.platforms : DEFAULT_PLATFORMS;
+  function togglePlatform(platform: MobilePlatform, enabled: boolean) {
+    const current = new Set(platforms);
+    if (enabled) {
+      current.add(platform);
+    } else {
+      current.delete(platform);
+    }
+    onChange({ ...form, platforms: Array.from(current) as MobilePlatform[] });
+  }
+
   const canCreate =
     form.name.trim() &&
     form.slug.trim() &&
     isValidAppHostname(form.domain) &&
-    form.modules.length > 0;
+    form.modules.length > 0 &&
+    platforms.length > 0;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4" onClick={onClose}>
@@ -139,6 +153,42 @@ export function CreateProjectModal({
               </label>
               <p className="mt-1 text-[11px] text-muted-foreground">
                 Expo supports only development, preview, and production.
+              </p>
+            </div>
+
+            <div className="col-span-full">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-muted-foreground">
+                  Mobile platforms <span className="text-red-500">*</span>
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {(['ios', 'android'] as MobilePlatform[]).map((platform) => {
+                  const active = platforms.includes(platform);
+                  return (
+                    <label
+                      key={platform}
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs cursor-pointer ${
+                        active
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border bg-muted text-muted-foreground'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={active}
+                        onChange={(e) => togglePlatform(platform, e.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-border"
+                      />
+                      <span className="font-mono">{platform}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Pick at least one. Pick only one to keep the provisioning plan focused on
+                that platform — sign-ins (Google / Apple / email) and Firebase auth still work
+                independently of the other platform.
               </p>
             </div>
           </div>

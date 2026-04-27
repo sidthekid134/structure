@@ -23,7 +23,7 @@ import type {
 const MODULES: ModuleDefinition[] = [
   {
     id: 'firebase-core',
-    label: 'Firebase Core',
+    label: 'GCP Core',
     description: 'Project + service account bootstrap.',
     provider: 'firebase',
     functionGroupId: 'cloud-foundation',

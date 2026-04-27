@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isValidProjectDomain, normalizeProjectDomain } from './project-identity.js';
+import type { MobilePlatform } from '../provisioning/graph.types.js';
 
 export type IntegrationProvider =
   | 'firebase'
@@ -11,7 +12,7 @@ export type IntegrationProvider =
   | 'cloudflare'
   | 'oauth';
 
-export type MobilePlatform = 'ios' | 'android';
+export type { MobilePlatform };
 
 export interface ProjectInfo {
   id: string;
@@ -138,7 +139,19 @@ export class ProjectManager {
   getProject(projectId: string): ProjectModule {
     const modulePath = this.modulePath(projectId);
     const raw = fs.readFileSync(modulePath, 'utf8');
-    return JSON.parse(raw) as ProjectModule;
+    const parsed = JSON.parse(raw) as ProjectModule;
+    // Backfill platform metadata for projects created before
+    // `platforms` was introduced. Falls back to derive from the
+    // legacy `platform` field when present, otherwise both platforms.
+    if (!Array.isArray(parsed.project.platforms) || parsed.project.platforms.length === 0) {
+      const legacy = parsed.project.platform;
+      if (legacy === 'ios' || legacy === 'android') {
+        parsed.project.platforms = [legacy];
+      } else {
+        parsed.project.platforms = [...DEFAULT_PLATFORMS];
+      }
+    }
+    return parsed;
   }
 
   deleteProject(projectId: string): void {

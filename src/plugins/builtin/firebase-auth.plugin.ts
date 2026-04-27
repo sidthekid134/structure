@@ -26,7 +26,9 @@ export const firebaseAuthPlugin: PluginDefinition = {
     FIREBASE_STEPS.find((s) => s.key === 'firebase:enable-auth')!,
     OAUTH_STEPS.find((s) => s.key === 'oauth:enable-auth-providers')!,
     OAUTH_STEPS.find((s) => s.key === 'oauth:enable-google-sign-in')!,
-    OAUTH_STEPS.find((s) => s.key === 'oauth:register-oauth-clients')!,
+    OAUTH_STEPS.find((s) => s.key === 'oauth:register-oauth-client-web')!,
+    OAUTH_STEPS.find((s) => s.key === 'oauth:register-oauth-client-ios')!,
+    OAUTH_STEPS.find((s) => s.key === 'oauth:register-oauth-client-android')!,
     OAUTH_STEPS.find((s) => s.key === 'oauth:configure-redirect-uris')!,
   ],
   teardownSteps: [
@@ -65,6 +67,64 @@ export const firebaseAuthPlugin: PluginDefinition = {
         { label: 'Google Cloud Console', href: 'https://console.cloud.google.com/apis/credentials' },
       ],
     },
+    oauth_redirect_uri_primary: {
+      relatedLinks: [
+        {
+          label: 'Firebase Auth settings',
+          hrefTemplate:
+            'https://console.firebase.google.com/project/{upstream.firebase_project_id}/authentication/settings',
+        },
+      ],
+    },
+    oauth_redirect_uri_firebase: {
+      relatedLinks: [
+        {
+          label: 'Firebase Auth settings',
+          hrefTemplate:
+            'https://console.firebase.google.com/project/{upstream.firebase_project_id}/authentication/settings',
+        },
+      ],
+    },
+    oauth_authorized_domain_primary: {
+      relatedLinks: [
+        {
+          label: 'Firebase Authorized domains',
+          hrefTemplate:
+            'https://console.firebase.google.com/project/{upstream.firebase_project_id}/authentication/settings',
+        },
+        {
+          label: 'Open domain',
+          hrefTemplate: 'https://{value}',
+        },
+      ],
+    },
+    oauth_authorized_domain_deep_link: {
+      relatedLinks: [
+        {
+          label: 'Firebase Authorized domains',
+          hrefTemplate:
+            'https://console.firebase.google.com/project/{upstream.firebase_project_id}/authentication/settings',
+        },
+        {
+          label: 'Open deep link host',
+          hrefTemplate: 'https://{value}',
+        },
+      ],
+    },
+  },
+  completionPortalLinks: {
+    'oauth:configure-redirect-uris': [
+      {
+        label: 'Firebase Auth settings',
+        hrefTemplate:
+          'https://console.firebase.google.com/project/{upstream.firebase_project_id}/authentication/settings',
+      },
+      {
+        label: 'Google Cloud OAuth credentials',
+        hrefTemplate:
+          'https://console.cloud.google.com/apis/credentials?project={upstream.gcp_project_id}',
+      },
+    ],
   },
   functionGroup: {
     id: 'firebase',

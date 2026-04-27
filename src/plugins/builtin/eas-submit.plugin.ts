@@ -9,6 +9,8 @@ export const easSubmitPlugin: PluginDefinition = {
   provider: 'eas',
   requiredModules: ['eas-builds'],
   optionalModules: ['apple-signing', 'google-play-publishing'],
+  // platforms left unset: this module owns both ios + android sub-steps;
+  // the planner filters individual steps via their own `platforms` mask.
   includedInTemplates: ['mobile-app'],
   steps: [
     EAS_STEPS.find((s) => s.key === 'eas:configure-submit-apple')!,
@@ -28,6 +30,13 @@ export const easSubmitPlugin: PluginDefinition = {
     },
   },
   defaultJourneyPhase: 'mobile_build',
+  completionPortalLinks: {
+    'eas:configure-submit-apple': [
+      { label: 'App Store Connect', href: 'https://appstoreconnect.apple.com/' },
+      { label: 'TestFlight', href: 'https://appstoreconnect.apple.com/apps' },
+      { label: 'EAS Submit docs', href: 'https://docs.expo.dev/submit/introduction/' },
+    ],
+  },
   functionGroup: {
     id: 'mobile',
     label: 'Mobile & App Stores',

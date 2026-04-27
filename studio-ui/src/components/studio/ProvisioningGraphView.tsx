@@ -22,15 +22,18 @@ import {
   Zap,
 } from 'lucide-react';
 import type {
+  CompletionPortalLink,
   NodeState,
   NodeStatus,
   ProvisioningGraphNode,
   ProvisioningPlanResponse,
+  ResourceDisplayConfig,
   ResourceOutput,
   UserActionNode,
   ProvisioningStepNode,
 } from './types';
 import { OAuthFlowPanel } from './OAuthFlowPanel';
+import { StepSecretsPanel, stepHasVaultSecrets } from './StepSecretsPanel';
 import { api, provisioningNodeDescription } from './helpers';
 import { useOAuthSession } from '../../hooks/useOAuthSession';
 import { effectiveUserActionInteractiveAction } from './user-action-interactive';
@@ -249,8 +252,8 @@ function categoryIcon(category: string) {
 // Resource display helpers (registry-driven — see provisioning-display-registry.ts)
 // ---------------------------------------------------------------------------
 
-function ResourceValueChip({ resource, value, upstream }: { resource: ResourceOutput; value: string; upstream: Record<string, string> }) {
-  const pres = mergeResourcePresentation(resource);
+function ResourceValueChip({ resource, value, upstream, resourceDisplayByKey }: { resource: ResourceOutput; value: string; upstream: Record<string, string>; resourceDisplayByKey?: Record<string, ResourceDisplayConfig> }) {
+  const pres = mergeResourcePresentation(resource, resourceDisplayByKey);
   const secured = pres.sensitive || isVaultPlaceholder(value);
   const link = !secured ? getPrimaryHref(pres, value, upstream) : null;
 
@@ -293,9 +296,10 @@ interface ResourcesSectionProps {
   nodeStates: Record<string, NodeState>;
   environments: string[];
   upstream: Record<string, string>;
+  resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
 }
 
-function ResourcesSection({ node, nodeStates, environments, upstream }: ResourcesSectionProps) {
+function ResourcesSection({ node, nodeStates, environments, upstream, resourceDisplayByKey }: ResourcesSectionProps) {
   if (node.produces.length === 0) return null;
 
   // Gather all actual produced values across all state keys for this node
@@ -325,7 +329,7 @@ function ResourcesSection({ node, nodeStates, environments, upstream }: Resource
         {node.produces.map((r) => {
           const value = allProduced[r.key];
           if (hasValues && value) {
-            return <ResourceValueChip key={r.key} resource={r} value={value} upstream={upstream} />;
+            return <ResourceValueChip key={r.key} resource={r} value={value} upstream={upstream} resourceDisplayByKey={resourceDisplayByKey} />;
           }
           return (
             <span key={r.key} className="text-[10px] font-mono bg-muted border border-border px-1.5 py-0.5 rounded text-muted-foreground" title={r.description}>
@@ -353,15 +357,19 @@ interface NodeCardProps {
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
   providerDisplayMeta?: Record<string, { label: string; color: string; bg: string; border: string }>;
+  resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
+  portalLinksByNodeKey?: Record<string, CompletionPortalLink[]>;
 }
 
-function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta }: NodeCardProps) {
+function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: NodeCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [credentialInput, setCredentialInput] = useState('');
   const [userActionBusy, setUserActionBusy] = useState(false);
   const [localInputs, setLocalInputs] = useState<Record<string, string>>({});
   const [inputsDirty, setInputsDirty] = useState(false);
   const [savingInputs, setSavingInputs] = useState(false);
+  const [githubOwnerOptions, setGithubOwnerOptions] = useState<string[]>([]);
+  const [refreshingGithubOwners, setRefreshingGithubOwners] = useState(false);
 
   const stepNode = node.type === 'step' ? (node as ProvisioningStepNode) : null;
   const hasInputFields = stepNode?.inputFields && stepNode.inputFields.length > 0;
@@ -406,6 +414,42 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
     }
   };
 
+  const refreshGithubOwnerOptions = useCallback(async () => {
+    setRefreshingGithubOwners(true);
+    try {
+      const result = await api<{
+        connected?: boolean;
+        details?: { username?: string; orgNames?: string[] };
+      }>('/api/integrations/github/connection');
+      const username = result.details?.username?.trim() ?? '';
+      const orgNames = (result.details?.orgNames ?? [])
+        .map((name) => name.trim())
+        .filter(Boolean);
+      const options = Array.from(new Set([username, ...orgNames].filter(Boolean)));
+      setGithubOwnerOptions(options);
+      if (options.length > 0) {
+        setLocalInputs((prev) => {
+          const current = prev['github_owner']?.trim();
+          if (current) return prev;
+          return { ...prev, github_owner: options[0] };
+        });
+        setInputsDirty(true);
+      }
+    } catch {
+      // Let users retry manually; avoid noisy card-level errors.
+    } finally {
+      setRefreshingGithubOwners(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!stepNode?.inputFields?.some((field) => field.key === 'github_owner')) {
+      setGithubOwnerOptions([]);
+      return;
+    }
+    void refreshGithubOwnerOptions();
+  }, [stepNode?.key, stepNode?.inputFields, refreshGithubOwnerOptions]);
+
   const completeUserAction = async () => {
     setUserActionBusy(true);
     try {
@@ -416,7 +460,10 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
   };
 
   const upstream = useMemo(() => collectUpstreamResources(nodeStates), [nodeStates]);
-  const portalLinks = useMemo(() => resolvedNodePortalLinks(node, upstream), [node, upstream]);
+  const portalLinks = useMemo(
+    () => resolvedNodePortalLinks(node, upstream, portalLinksByNodeKey),
+    [node, upstream, portalLinksByNodeKey],
+  );
 
   const effectiveStatus = getEffectiveStatus(node, nodeStates, environments);
   const meta = getProviderMeta(node, providerDisplayMeta);
@@ -623,27 +670,73 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
                       {field.description && (
                         <p className="text-[10px] text-muted-foreground leading-snug">{field.description}</p>
                       )}
-                      {field.type === 'select' && field.options ? (
-                        <select
-                          value={localInputs[field.key] ?? field.defaultValue ?? ''}
-                          onChange={(e) => handleInputChange(field.key, e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-full text-xs bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
-                        >
-                          {field.options.map((opt) => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          value={localInputs[field.key] ?? ''}
-                          onChange={(e) => handleInputChange(field.key, e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          placeholder={field.placeholder}
-                          className="w-full text-xs font-mono bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
-                        />
-                      )}
+                      {(() => {
+                        const isGithubOwnerField = field.key === 'github_owner';
+                        const selectOptions = isGithubOwnerField
+                          ? githubOwnerOptions
+                          : (field.options ?? []);
+                        const renderSelect = (field.type === 'select' && selectOptions.length > 0) ||
+                          (isGithubOwnerField && selectOptions.length > 0);
+                        const value = localInputs[field.key] ?? field.defaultValue ?? '';
+                        if (renderSelect) {
+                          return (
+                            <div className="flex items-center gap-2">
+                              <select
+                                value={value}
+                                onChange={(e) => handleInputChange(field.key, e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full text-xs bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                              >
+                                {selectOptions.map((opt) => (
+                                  <option key={opt} value={opt}>{opt}</option>
+                                ))}
+                              </select>
+                              {isGithubOwnerField && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void refreshGithubOwnerOptions();
+                                  }}
+                                  disabled={refreshingGithubOwners}
+                                  title="Refresh GitHub org memberships from PAT"
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold rounded-md border border-border px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  {refreshingGithubOwners ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                                  Refresh
+                                </button>
+                              )}
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={localInputs[field.key] ?? ''}
+                              onChange={(e) => handleInputChange(field.key, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              placeholder={field.placeholder}
+                              className="w-full text-xs font-mono bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                            />
+                            {isGithubOwnerField && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void refreshGithubOwnerOptions();
+                                }}
+                                disabled={refreshingGithubOwners}
+                                title="Refresh GitHub org memberships from PAT"
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold rounded-md border border-border px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                {refreshingGithubOwners ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                                Refresh
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   ))}
                   <button
@@ -691,7 +784,7 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               )}
 
               {/* Resources produced */}
-              <ResourcesSection node={node} nodeStates={nodeStates} environments={environments} upstream={upstream} />
+              <ResourcesSection node={node} nodeStates={nodeStates} environments={environments} upstream={upstream} resourceDisplayByKey={resourceDisplayByKey} />
 
               {/* Node-level portal links (docs, dashboards, settings) */}
               {portalLinks.length > 0 && (
@@ -710,6 +803,11 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
                     </a>
                   ))}
                 </div>
+              )}
+
+              {/* Vault secrets uploaded by this step (e.g. EXPO_TOKEN, FIREBASE_SERVICE_ACCOUNT) */}
+              {node.type === 'step' && stepHasVaultSecrets(node.key) && (
+                <StepSecretsPanel projectId={projectId} stepKey={node.key} />
               )}
 
               {/* OAuth step nodes: the RUN button triggers the OAuth flow automatically
@@ -838,9 +936,11 @@ interface PhaseGroupProps {
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
   providerDisplayMeta?: Record<string, { label: string; color: string; bg: string; border: string }>;
+  resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
+  portalLinksByNodeKey?: Record<string, CompletionPortalLink[]>;
 }
 
-function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, onUserActionComplete, onRunNodes, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta }: PhaseGroupProps) {
+function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, onUserActionComplete, onRunNodes, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: PhaseGroupProps) {
   const [expanded, setExpanded] = useState(true);
 
   const statuses = phase.nodes.map((n) => getEffectiveStatus(n, nodeStates, environments));
@@ -962,6 +1062,8 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
                   onSyncAndRefresh={onSyncAndRefresh}
                   isGloballyRunning={isGloballyRunning}
                   providerDisplayMeta={providerDisplayMeta}
+                  resourceDisplayByKey={resourceDisplayByKey}
+                  portalLinksByNodeKey={portalLinksByNodeKey}
                 />
               ))}
             </div>
@@ -1317,6 +1419,8 @@ export function ProvisioningGraphView({
             onSyncAndRefresh={handleSyncAndRefresh}
             isGloballyRunning={!!(overallStats?.isRunning || isRunning)}
             providerDisplayMeta={plan.providerDisplayMeta}
+            resourceDisplayByKey={plan.resourceDisplayByKey}
+            portalLinksByNodeKey={plan.portalLinksByNodeKey}
           />
         ))}
       </div>

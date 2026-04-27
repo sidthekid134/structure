@@ -27,6 +27,7 @@ export const googlePlayPlugin: PluginDefinition = {
   requiredModules: [],
   optionalModules: ['eas-submit'],
   includedInTemplates: ['mobile-app'],
+  platforms: ['android'],
   steps: [
     GOOGLE_PLAY_STEPS.find((s) => s.key === 'google-play:create-app-listing')!,
     GOOGLE_PLAY_STEPS.find((s) => s.key === 'google-play:create-service-account')!,

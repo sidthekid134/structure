@@ -115,6 +115,9 @@ export class StudioServer {
         if (!req.originalUrl.startsWith('/api')) {
           return;
         }
+        if (req.originalUrl === '/api/health' || req.originalUrl.startsWith('/api/health?')) {
+          return;
+        }
         const durationMs = Date.now() - start;
         const message = `[studio-api] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms)`;
         if (res.statusCode >= 500) {

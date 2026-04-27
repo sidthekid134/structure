@@ -73,6 +73,13 @@ export function validateClientId(clientId: string, provider: OAuthProvider): voi
       '',
     );
   }
+  if (provider === 'apple' && !/^[A-Za-z0-9.-]+\.[A-Za-z0-9.-]+$/.test(clientId)) {
+    throw new GcpHttpError(
+      'Apple Service ID must look like a reverse-domain identifier (for example: com.example.signin).',
+      400,
+      '',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

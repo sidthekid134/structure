@@ -284,6 +284,7 @@ export class PluginRegistry {
         stepKeys: plugin.steps.map((s) => s.key),
         teardownStepKeys: plugin.teardownSteps.map((s) => s.key),
         userActionKeys: plugin.userActions.map((a) => a.key),
+        platforms: plugin.platforms,
       };
     }
     return catalog;

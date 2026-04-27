@@ -25,8 +25,9 @@ const DEFAULT_SENSITIVE_KEYS = new Set([
   'gcp_credentials',
   'github_token',
   'expo_token',
-  'apns_key_p8',
   'asc_api_key_p8',
+  'apple_auth_key_p8_apns',
+  'apple_auth_key_p8_sign_in_with_apple',
 ]);
 
 /** Default presentation keyed by `ResourceOutput.key`. Extend as new resources are produced. */
@@ -97,10 +98,45 @@ const RESOURCE_DISPLAY_BY_KEY: Record<string, ResourceOutputPresentation> = {
     relatedLinks: [{ label: 'Play Console', href: 'https://play.google.com/console' }],
   },
   cloudflare_zone_id: {
-    primaryHrefTemplate: 'https://dash.cloudflare.com/?zoneId={value}',
+    primaryHrefTemplate:
+      'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
     relatedLinks: [
-      { label: 'Cloudflare dashboard', href: 'https://dash.cloudflare.com/' },
-      { label: 'DNS docs', href: 'https://developers.cloudflare.com/dns/' },
+      {
+        label: 'Zone overview',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      {
+        label: 'Zone DNS',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
+      },
+      {
+        label: 'Zone SSL/TLS',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/ssl-tls/overview',
+      },
+      { label: 'Zone dashboard fallback', hrefTemplate: 'https://dash.cloudflare.com/?zoneId={value}' },
+    ],
+  },
+  cloudflare_zone_status: {
+    relatedLinks: [
+      {
+        label: 'Zone overview',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      { label: 'Zone dashboard fallback', hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}' },
+    ],
+  },
+  cloudflare_zone_nameservers: {
+    relatedLinks: [
+      {
+        label: 'Zone overview',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      { label: 'Zone dashboard fallback', hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}' },
     ],
   },
   domain_name: {

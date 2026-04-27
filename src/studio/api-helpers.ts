@@ -39,10 +39,31 @@ export function createVaultReader(
       const githubValue = vaultManager.getCredential(passphrase, 'github', key);
       if (githubValue) return githubValue;
       const easValue = vaultManager.getCredential(passphrase, 'eas', key);
-      return easValue ?? null;
+      if (easValue) return easValue;
+      const appleValue = vaultManager.getCredential(passphrase, 'apple', key);
+      if (appleValue) return appleValue;
+      const oauthValue = vaultManager.getCredential(passphrase, 'oauth', key);
+      if (oauthValue) return oauthValue;
+      const cloudflareValue = vaultManager.getCredential(passphrase, 'cloudflare', key);
+      if (cloudflareValue) return cloudflareValue;
+      const googlePlayValue = vaultManager.getCredential(passphrase, 'google-play', key);
+      return googlePlayValue ?? null;
     } catch {
       return null;
     }
+  };
+}
+
+export function createVaultWriter(
+  vaultManager: VaultManager,
+  providerId = 'firebase',
+): (key: string, value: string) => Promise<void> {
+  return async (key: string, value: string): Promise<void> => {
+    const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
+    if (!passphrase) {
+      throw new Error('STUDIO_VAULT_PASSPHRASE is required to write provisioning credentials.');
+    }
+    vaultManager.setCredential(passphrase, providerId, key, value);
   };
 }
 
@@ -75,8 +96,18 @@ export function buildGitHubManifestConfig(
     repo_name: projectResourceSlug(module.project),
     branch_protection_rules: DEFAULT_BRANCH_RULES,
     environments: plan.environments as Array<'development' | 'preview' | 'production'>,
-    workflow_templates: ['build', 'deploy'],
+    workflow_templates: buildGitHubWorkflowTemplates(plan),
   };
+}
+
+export function buildGitHubWorkflowTemplates(plan: ProvisioningPlan): string[] {
+  if (planUsesEasProvider(plan)) {
+    // expo-testflight.yml already runs the EAS build (`eas build --platform
+    // ios --profile production`) before submitting, so a separate generic
+    // `build.yml` doing `npm run build` would be a redundant CI job.
+    return ['expo-testflight'];
+  }
+  return ['build', 'deploy'];
 }
 
 export function buildFirebaseManifestConfig(

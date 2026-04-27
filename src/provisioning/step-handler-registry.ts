@@ -20,6 +20,14 @@ import type { ProjectManager } from '../studio/project-manager.js';
 
 export interface StepHandlerContext {
   projectId: string;
+  /**
+   * Studio environment for per-environment steps (e.g. `'development'`,
+   * `'preview'`, `'production'`). Undefined for global-scope steps and for
+   * delete operations (revert is invoked once per base step, not per env).
+   * Per-env handlers that need to clean up across all envs during delete
+   * should iterate `projectManager.getProject(...).project.environments`.
+   */
+  environment?: string;
   /** Artifacts produced by upstream steps (key = ResourceOutput.key). */
   upstreamArtifacts: Record<string, string>;
   /** User-provided input values for steps with inputFields. */

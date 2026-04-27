@@ -122,6 +122,9 @@ export interface GooglePlayManifestConfig {
 export interface CloudflareManifestConfig {
   readonly provider: 'cloudflare';
   domain: string;
+  zone_domain?: string;
+  domain_mode?: 'zone-root' | 'subdomain';
+  dns_record_name?: string;
   deep_link_routes: string[];
   ssl_mode: 'full' | 'flexible' | 'strict';
 }

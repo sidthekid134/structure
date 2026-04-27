@@ -8,7 +8,7 @@ import {
 export const firebaseCorePlugin: PluginDefinition = {
   id: 'firebase-core',
   version: '1.0.0',
-  label: 'Firebase Core',
+  label: 'GCP Core',
   description: 'GCP project creation, Firebase project setup, service accounts, and app registrations.',
   provider: 'firebase',
   providerMeta: {
@@ -34,6 +34,7 @@ export const firebaseCorePlugin: PluginDefinition = {
     FIREBASE_STEPS.find((s) => s.key === 'firebase:generate-sa-key')!,
     FIREBASE_STEPS.find((s) => s.key === 'firebase:register-ios-app')!,
     FIREBASE_STEPS.find((s) => s.key === 'firebase:register-android-app')!,
+    FIREBASE_STEPS.find((s) => s.key === 'firebase:register-android-sha1')!,
   ],
   teardownSteps: [
     FIREBASE_TEARDOWN_STEPS.find((s) => s.key === 'firebase:delete-gcp-project')!,
@@ -123,6 +124,13 @@ export const firebaseCorePlugin: PluginDefinition = {
     ],
     'user:setup-gcp-billing': [
       { label: 'Google Cloud billing', href: 'https://console.cloud.google.com/billing' },
+    ],
+    'firebase:register-android-sha1': [
+      {
+        label: 'View SHA fingerprints in Firebase',
+        hrefTemplate:
+          'https://console.firebase.google.com/project/{upstream.firebase_project_id}/settings/general/android:{upstream.firebase_android_app_id}',
+      },
     ],
   },
   functionGroup: {

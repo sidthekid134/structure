@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, Clock, Copy, ExternalLink, Lock, Loader2, SkipForward } from 'lucide-react';
-import type { NodeState, NodeStatus, ProvisioningGraphNode, ProvisioningPlanResponse, ResourceOutput } from './types';
+import type { NodeState, NodeStatus, ProvisioningGraphNode, ProvisioningPlanResponse, ResourceDisplayConfig, ResourceOutput } from './types';
 import {
   collectUpstreamResources,
   getPrimaryHref,
@@ -67,14 +67,16 @@ function ResourceRow({
   upstream,
   status,
   plannedName,
+  resourceDisplayByKey,
 }: {
   resource: ResourceOutput;
   value: string | undefined;
   upstream: Record<string, string>;
   status: ResourceStatus;
   plannedName?: string;
+  resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
 }) {
-  const presentation = mergeResourcePresentation(resource);
+  const presentation = mergeResourcePresentation(resource, resourceDisplayByKey);
   const secured = presentation.sensitive || (value !== undefined && isVaultPlaceholder(value));
   const primary = value !== undefined && !secured ? getPrimaryHref(presentation, value, upstream) : null;
   const related = value !== undefined && !secured ? getResolvedRelatedLinks(presentation, value, upstream) : [];
@@ -284,6 +286,7 @@ export function CompletedStepArtifactsPanel({
                       upstream={upstream}
                       status={deriveResourceStatus(produced[resource.key], envStatus)}
                       plannedName={previewsForNode?.[resource.key]}
+                      resourceDisplayByKey={plan.resourceDisplayByKey}
                     />
                   ))}
                 </div>
@@ -301,6 +304,7 @@ export function CompletedStepArtifactsPanel({
               upstream={upstream}
               status={deriveResourceStatus(globalProduced[resource.key], stepStatus)}
               plannedName={previewsForNode?.[resource.key]}
+              resourceDisplayByKey={plan.resourceDisplayByKey}
             />
           ))}
         </div>

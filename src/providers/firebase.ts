@@ -41,32 +41,45 @@ export interface FirebaseApiClient {
 /** Default stub client — logs operations without real API calls. */
 export class StubFirebaseApiClient implements FirebaseApiClient {
   async createProject(projectName: string, _billingAccountId: string): Promise<string> {
-    return `${projectName.toLowerCase().replace(/[^a-z0-9-]/g, '-')}-${Date.now()}`;
+    throw new Error(
+      'StubFirebaseApiClient cannot create Firebase projects. Configure FirebaseAdapter with a real Firebase API client.',
+    );
   }
 
   async getProject(projectId: string): Promise<{ projectId: string; displayName: string } | null> {
-    // In a real implementation, call the Firebase Management API
-    return null;
+    throw new Error(
+      'StubFirebaseApiClient cannot query Firebase projects. Configure FirebaseAdapter with a real Firebase API client.',
+    );
   }
 
   async enableService(projectId: string, service: FirebaseService): Promise<void> {
-    // In a real implementation, call the Firebase Management API
+    throw new Error(
+      `StubFirebaseApiClient cannot enable service "${service}" on "${projectId}". Configure a real Firebase API client.`,
+    );
   }
 
   async getEnabledServices(_projectId: string): Promise<FirebaseService[]> {
-    return [];
+    throw new Error(
+      'StubFirebaseApiClient cannot list enabled services. Configure FirebaseAdapter with a real Firebase API client.',
+    );
   }
 
   async getServiceAccountJson(projectId: string): Promise<string> {
-    return JSON.stringify({ type: 'service_account', project_id: projectId });
+    throw new Error(
+      `StubFirebaseApiClient cannot fetch service account JSON for "${projectId}". Configure a real Firebase API client.`,
+    );
   }
 
   async getApiKey(projectId: string): Promise<string> {
-    return `stub-api-key-${projectId}`;
+    throw new Error(
+      `StubFirebaseApiClient cannot fetch API keys for "${projectId}". Configure a real Firebase API client.`,
+    );
   }
 
   async getFcmKey(projectId: string): Promise<string> {
-    return `stub-fcm-key-${projectId}`;
+    throw new Error(
+      `StubFirebaseApiClient cannot fetch FCM keys for "${projectId}". Configure a real Firebase API client.`,
+    );
   }
 }
 
@@ -231,21 +244,11 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
         resourcesProduced: { gcp_project_id: gcpProjectId },
       };
     }
-
-    const existingId = config.existing_project_id;
-    let projectId: string;
-    if (existingId) {
-      projectId = existingId;
-    } else {
-      projectId = await this.apiClient.createProject(
-        config.project_name,
-        config.billing_account_id,
-      );
-    }
-    return {
-      status: 'completed',
-      resourcesProduced: { gcp_project_id: projectId },
-    };
+    throw new AdapterError(
+      'Firebase step execution requires a connected GCP/Firebase control plane (studioGcp).',
+      'firebase',
+      'create-gcp-project',
+    );
   }
 
   private async stepEnableFirebase(
@@ -282,11 +285,11 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
         resourcesProduced: { provisioner_sa_email: email },
       };
     }
-    const email = `platform-provisioner@${projectId}.iam.gserviceaccount.com`;
-    return {
-      status: 'completed',
-      resourcesProduced: { provisioner_sa_email: email },
-    };
+    throw new AdapterError(
+      'Creating provisioner service accounts requires studioGcp. Connect GCP OAuth first.',
+      'firebase',
+      'create-provisioner-sa',
+    );
   }
 
   private async stepBindProvisionerIam(
@@ -333,12 +336,11 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
         resourcesProduced: { service_account_json: 'vaulted' },
       };
     }
-    const saJson = await this.apiClient.getServiceAccountJson(projectId);
-    await context.vaultWrite(`${context.projectId}/service_account_json`, saJson);
-    return {
-      status: 'completed',
-      resourcesProduced: { service_account_json: 'vaulted' },
-    };
+    throw new AdapterError(
+      'Generating service account keys requires studioGcp. Connect GCP OAuth first.',
+      'firebase',
+      'generate-sa-key',
+    );
   }
 
   private async stepEnableServices(
@@ -364,7 +366,14 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
   ): Promise<StepResult> {
     const projectId = context.upstreamResources['firebase_project_id'] ?? context.upstreamResources['gcp_project_id'];
     if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'register-ios-app');
-    const appId = `1:${projectId}:ios:stub`;
+    const appId = context.upstreamResources['firebase_ios_app_id']?.trim();
+    if (!appId) {
+      throw new AdapterError(
+        'Missing firebase_ios_app_id. Register iOS app via Firebase API step handlers before continuing.',
+        'firebase',
+        'register-ios-app',
+      );
+    }
     return {
       status: 'completed',
       resourcesProduced: { firebase_ios_app_id: appId },
@@ -377,7 +386,14 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
   ): Promise<StepResult> {
     const projectId = context.upstreamResources['firebase_project_id'] ?? context.upstreamResources['gcp_project_id'];
     if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'register-android-app');
-    const appId = `1:${projectId}:android:stub`;
+    const appId = context.upstreamResources['firebase_android_app_id']?.trim();
+    if (!appId) {
+      throw new AdapterError(
+        'Missing firebase_android_app_id. Register Android app via Firebase API step handlers before continuing.',
+        'firebase',
+        'register-android-app',
+      );
+    }
     return {
       status: 'completed',
       resourcesProduced: { firebase_android_app_id: appId },
@@ -405,7 +421,24 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
   ): Promise<StepResult> {
     const projectId = context.upstreamResources['firebase_project_id'] ?? context.upstreamResources['gcp_project_id'];
     if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'configure-firestore-rules');
-    return { status: 'completed', resourcesProduced: {} };
+    const firestoreDatabaseId =
+      context.upstreamResources['firestore_database_id'] ??
+      context.upstreamResources['firebase_firestore_database_id'];
+    if (!firestoreDatabaseId) {
+      throw new AdapterError(
+        'Missing firestore_database_id. Run firebase:create-firestore-db before configuring Firestore rules.',
+        'firebase',
+        'configure-firestore-rules',
+      );
+    }
+    return {
+      status: 'completed',
+      resourcesProduced: {
+        user_persistence_store: 'firestore',
+        users_collection_path: 'users',
+        firestore_database_id: firestoreDatabaseId,
+      },
+    };
   }
 
   private async stepConfigureStorageRules(

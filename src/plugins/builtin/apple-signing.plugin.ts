@@ -11,7 +11,14 @@ export const appleSigningPlugin: PluginDefinition = {
   providerMeta: {
     label: 'Apple',
     scope: 'organization',
-    secretKeys: ['certificate_pem', 'apns_key', 'p12_password'],
+    secretKeys: [
+      'asc_issuer_id',
+      'asc_api_key_id',
+      'asc_api_key_p8',
+      'certificate_pem',
+      'apns_key',
+      'p12_password',
+    ],
     dependsOnProviders: ['github'],
     displayMeta: {
       label: 'Apple',
@@ -23,13 +30,15 @@ export const appleSigningPlugin: PluginDefinition = {
   requiredModules: [],
   optionalModules: ['eas-submit'],
   includedInTemplates: ['mobile-app'],
+  platforms: ['ios'],
   steps: [
     APPLE_STEPS.find((s) => s.key === 'apple:register-app-id')!,
-    APPLE_STEPS.find((s) => s.key === 'apple:create-dev-provisioning-profile')!,
-    APPLE_STEPS.find((s) => s.key === 'apple:create-dist-provisioning-profile')!,
+    // Provisioning profile creation (dev + distribution) is delegated to
+    // EAS Build — see apple:store-signing-in-eas. EAS uses the org-level
+    // App Store Connect Team Key to provision certs/profiles on demand.
     APPLE_STEPS.find((s) => s.key === 'apple:generate-apns-key')!,
     APPLE_STEPS.find((s) => s.key === 'apple:create-app-store-listing')!,
-    APPLE_STEPS.find((s) => s.key === 'apple:generate-asc-api-key')!,
+    APPLE_STEPS.find((s) => s.key === 'apple:configure-testflight-group')!,
     APPLE_STEPS.find((s) => s.key === 'apple:store-signing-in-eas')!,
   ],
   teardownSteps: [
@@ -54,9 +63,7 @@ export const appleSigningPlugin: PluginDefinition = {
       ...APPLE_SIGNING_FLOW,
       stepKeys: [
         'apple:generate-apns-key',
-        'apple:generate-asc-api-key',
-        'apple:create-dev-provisioning-profile',
-        'apple:create-dist-provisioning-profile',
+        'apple:store-signing-in-eas',
       ],
     },
   ],
@@ -72,19 +79,6 @@ export const appleSigningPlugin: PluginDefinition = {
         acceptedTypes: ['.p8'],
         maxSizeKb: 10,
         validator: 'apns-key-validator',
-      },
-    },
-    'apple:generate-asc-api-key': {
-      automatedPhaseDescription: 'Studio creates the API key in App Store Connect.',
-      userPhaseDescription: 'Download the .p8 key and upload it here.',
-      timeConstraint: {
-        message: 'The ASC API key can only be downloaded once. Upload it before leaving this page.',
-        urgencyLevel: 'critical',
-      },
-      fileUploadConfig: {
-        acceptedTypes: ['.p8'],
-        maxSizeKb: 10,
-        validator: 'asc-key-validator',
       },
     },
   },
@@ -107,11 +101,57 @@ export const appleSigningPlugin: PluginDefinition = {
       primaryHrefTemplate: 'https://appstoreconnect.apple.com/apps/{value}/appstore',
       relatedLinks: [{ label: 'App Store Connect', href: 'https://appstoreconnect.apple.com/' }],
     },
-    apns_key_p8: {
+    apple_auth_key_p8_apns: {
+      sensitive: true,
+    },
+    apple_auth_key_p8_sign_in_with_apple: {
       sensitive: true,
     },
     asc_api_key_p8: {
       sensitive: true,
+    },
+    apple_distribution_cert_id: {
+      relatedLinks: [
+        {
+          label: 'EAS iOS credentials',
+          hrefTemplate:
+            'https://expo.dev/accounts/{upstream.expo_account}/projects/{upstream.eas_project_slug}/credentials',
+        },
+        {
+          label: 'Apple Developer certificates',
+          href: 'https://developer.apple.com/account/resources/certificates/list',
+        },
+      ],
+    },
+    apple_distribution_cert_serial: {
+      relatedLinks: [
+        {
+          label: 'Apple Developer certificates',
+          href: 'https://developer.apple.com/account/resources/certificates/list',
+        },
+      ],
+    },
+    apple_app_store_profile_id: {
+      relatedLinks: [
+        {
+          label: 'EAS iOS credentials',
+          hrefTemplate:
+            'https://expo.dev/accounts/{upstream.expo_account}/projects/{upstream.eas_project_slug}/credentials',
+        },
+        {
+          label: 'Apple Developer profiles',
+          href: 'https://developer.apple.com/account/resources/profiles/list',
+        },
+      ],
+    },
+    eas_ios_build_credentials_id: {
+      relatedLinks: [
+        {
+          label: 'EAS iOS credentials',
+          hrefTemplate:
+            'https://expo.dev/accounts/{upstream.expo_account}/projects/{upstream.eas_project_slug}/credentials',
+        },
+      ],
     },
   },
   completionPortalLinks: {
@@ -119,6 +159,100 @@ export const appleSigningPlugin: PluginDefinition = {
       {
         label: 'Apple Developer Program',
         href: 'https://developer.apple.com/programs/enroll/',
+      },
+    ],
+    'apple:create-app-store-listing': [
+      {
+        label: 'App Store Connect - Apps',
+        href: 'https://appstoreconnect.apple.com/apps',
+      },
+      {
+        label: 'Create TestFlight groups and testers',
+        href: 'https://appstoreconnect.apple.com/access/testers',
+      },
+    ],
+    'apple:configure-testflight-group': [
+      {
+        label: 'Open the created group',
+        hrefTemplate:
+          'https://appstoreconnect.apple.com/apps/{upstream.asc_app_id}/testflight/groups/{upstream.testflight_group_id}',
+      },
+      {
+        label: 'TestFlight groups for this app',
+        hrefTemplate:
+          'https://appstoreconnect.apple.com/apps/{upstream.asc_app_id}/testflight/groups',
+      },
+      {
+        label: 'TestFlight (this app)',
+        hrefTemplate:
+          'https://appstoreconnect.apple.com/apps/{upstream.asc_app_id}/testflight/ios',
+      },
+      {
+        label: 'App Store Connect testers (account)',
+        href: 'https://appstoreconnect.apple.com/access/testers',
+      },
+    ],
+    'apple:register-app-id': [
+      {
+        label: 'Identifiers (App IDs)',
+        href: 'https://developer.apple.com/account/resources/identifiers/list',
+      },
+      {
+        label: 'Certificates',
+        href: 'https://developer.apple.com/account/resources/certificates/list',
+      },
+    ],
+    'apple:generate-apns-key': [
+      {
+        label: 'Apple Developer Keys',
+        href: 'https://developer.apple.com/account/resources/authkeys/list',
+      },
+      {
+        label: 'Firebase Cloud Messaging (Apple)',
+        href: 'https://console.firebase.google.com/',
+      },
+    ],
+    'apple:store-signing-in-eas': [
+      {
+        label: 'EAS project credentials (iOS)',
+        hrefTemplate:
+          'https://expo.dev/accounts/{upstream.expo_account}/projects/{upstream.eas_project_slug}/credentials',
+      },
+      {
+        label: 'EAS project dashboard',
+        hrefTemplate: 'https://expo.dev/projects/{upstream.eas_project_id}',
+      },
+      {
+        label: 'EAS-managed iOS credentials docs',
+        href: 'https://docs.expo.dev/app-signing/app-credentials/',
+      },
+      {
+        label: 'Expo FYI: setup Xcode signing',
+        href: 'https://github.com/expo/fyi/blob/main/setup-xcode-signing.md',
+      },
+      {
+        label: 'Apple Developer certificates (where EAS\u2011managed certs appear)',
+        href: 'https://developer.apple.com/account/resources/certificates/list',
+      },
+      {
+        label: 'Apple Developer profiles (where EAS\u2011managed profiles appear)',
+        href: 'https://developer.apple.com/account/resources/profiles/list',
+      },
+    ],
+    'apple:revoke-signing-assets': [
+      {
+        label: 'Apple Developer certificates/profiles/keys',
+        href: 'https://developer.apple.com/account/resources',
+      },
+      {
+        label: 'App Store Connect API keys',
+        href: 'https://appstoreconnect.apple.com/access/integrations/api',
+      },
+    ],
+    'apple:remove-app-store-listing': [
+      {
+        label: 'App Store Connect apps',
+        href: 'https://appstoreconnect.apple.com/apps',
       },
     ],
   },

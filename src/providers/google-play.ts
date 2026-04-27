@@ -35,19 +35,29 @@ export class StubGooglePlayApiClient implements GooglePlayApiClient {
     _title: string,
     _language: string,
   ): Promise<string> {
-    return packageName;
+    throw new Error(
+      'StubGooglePlayApiClient cannot create Play apps. Configure GooglePlayAdapter with a real Google Play API client.',
+    );
   }
 
   async getApp(
     _packageName: string,
   ): Promise<{ packageName: string; title: string } | null> {
-    return null;
+    throw new Error(
+      'StubGooglePlayApiClient cannot query Play apps. Configure GooglePlayAdapter with a real Google Play API client.',
+    );
   }
 
-  async registerFingerprint(_packageName: string, _sha1: string): Promise<void> {}
+  async registerFingerprint(_packageName: string, _sha1: string): Promise<void> {
+    throw new Error(
+      'StubGooglePlayApiClient cannot register fingerprints. Configure GooglePlayAdapter with a real Google Play API client.',
+    );
+  }
 
   async getFingerprints(_packageName: string): Promise<string[]> {
-    return [];
+    throw new Error(
+      'StubGooglePlayApiClient cannot list fingerprints. Configure GooglePlayAdapter with a real Google Play API client.',
+    );
   }
 }
 
@@ -138,19 +148,39 @@ export class GooglePlayAdapter implements ProviderAdapter<GooglePlayManifestConf
         return { status: 'completed', resourcesProduced: { play_app_id: appId } };
       }
       case 'google-play:create-service-account':
-        return { status: 'completed', resourcesProduced: { play_service_account_email: `play-sa@${context.upstreamResources['gcp_project_id'] ?? 'stub'}.iam.gserviceaccount.com` } };
+      {
+        const email = context.upstreamResources['play_service_account_email']?.trim();
+        if (!email) {
+          return {
+            status: 'waiting-on-user',
+            resourcesProduced: {},
+            userPrompt:
+              'Create a Play Console service account and grant API access, then provide play_service_account_email before continuing.',
+          };
+        }
+        return { status: 'completed', resourcesProduced: { play_service_account_email: email } };
+      }
       case 'google-play:setup-internal-testing':
         return { status: 'completed', resourcesProduced: {} };
       case 'google-play:configure-app-signing':
         return { status: 'completed', resourcesProduced: {} };
       case 'google-play:extract-fingerprints':
+      {
+        const sha1 = context.upstreamResources['signing_sha1']?.trim();
+        const sha256 = context.upstreamResources['signing_sha256']?.trim();
+        if (!sha1 || !sha256) {
+          return {
+            status: 'waiting-on-user',
+            resourcesProduced: {},
+            userPrompt:
+              'Extract SHA-1 and SHA-256 signing fingerprints from Play Console and provide signing_sha1/signing_sha256.',
+          };
+        }
         return {
           status: 'completed',
-          resourcesProduced: {
-            signing_sha1: `stub-sha1-${config.package_name}`,
-            signing_sha256: `stub-sha256-${config.package_name}`,
-          },
+          resourcesProduced: { signing_sha1: sha1, signing_sha256: sha256 },
         };
+      }
       case 'google-play:add-fingerprints-to-firebase':
         return { status: 'completed', resourcesProduced: {} };
       default:

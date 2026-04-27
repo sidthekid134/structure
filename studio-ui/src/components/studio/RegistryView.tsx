@@ -14,11 +14,19 @@ function isPluginConnected(plugin: RegistryPlugin, connectedProviders: Connected
   if (plugin.providerId === 'firebase') return connectedProviders.firebase;
   if (plugin.providerId === 'expo') return connectedProviders.expo;
   if (plugin.providerId === 'github') return connectedProviders.github;
+  if (plugin.providerId === 'apple') return connectedProviders.apple;
+  if (plugin.providerId === 'cloudflare') return connectedProviders.cloudflare;
   return false;
 }
 
 function getProviderConfig(plugin: RegistryPlugin): IntegrationConfig | null {
-  if (plugin.providerId === 'firebase' || plugin.providerId === 'expo' || plugin.providerId === 'github') {
+  if (
+    plugin.providerId === 'firebase' ||
+    plugin.providerId === 'expo' ||
+    plugin.providerId === 'github' ||
+    plugin.providerId === 'apple' ||
+    plugin.providerId === 'cloudflare'
+  ) {
     return INTEGRATION_CONFIGS.find((c) => c.id === plugin.providerId) ?? null;
   }
   return null;

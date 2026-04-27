@@ -38,6 +38,7 @@ export const cloudflareDomainPlugin: PluginDefinition = {
     CLOUDFLARE_TEARDOWN_STEPS.find((s) => s.key === 'cloudflare:remove-domain-zone')!,
   ],
   userActions: [
+    USER_ACTIONS.find((a) => a.key === 'user:provide-cloudflare-token')!,
     USER_ACTIONS.find((a) => a.key === 'user:confirm-dns-nameservers')!,
   ],
   displayMeta: {
@@ -58,13 +59,89 @@ export const cloudflareDomainPlugin: PluginDefinition = {
   },
   resourceDisplay: {
     cloudflare_zone_id: {
-      primaryHrefTemplate: 'https://dash.cloudflare.com/?zoneId={value}',
+      primaryHrefTemplate:
+        'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
       relatedLinks: [
-        { label: 'Cloudflare dashboard', href: 'https://dash.cloudflare.com/' },
-        { label: 'DNS docs', href: 'https://developers.cloudflare.com/dns/' },
+        {
+          label: 'Zone overview',
+          hrefTemplate:
+            'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+        },
+        {
+          label: 'Zone DNS',
+          hrefTemplate:
+            'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
+        },
+        {
+          label: 'Zone SSL/TLS',
+          hrefTemplate:
+            'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/ssl-tls/overview',
+        },
+        {
+          label: 'Zone dashboard fallback',
+          hrefTemplate: 'https://dash.cloudflare.com/?zoneId={value}',
+        },
+      ],
+    },
+    cloudflare_zone_status: {
+      relatedLinks: [
+        {
+          label: 'Zone overview',
+          hrefTemplate:
+            'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+        },
+        {
+          label: 'Zone dashboard fallback',
+          hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}',
+        },
+      ],
+    },
+    cloudflare_zone_nameservers: {
+      relatedLinks: [
+        {
+          label: 'Zone overview',
+          hrefTemplate:
+            'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+        },
+        {
+          label: 'Zone dashboard fallback',
+          hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}',
+        },
+      ],
+    },
+    cloudflare_zone_domain: {
+      relatedLinks: [
+        {
+          label: 'Zone DNS',
+          hrefTemplate:
+            'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
+        },
+        {
+          label: 'Zone dashboard fallback',
+          hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}',
+        },
+      ],
+    },
+    cloudflare_app_domain: {
+      primaryLinkFromValue: true,
+    },
+    cloudflare_dns_record_name: {
+      relatedLinks: [
+        {
+          label: 'Zone DNS',
+          hrefTemplate:
+            'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
+        },
+        {
+          label: 'Zone dashboard fallback',
+          hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}',
+        },
       ],
     },
     deep_link_base_url: {
+      primaryLinkFromValue: true,
+    },
+    auth_landing_url: {
       primaryLinkFromValue: true,
     },
     domain_name: {
@@ -72,6 +149,49 @@ export const cloudflareDomainPlugin: PluginDefinition = {
         { label: 'WHOIS / registrar', hrefTemplate: 'https://www.whois.com/whois/{value}' },
       ],
     },
+  },
+  completionPortalLinks: {
+    'cloudflare:setup-apple-app-site-association': [
+      {
+        label: 'Cloudflare zone',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      {
+        label: 'Cloudflare DNS',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
+      },
+    ],
+    'cloudflare:setup-android-asset-links': [
+      {
+        label: 'Cloudflare zone',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      {
+        label: 'Cloudflare DNS',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
+      },
+    ],
+    'cloudflare:configure-deep-link-routes': [
+      {
+        label: 'Cloudflare zone',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      {
+        label: 'Cloudflare DNS',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
+      },
+      {
+        label: 'Cloudflare Rules',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/rules',
+      },
+    ],
   },
   functionGroup: {
     id: 'infrastructure',

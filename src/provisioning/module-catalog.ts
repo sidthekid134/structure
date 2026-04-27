@@ -1,4 +1,5 @@
 import type { ProviderType } from '../providers/types.js';
+import type { MobilePlatform } from './graph.types.js';
 import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 
 /**
@@ -36,6 +37,28 @@ export interface ModuleDefinition {
   teardownStepKeys: string[];
   /** User-action node keys that belong to this module (for UI attribution). */
   userActionKeys?: string[];
+  /**
+   * Which mobile platforms this module applies to. Omitted = all platforms.
+   * Modules whose platform mask doesn't intersect the project's `platforms`
+   * selection are dropped before the plan is assembled (along with their
+   * steps and required/optional module references).
+   */
+  platforms?: MobilePlatform[];
+}
+
+/**
+ * Returns true when a node/module's `platforms` mask is satisfied by the
+ * given project platform selection. Untagged nodes (no `platforms`) always
+ * apply. An empty `projectPlatforms` array also acts as a permissive bypass
+ * (consumers should treat that as "platform filtering disabled").
+ */
+export function platformMaskAllows(
+  nodePlatforms: ReadonlyArray<MobilePlatform> | undefined,
+  projectPlatforms: ReadonlyArray<MobilePlatform>,
+): boolean {
+  if (!nodePlatforms || nodePlatforms.length === 0) return true;
+  if (!projectPlatforms || projectPlatforms.length === 0) return true;
+  return nodePlatforms.some((platform) => projectPlatforms.includes(platform));
 }
 
 /** Open string — built-in templates plus plugin-contributed ones. */
@@ -54,7 +77,7 @@ export interface ProjectTemplate {
 export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
   'firebase-core': {
     id: 'firebase-core',
-    label: 'Firebase Core',
+    label: 'GCP Core',
     description: 'Create the GCP/Firebase project and provisioner identity.',
     provider: 'firebase',
     requiredModules: [],
@@ -78,7 +101,15 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     provider: 'oauth',
     requiredModules: ['firebase-core'],
     optionalModules: ['oauth-social'],
-    stepKeys: ['firebase:enable-auth', 'oauth:enable-auth-providers', 'oauth:enable-google-sign-in', 'oauth:register-oauth-clients', 'oauth:configure-redirect-uris'],
+    stepKeys: [
+      'firebase:enable-auth',
+      'oauth:enable-auth-providers',
+      'oauth:enable-google-sign-in',
+      'oauth:register-oauth-client-web',
+      'oauth:register-oauth-client-ios',
+      'oauth:register-oauth-client-android',
+      'oauth:configure-redirect-uris',
+    ],
     teardownStepKeys: ['oauth:disable-auth-providers'],
   },
   'firebase-firestore': {
@@ -106,8 +137,8 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     label: 'Push Notifications',
     description: 'Configure FCM/APNs and mobile signing integration.',
     provider: 'firebase',
-    requiredModules: ['firebase-core', 'apple-signing', 'google-play-publishing'],
-    optionalModules: [],
+    requiredModules: ['firebase-core'],
+    optionalModules: ['apple-signing', 'google-play-publishing'],
     stepKeys: ['firebase:enable-fcm', 'apple:upload-apns-to-firebase', 'google-play:add-fingerprints-to-firebase'],
     teardownStepKeys: ['firebase:disable-messaging'],
   },
@@ -139,7 +170,12 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     provider: 'eas',
     requiredModules: ['github-repo'],
     optionalModules: ['eas-submit'],
-    stepKeys: ['eas:create-project', 'eas:configure-build-profiles', 'eas:store-token-in-github'],
+    stepKeys: [
+      'eas:create-project',
+      'eas:configure-build-profiles',
+      'eas:store-token-in-github',
+      'eas:write-eas-json',
+    ],
     teardownStepKeys: ['eas:delete-project'],
     userActionKeys: ['user:provide-expo-token', 'user:install-expo-github-app'],
   },
@@ -148,8 +184,8 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     label: 'EAS Submit',
     description: 'Configure Apple and Android app submission from EAS.',
     provider: 'eas',
-    requiredModules: ['eas-builds', 'apple-signing', 'google-play-publishing'],
-    optionalModules: [],
+    requiredModules: ['eas-builds'],
+    optionalModules: ['apple-signing', 'google-play-publishing'],
     stepKeys: ['eas:configure-submit-apple', 'eas:configure-submit-android'],
     teardownStepKeys: ['eas:remove-submit-targets'],
   },
@@ -162,15 +198,14 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     optionalModules: ['eas-submit'],
     stepKeys: [
       'apple:register-app-id',
-      'apple:create-dev-provisioning-profile',
-      'apple:create-dist-provisioning-profile',
       'apple:generate-apns-key',
       'apple:create-app-store-listing',
-      'apple:generate-asc-api-key',
+      'apple:configure-testflight-group',
       'apple:store-signing-in-eas',
     ],
     teardownStepKeys: ['apple:remove-app-store-listing', 'apple:revoke-signing-assets'],
     userActionKeys: ['user:enroll-apple-developer'],
+    platforms: ['ios'],
   },
   'google-play-publishing': {
     id: 'google-play-publishing',
@@ -188,6 +223,7 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     ],
     teardownStepKeys: ['google-play:remove-app-listing', 'google-play:revoke-service-account'],
     userActionKeys: ['user:enroll-google-play', 'user:upload-initial-aab'],
+    platforms: ['android'],
   },
   'cloudflare-domain': {
     id: 'cloudflare-domain',
@@ -205,7 +241,7 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
       'cloudflare:setup-android-asset-links',
     ],
     teardownStepKeys: ['cloudflare:remove-domain-zone'],
-    userActionKeys: ['user:confirm-dns-nameservers'],
+    userActionKeys: ['user:provide-cloudflare-token', 'user:confirm-dns-nameservers'],
   },
   'oauth-social': {
     id: 'oauth-social',
@@ -214,8 +250,14 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     provider: 'oauth',
     requiredModules: ['firebase-auth', 'cloudflare-domain'],
     optionalModules: ['apple-signing'],
-    stepKeys: ['oauth:configure-apple-sign-in', 'oauth:link-deep-link-domain'],
+    stepKeys: [
+      'apple:create-sign-in-key',
+      'oauth:configure-apple-sign-in',
+      'oauth:link-deep-link-domain',
+      'oauth:prepare-app-integration-kit',
+    ],
     teardownStepKeys: ['oauth:delete-oauth-clients'],
+    userActionKeys: ['user:verify-auth-integration-kit'],
   },
 };
 

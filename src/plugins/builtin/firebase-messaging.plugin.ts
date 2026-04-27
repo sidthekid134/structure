@@ -12,8 +12,8 @@ export const firebaseMessagingPlugin: PluginDefinition = {
   label: 'Push Notifications',
   description: 'Configure FCM/APNs and mobile signing integration.',
   provider: 'firebase',
-  requiredModules: ['firebase-core', 'apple-signing', 'google-play-publishing'],
-  optionalModules: [],
+  requiredModules: ['firebase-core'],
+  optionalModules: ['apple-signing', 'google-play-publishing'],
   includedInTemplates: ['mobile-app'],
   steps: [
     FIREBASE_STEPS.find((s) => s.key === 'firebase:enable-fcm')!,

@@ -44,9 +44,12 @@ import {
   registerFirebaseIosApp,
   listFirebaseAndroidApps,
   registerFirebaseAndroidApp,
+  addSha1FingerprintToFirebase,
+  listFirebaseAndroidShaCertificates,
   deployFirestoreRules,
   deployStorageRules,
   getActiveFirestoreRulesetName,
+  getActiveFirestoreRulesSource,
   getActiveStorageRulesetName,
   parseDisabledApiServiceName,
   provisionFirebaseOnProject,
@@ -79,6 +82,7 @@ import {
   deleteFirestoreCredentials,
 } from './gcp-credentials.js';
 import { projectResourceSlug } from '../../studio/project-identity.js';
+import { validatePlayFingerprint } from '../../validators/play-fingerprint-validator.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -128,6 +132,50 @@ async function withApiRetry<T>(
     await sleep(5000);
     return await fn();
   }
+}
+
+async function serviceAccountExists(
+  gcpProjectId: string,
+  token: string,
+  saEmail: string,
+  log: (msg: string) => void,
+): Promise<boolean> {
+  const saGetPath = `/v1/projects/-/serviceAccounts/${encodeURIComponent(saEmail)}`;
+  try {
+    await withApiRetry(
+      gcpProjectId,
+      token,
+      () => gcpRequest('GET', 'iam.googleapis.com', saGetPath, token),
+      log,
+    );
+    return true;
+  } catch (err) {
+    if (!(err instanceof GcpHttpError) || err.statusCode !== 404) throw err;
+  }
+
+  // Some IAM surfaces can lag; confirm absence by listing project SAs before
+  // declaring the account missing.
+  let pageToken: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const q = pageToken ? `?pageSize=100&pageToken=${encodeURIComponent(pageToken)}` : '?pageSize=100';
+    const listRes = await withApiRetry(
+      gcpProjectId,
+      token,
+      () => gcpRequest('GET', 'iam.googleapis.com', `/v1/projects/${gcpProjectId}/serviceAccounts${q}`, token),
+      log,
+    );
+    const parsed = JSON.parse(listRes.body) as {
+      accounts?: Array<{ email?: string }>;
+      nextPageToken?: string;
+    };
+    if ((parsed.accounts ?? []).some((account) => (account.email ?? '').trim().toLowerCase() === saEmail.trim().toLowerCase())) {
+      return true;
+    }
+    pageToken = parsed.nextPageToken?.trim() || undefined;
+    if (!pageToken) break;
+  }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -518,34 +566,43 @@ const createProvisionerSaHandler: StepHandler = {
     const log = makeLog('create-provisioner-sa:validate', projectId);
 
     const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const saEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
+    let saEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
 
-    if (!gcpProjectId || !saEmail) {
-      log('✗ Missing GCP project ID or SA email in vault.');
-      return { reconciled: false, message: 'No service account email stored. Complete prior steps first.' };
+    if (!gcpProjectId) {
+      log('✗ Missing GCP project ID in vault.');
+      return { reconciled: false, message: 'No GCP project ID stored. Complete prior steps first.' };
+    }
+    if (!saEmail) {
+      const inferredEmail = provisionerSaEmail(gcpProjectId);
+      log(`○ No SA email in vault; inferring expected provisioner email "${inferredEmail}" from GCP project ID.`);
+      saEmail = inferredEmail;
     }
 
     log(`Validating service account "${saEmail}" on project "${gcpProjectId}"...`);
-    const saPath = `/v1/projects/${gcpProjectId}/serviceAccounts/${encodeURIComponent(saEmail)}`;
 
     try {
       const token = await context.getToken('gcp');
-      await withApiRetry(
+      const exists = await serviceAccountExists(
         gcpProjectId,
         token,
-        () => gcpRequest('GET', 'iam.googleapis.com', saPath, token),
+        saEmail,
         log,
       );
-      log(`✓ Service account "${saEmail}" exists and is accessible.`);
-      return { reconciled: true, resourcesProduced: { provisioner_sa_email: saEmail } };
-    } catch (err) {
-      if (err instanceof GcpHttpError && err.statusCode === 404) {
+      if (!exists) {
         log(`✗ Service account "${saEmail}" NOT FOUND — it may have been deleted externally.`);
         return {
           reconciled: false,
           message: `Service account "${saEmail}" not found in project "${gcpProjectId}". Revert and re-run this step.`,
         };
       }
+      // Backfill missing vault metadata once existence is confirmed.
+      if (!getStoredSaEmail(vaultManager, passphrase, projectId)) {
+        storeSaEmail(vaultManager, passphrase, projectId, saEmail);
+        log(`✓ Backfilled provisioner SA email in vault: "${saEmail}".`);
+      }
+      log(`✓ Service account "${saEmail}" exists and is accessible.`);
+      return { reconciled: true, resourcesProduced: { provisioner_sa_email: saEmail } };
+    } catch (err) {
       if (err instanceof GcpHttpError && err.statusCode === 403) {
         log(`✗ 403 accessing service account "${saEmail}" — token lacks IAM read permission.`);
         return {
@@ -569,26 +626,27 @@ const createProvisionerSaHandler: StepHandler = {
     }
 
     const storedEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
-    if (!storedEmail) {
-      log('○ No provisioner SA email in vault — step has not run yet.');
-      return { reconciled: false, message: 'No provisioner service account recorded. Run this step to create one.' };
-    }
+    const candidateEmail = storedEmail ?? provisionerSaEmail(gcpProjectId);
+    if (!storedEmail) log(`○ No provisioner SA email in vault — inferring "${candidateEmail}" from project ID for sync check.`);
 
     // Sync is read-only: verify the stored SA still exists in GCP. Do not auto-create.
-    log(`→ Verifying service account "${storedEmail}" on project "${gcpProjectId}"...`);
-    const saPath = `/v1/projects/${gcpProjectId}/serviceAccounts/${encodeURIComponent(storedEmail)}`;
+    log(`→ Verifying service account "${candidateEmail}" on project "${gcpProjectId}"...`);
     try {
       const token = await context.getToken('gcp');
-      await gcpRequest('GET', 'iam.googleapis.com', saPath, token);
-      log(`✓ Service account "${storedEmail}" exists in GCP.`);
-      return { reconciled: true, resourcesProduced: { provisioner_sa_email: storedEmail } };
-    } catch (err) {
-      if (err instanceof GcpHttpError && err.statusCode === 404) {
-        log(`✗ Service account "${storedEmail}" no longer exists in GCP — revert and re-run this step.`);
-        return { reconciled: false, message: `Service account "${storedEmail}" was deleted from GCP. Revert and re-run this step.` };
+      const exists = await serviceAccountExists(gcpProjectId, token, candidateEmail, log);
+      if (!exists) {
+        log(`✗ Service account "${candidateEmail}" no longer exists in GCP — revert and re-run this step.`);
+        return { reconciled: false, message: `Service account "${candidateEmail}" was deleted from GCP. Revert and re-run this step.` };
       }
+      if (!storedEmail) {
+        storeSaEmail(vaultManager, passphrase, projectId, candidateEmail);
+        log(`✓ Backfilled provisioner SA email in vault: "${candidateEmail}".`);
+      }
+      log(`✓ Service account "${candidateEmail}" exists in GCP.`);
+      return { reconciled: true, resourcesProduced: { provisioner_sa_email: candidateEmail } };
+    } catch (err) {
       if (err instanceof GcpHttpError && err.statusCode === 403) {
-        log(`✗ 403 verifying SA "${storedEmail}" — token may be expired or for the wrong account.`);
+        log(`✗ 403 verifying SA "${candidateEmail}" — token may be expired or for the wrong account.`);
         return { reconciled: false, message: 'Permission denied reading service account. Re-authenticate with Google.', suggestsReauth: true };
       }
       log(`✗ Unexpected error verifying SA: ${(err as Error).message}`);
@@ -1413,17 +1471,199 @@ const registerAndroidAppHandler: StepHandler = {
 };
 
 // ---------------------------------------------------------------------------
+// firebase:register-android-sha1
+//
+// Why this exists:
+//   Firebase only emits an Android OAuth client ID inside `google-services.json`
+//   (`oauth_client.client_type=1`) once a signing certificate SHA-1 has been
+//   attached to the Firebase Android app. Without it, native Google Sign-In on
+//   Android can't initialize, and downstream `oauth:register-oauth-clients`
+//   fails with "Could not locate Android OAuth client_id".
+//
+// Sources (in priority order):
+//   1. Upstream resource `signing_sha1` from `google-play:extract-fingerprints`
+//      (Play App Signing) — flowed in automatically when the Play module is
+//      enabled.
+//   2. The user-supplied `signing_sha1` input field — for projects that don't
+//      use Play App Signing (e.g. EAS-managed keystore, debug keystore for
+//      local sign-in testing, manually-managed keystore).
+//
+// Behavior is idempotent: existing certificates on the Firebase app are listed
+// first and the new SHA-1 is only POSTed when it isn't already present.
+// ---------------------------------------------------------------------------
+
+const registerAndroidSha1Handler: StepHandler = {
+  stepKey: 'firebase:register-android-sha1',
+  requiredAuth: 'gcp',
+
+  async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase, upstreamArtifacts, userInputs } = context;
+    const log = makeLog('register-android-sha1', projectId);
+
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const androidAppId = getStoredFirebaseAndroidAppId(vaultManager, passphrase, projectId);
+    if (!gcpProjectId || !androidAppId) {
+      log('✗ Missing GCP project or Firebase Android app in vault.');
+      return {
+        reconciled: false,
+        message:
+          'Cannot register Android SHA-1: complete "Create GCP Project" and "Register Android App" first.',
+      };
+    }
+
+    const upstreamSha = upstreamArtifacts['signing_sha1']?.trim() || '';
+    const userSha = userInputs?.['signing_sha1']?.trim() || '';
+    const rawSha = upstreamSha || userSha;
+    if (!rawSha) {
+      log('○ No SHA-1 available from upstream or user input — pausing for input.');
+      return {
+        reconciled: false,
+        message:
+          'Provide an Android signing SHA-1 fingerprint to attach to the Firebase Android app. ' +
+          'Get it from `eas credentials` (Android keystore), Google Play Console (App signing), ' +
+          'or your debug keystore (`keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android`).',
+        recovery: {
+          type: 'manual-fix',
+          instructions:
+            'Fill the "Android Signing SHA-1" input field on this step and re-run. Alternatively, ' +
+            'enable the google-play-publishing module so the SHA-1 is sourced automatically from Play App Signing.',
+          portalUrl: `https://console.firebase.google.com/project/${gcpProjectId}/settings/general/android:${androidAppId}`,
+        },
+      };
+    }
+
+    let normalized: string;
+    let rawHex: string;
+    try {
+      const validated = validatePlayFingerprint(rawSha);
+      normalized = validated.normalized;
+      rawHex = validated.raw_hex;
+    } catch (err) {
+      log(`✗ Invalid SHA-1 input: ${(err as Error).message}`);
+      return { reconciled: false, message: (err as Error).message };
+    }
+
+    log(`→ Checking existing SHA fingerprints on Firebase Android app "${androidAppId}"...`);
+    const token = await context.getToken('gcp');
+    const existing = await listFirebaseAndroidShaCertificates(token, gcpProjectId, androidAppId);
+    const matchExists = existing.some(
+      (cert) => cert.certType === 'SHA_1' && cert.shaHash.toLowerCase() === rawHex,
+    );
+    if (matchExists) {
+      log(`✓ SHA-1 "${normalized}" is already registered on app "${androidAppId}".`);
+      return {
+        reconciled: true,
+        resourcesProduced: { android_signing_sha1: normalized },
+      };
+    }
+
+    log(`→ Adding SHA-1 "${normalized}" to Firebase Android app "${androidAppId}"...`);
+    try {
+      await addSha1FingerprintToFirebase(token, gcpProjectId, androidAppId, rawHex);
+    } catch (err) {
+      const status = err instanceof GcpHttpError ? err.statusCode : 0;
+      // Treat "already exists" responses as success (defensive fallback in case the
+      // pre-list missed a concurrent add).
+      if (status === 409 || (status === 400 && /already.*exist/i.test(String((err as Error).message)))) {
+        log(`✓ SHA-1 already registered (server reported duplicate).`);
+        return {
+          reconciled: true,
+          resourcesProduced: { android_signing_sha1: normalized },
+        };
+      }
+      log(`✗ Failed to add SHA-1: ${(err as Error).message}`);
+      return {
+        reconciled: false,
+        message: `Could not attach SHA-1 to Firebase Android app: ${(err as Error).message}`,
+        suggestsReauth: status === 401 || status === 403,
+      };
+    }
+
+    log(`✓ COMPLETE — SHA-1 "${normalized}" attached to Firebase Android app "${androidAppId}".`);
+    return {
+      reconciled: true,
+      resourcesProduced: { android_signing_sha1: normalized },
+    };
+  },
+
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId } = context;
+    const log = makeLog('register-android-sha1:delete', projectId);
+    log('○ Skipping SHA-1 removal — fingerprints persist on the Firebase Android app and are managed via the Firebase Console.');
+    return {
+      reconciled: true,
+      message:
+        'SHA-1 fingerprints are not removed automatically. Delete them manually from the Firebase Console → Project settings → Your apps → Android → Fingerprints if needed.',
+    };
+  },
+
+  async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, vaultManager, passphrase } = context;
+    const log = makeLog('register-android-sha1:validate', projectId);
+
+    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const androidAppId = getStoredFirebaseAndroidAppId(vaultManager, passphrase, projectId);
+    if (!gcpProjectId || !androidAppId) {
+      return {
+        reconciled: false,
+        message: 'GCP project or Firebase Android app missing — register the Android app first.',
+      };
+    }
+
+    log(`→ Listing SHA fingerprints on app "${androidAppId}"...`);
+    try {
+      const token = await context.getToken('gcp');
+      const existing = await listFirebaseAndroidShaCertificates(token, gcpProjectId, androidAppId);
+      const sha1Certs = existing.filter((cert) => cert.certType === 'SHA_1');
+      if (sha1Certs.length === 0) {
+        log('✗ No SHA-1 fingerprints found.');
+        return {
+          reconciled: false,
+          message:
+            'No SHA-1 is attached to the Firebase Android app. Run this step (or "google-play:add-fingerprints-to-firebase") to register one.',
+        };
+      }
+      const first = sha1Certs[0]!.shaHash;
+      const normalized = first.match(/.{2}/g)!.map((b) => b.toUpperCase()).join(':');
+      log(`✓ ${sha1Certs.length} SHA-1 fingerprint(s) attached (first: ${normalized}).`);
+      return {
+        reconciled: true,
+        resourcesProduced: { android_signing_sha1: normalized },
+      };
+    } catch (err) {
+      const status = err instanceof GcpHttpError ? err.statusCode : 0;
+      log(`✗ Could not list SHA fingerprints: ${(err as Error).message}`);
+      return {
+        reconciled: false,
+        message: `Could not list SHA fingerprints: ${(err as Error).message}`,
+        suggestsReauth: status === 401 || status === 403,
+      };
+    }
+  },
+
+  async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
+    return this.validate(context);
+  },
+};
+
+// ---------------------------------------------------------------------------
 // firebase:configure-firestore-rules  (per-environment)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_FIRESTORE_RULES = `rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if false;
+    match /users/{userId} {
+      allow read, create, update: if request.auth != null && request.auth.uid == userId;
     }
   }
 }`;
+
+function firestoreRulesContainUsersCollectionRule(rulesSource: string): boolean {
+  return /match\s*\/users\/\{userId\}\s*\{[\s\S]*allow\s+read\s*,\s*create\s*,\s*update\s*:\s*if\s+request\.auth\s*!=\s*null\s*&&\s*request\.auth\.uid\s*==\s*userId\s*;/m.test(
+    rulesSource,
+  );
+}
 
 const configureFirestoreRulesHandler: StepHandler = {
   stepKey: 'firebase:configure-firestore-rules',
@@ -1439,14 +1679,44 @@ const configureFirestoreRulesHandler: StepHandler = {
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId) ?? undefined;
-    const dbLabel = databaseId && databaseId !== '(default)' ? `database "${databaseId}" on ` : '';
-    log(`→ Deploying Firestore security rules (deny-all default) to ${dbLabel}"${gcpProjectId}"...`);
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    if (!databaseId) {
+      log('✗ No Firestore database ID recorded in vault.');
+      return {
+        reconciled: false,
+        message:
+          'Firestore database id is not recorded in the vault. ' +
+          'The "Create Firestore Database" step (firebase:create-firestore-db) must run first ' +
+          'and persist the database id before Firestore rules can be validated or deployed.',
+      };
+    }
+
+    const databaseLabel = databaseId === DEFAULT_FIRESTORE_DB_ID ? '(default)' : databaseId;
+    log(`→ Deploying Firestore security rules to "${gcpProjectId}" / database "${databaseLabel}"...`);
     const token = await context.getToken('gcp');
     await withApiRetry(gcpProjectId, token, () => deployFirestoreRules(token, gcpProjectId, DEFAULT_FIRESTORE_RULES, databaseId), log);
 
-    log(`✓ COMPLETE — Firestore rules deployed to "${gcpProjectId}". Update rules in your source repo to customize.`);
-    return { reconciled: true, resourcesProduced: {} };
+    const deployedRules = await getActiveFirestoreRulesSource(token, gcpProjectId, databaseId);
+    if (!deployedRules || !firestoreRulesContainUsersCollectionRule(deployedRules)) {
+      return {
+        reconciled: false,
+        message:
+          `Firestore rules were deployed to database "${databaseLabel}" but the required users collection rule ` +
+          'was not detected after deployment. Re-run this step and verify Firestore Rules API access.',
+      };
+    }
+
+    log(
+      `✓ COMPLETE — Firestore rules deployed and users/{userId} access rule is active on database "${databaseLabel}".`,
+    );
+    return {
+      reconciled: true,
+      resourcesProduced: {
+        user_persistence_store: 'firestore',
+        users_collection_path: 'users',
+        firestore_database_id: databaseId,
+      },
+    };
   },
 
   async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
@@ -1465,16 +1735,60 @@ const configureFirestoreRulesHandler: StepHandler = {
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId) ?? undefined;
-    log(`→ Checking active Firestore ruleset on "${gcpProjectId}"...`);
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    if (!databaseId) {
+      log('✗ No Firestore database ID recorded in vault.');
+      return {
+        reconciled: false,
+        message:
+          'Firestore database id is not recorded in the vault. ' +
+          'Run "Create Firestore Database" first so this step can validate the correct Firestore release.',
+      };
+    }
+
+    const databaseLabel = databaseId === DEFAULT_FIRESTORE_DB_ID ? '(default)' : databaseId;
+    log(`→ Checking active Firestore ruleset on "${gcpProjectId}" / database "${databaseLabel}"...`);
     const token = await context.getToken('gcp');
     const rulesetName = await getActiveFirestoreRulesetName(token, gcpProjectId, databaseId);
-    if (rulesetName) {
-      log(`✓ Firestore rules are deployed (ruleset: ${rulesetName}).`);
-      return { reconciled: true, resourcesProduced: {} };
+    if (!rulesetName) {
+      log('✗ No active Firestore rules release found.');
+      return { reconciled: false, message: 'No Firestore security rules are deployed. Run this step to deploy them.' };
     }
-    log('✗ No active Firestore rules release found.');
-    return { reconciled: false, message: 'No Firestore security rules are deployed. Run this step to deploy them.' };
+
+    const activeRulesSource = await getActiveFirestoreRulesSource(token, gcpProjectId, databaseId);
+    if (!activeRulesSource) {
+      log(`✗ Active Firestore ruleset "${rulesetName}" has no readable source.`);
+      return {
+        reconciled: false,
+        message:
+          `Active Firestore ruleset "${rulesetName}" for database "${databaseLabel}" has no readable source. ` +
+          'Re-run this step to redeploy rules.',
+      };
+    }
+
+    if (!firestoreRulesContainUsersCollectionRule(activeRulesSource)) {
+      log(
+        `✗ Firestore ruleset "${rulesetName}" on database "${databaseLabel}" is missing users/{userId} access rule.`,
+      );
+      return {
+        reconciled: false,
+        message:
+          `Firestore rules are deployed for database "${databaseLabel}" but missing the required users/{userId} ` +
+          'access rule. Re-run this step to apply the expected rule set.',
+      };
+    }
+
+    log(
+      `✓ Firestore rules are deployed (ruleset: ${rulesetName}) and include users/{userId} access rule on database "${databaseLabel}".`,
+    );
+    return {
+      reconciled: true,
+      resourcesProduced: {
+        user_persistence_store: 'firestore',
+        users_collection_path: 'users',
+        firestore_database_id: databaseId,
+      },
+    };
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
@@ -1484,17 +1798,61 @@ const configureFirestoreRulesHandler: StepHandler = {
     const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
     if (!gcpProjectId) return null;
 
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId) ?? undefined;
-    log(`→ Checking active Firestore ruleset on "${gcpProjectId}"...`);
+    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    if (!databaseId) {
+      log('○ Firestore database ID is not yet stored in vault.');
+      return {
+        reconciled: false,
+        message:
+          'Firestore database id is not recorded in the vault. ' +
+          'Run "Create Firestore Database" so sync can validate rules for the correct database.',
+      };
+    }
+
+    const databaseLabel = databaseId === DEFAULT_FIRESTORE_DB_ID ? '(default)' : databaseId;
+    log(`→ Checking active Firestore ruleset on "${gcpProjectId}" / database "${databaseLabel}"...`);
     try {
       const token = await context.getToken('gcp');
       const rulesetName = await getActiveFirestoreRulesetName(token, gcpProjectId, databaseId);
-      if (rulesetName) {
-        log(`✓ Firestore rules deployed (ruleset: ${rulesetName}).`);
-        return { reconciled: true, resourcesProduced: {} };
+      if (!rulesetName) {
+        log('○ No active Firestore rules release — run this step to deploy them.');
+        return { reconciled: false, message: 'No Firestore security rules deployed. Run this step.' };
       }
-      log('○ No active Firestore rules release — run this step to deploy them.');
-      return { reconciled: false, message: 'No Firestore security rules deployed. Run this step.' };
+
+      const activeRulesSource = await getActiveFirestoreRulesSource(token, gcpProjectId, databaseId);
+      if (!activeRulesSource) {
+        log(`○ Active Firestore ruleset "${rulesetName}" has no readable source.`);
+        return {
+          reconciled: false,
+          message:
+            `Active Firestore ruleset "${rulesetName}" for database "${databaseLabel}" has no readable source. ` +
+            'Re-run this step to redeploy rules.',
+        };
+      }
+
+      if (!firestoreRulesContainUsersCollectionRule(activeRulesSource)) {
+        log(
+          `○ Firestore ruleset "${rulesetName}" on database "${databaseLabel}" is missing users/{userId} access rule.`,
+        );
+        return {
+          reconciled: false,
+          message:
+            `Firestore rules are deployed for database "${databaseLabel}" but missing users/{userId} access rule. ` +
+            'Run this step to apply the expected rule set.',
+        };
+      }
+
+      log(
+        `✓ Firestore rules deployed (ruleset: ${rulesetName}) and include users/{userId} access rule on database "${databaseLabel}".`,
+      );
+      return {
+        reconciled: true,
+        resourcesProduced: {
+          user_persistence_store: 'firestore',
+          users_collection_path: 'users',
+          firestore_database_id: databaseId,
+        },
+      };
     } catch (err) {
       const is403 = err instanceof GcpHttpError && err.statusCode === 403;
       log(`✗ Could not check Firestore rules: ${(err as Error).message}`);
@@ -1931,6 +2289,7 @@ export const FIREBASE_STEP_HANDLERS: StepHandler[] = [
   createFirestoreDbHandler,
   registerIosAppHandler,
   registerAndroidAppHandler,
+  registerAndroidSha1Handler,
   configureFirestoreRulesHandler,
   configureStorageRulesHandler,
   enableAuthProvidersHandler,

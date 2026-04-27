@@ -10,7 +10,7 @@
  * provider schemas, UI display metadata, etc.).
  */
 
-import type { ProvisioningStepNode, UserActionNode, CompletionPortalLink } from '../provisioning/graph.types.js';
+import type { MobilePlatform, ProvisioningStepNode, UserActionNode, CompletionPortalLink } from '../provisioning/graph.types.js';
 import type { StepHandler } from '../provisioning/step-handler-registry.js';
 import type { ProviderAdapter, ProviderConfig } from '../providers/types.js';
 import type { FlowDefinition } from '../flows/flow-definition-types.js';
@@ -103,6 +103,20 @@ export interface ResourcePreviewContext {
   linkedGcpId: string;
   githubOwner: string;
   easAccount: string;
+  /**
+   * Human-readable display name for the project. This is the same value that
+   * Studio submits to provider APIs as the app/listing name (e.g. App Store
+   * Connect `attributes.name`). Falls back to the slug when the project has
+   * no explicit display name configured.
+   */
+  appName: string;
+  /**
+   * User-typed inputs for the *current* node, if it has any inputFields.
+   * Lets previews reflect operator-supplied values (e.g. the actual App
+   * Store Connect listing name when it had to differ from the project
+   * name because App Store names must be globally unique).
+   */
+  nodeUserInputs: Record<string, string>;
 }
 
 export interface ResourceDisplayConfig {
@@ -211,6 +225,14 @@ export interface PluginDefinition {
   optionalModules: string[];
   /** Template ids (e.g. 'mobile-app') this module should be included in by default */
   includedInTemplates?: string[];
+
+  /**
+   * Which mobile platforms this module is relevant to. Omitted = all
+   * platforms. The plan builder drops this module (and its steps + user
+   * actions) when its mask doesn't intersect the project's `platforms`
+   * selection.
+   */
+  platforms?: MobilePlatform[];
 
   // ── Graph nodes ─────────────────────────────────────────────────────────
   steps: ProvisioningStepNode[];

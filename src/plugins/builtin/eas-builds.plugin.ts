@@ -27,6 +27,7 @@ export const easBuildsPlugin: PluginDefinition = {
     EAS_STEPS.find((s) => s.key === 'eas:create-project')!,
     EAS_STEPS.find((s) => s.key === 'eas:configure-build-profiles')!,
     EAS_STEPS.find((s) => s.key === 'eas:store-token-in-github')!,
+    EAS_STEPS.find((s) => s.key === 'eas:write-eas-json')!,
   ],
   teardownSteps: [
     EAS_TEARDOWN_STEPS.find((s) => s.key === 'eas:delete-project')!,

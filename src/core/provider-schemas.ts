@@ -125,7 +125,7 @@ const STATIC_PROVIDER_BLUEPRINTS: Readonly<Record<string, ProviderBlueprint>> = 
   },
   cloudflare: {
     provider: 'cloudflare',
-    scope: 'project',
+    scope: 'organization',
     steps: CLOUDFLARE_STEPS,
     userActions: USER_ACTIONS.filter((a) => a.provider === 'cloudflare'),
   },
@@ -267,8 +267,50 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
   apple: {
     provider: 'apple',
     scope: 'organization',
-    dependencies: [],
-    plannedResources: [],
+    dependencies: [
+      {
+        key: 'bundle_id',
+        label: 'Bundle ID',
+        required: true,
+        source: 'project',
+        description: 'iOS bundle identifier used across Apple Developer, App Store Connect, and EAS.',
+      },
+      {
+        key: 'project_domain',
+        label: 'App Domain',
+        required: true,
+        source: 'project',
+        description: 'Domain used for Universal Links and apple-app-site-association hosting.',
+      },
+      {
+        key: 'apple_team_id',
+        label: 'Apple Team ID',
+        required: true,
+        source: 'integration',
+        description: '10-character Apple Developer Team ID required for signing and Sign In with Apple.',
+      },
+      {
+        key: 'default_test_users',
+        label: 'Default Test Users',
+        required: false,
+        source: 'integration',
+        description: 'Optional QA tester emails / Apple IDs for TestFlight and auth validation.',
+      },
+    ],
+    plannedResources: [
+      {
+        key: 'apple_signing_assets',
+        label: 'Apple Signing Assets',
+        description: 'Certificates, provisioning profiles, APNs key, and ASC API key material.',
+        naming: 'apple/{bundle_id}',
+      },
+      {
+        key: 'testflight_distribution',
+        label: 'TestFlight Distribution',
+        description: 'App Store Connect app and submission credentials used by EAS Submit.',
+        naming: 'asc/{bundle_id}',
+      },
+    ],
   },
   'google-play': {
     provider: 'google-play',
@@ -278,8 +320,16 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
   },
   cloudflare: {
     provider: 'cloudflare',
-    scope: 'project',
+    scope: 'organization',
     dependencies: [
+      {
+        key: 'cloudflare_token',
+        label: 'Cloudflare API Token',
+        required: true,
+        source: 'integration',
+        description:
+          'Token with zone-scoped permissions for DNS Edit, Zone Read, Page Rules Edit, and Zone Settings/SSL Edit used for ownership checks, DNS, SSL, and auth routing automation.',
+      },
       {
         key: 'project_domain',
         label: 'App Domain',

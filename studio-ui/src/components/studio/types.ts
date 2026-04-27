@@ -59,7 +59,7 @@ export interface ResourceOutput {
   presentation?: ResourceOutputPresentation;
 }
 
-export type StepInputFieldType = 'text' | 'select';
+export type StepInputFieldType = 'text' | 'select' | 'p8';
 
 export interface StepInputField {
   key: string;
@@ -77,6 +77,24 @@ export interface CompletionPortalLink {
   label: string;
   href?: string;
   hrefTemplate?: string;
+}
+
+export interface ManualInstructionDownload {
+  filename: string;
+  url: string;
+  description?: string;
+}
+
+export interface ManualInstructionStep {
+  title: string;
+  detail?: string;
+  downloads?: ManualInstructionDownload[];
+}
+
+export interface ManualInstructions {
+  intro?: string;
+  steps: ManualInstructionStep[];
+  note?: string;
 }
 
 export interface UserActionNode {
@@ -133,6 +151,7 @@ export interface NodeState {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+  userPrompt?: string;
   resourcesProduced?: Record<string, string>;
   userInputs?: Record<string, string>;
 }
@@ -305,6 +324,13 @@ export interface ProvisioningPlanResponse {
   moduleLabelById?: Record<string, string>;
   /** nodeKey → resourceKey → human-readable name/identifier this step is expected to produce. */
   plannedOutputPreviewByNodeKey?: Record<string, Record<string, string>>;
+  /**
+   * nodeKey → step-by-step manual instructions for steps whose underlying
+   * provider API cannot automate the work (e.g. App Store Connect's
+   * /v1/apps endpoint forbids CREATE). Rendered as an always-visible
+   * checklist, before the user clicks Run.
+   */
+  manualInstructionsByNodeKey?: Record<string, ManualInstructions>;
   /** Step capability flags — which actions are supported per step. */
   stepCapabilities?: Record<string, StepCapabilities>;
   /** Button/action descriptors per step key. */
@@ -326,6 +352,8 @@ export interface ProvisioningPlanResponse {
  * Mirrors the backend `ModuleId` type.
  */
 export type ModuleId = string & { readonly __brand?: 'ModuleId' };
+
+export type MobilePlatform = 'ios' | 'android';
 
 export const BUILTIN_MODULE_IDS = [
   'firebase-core',
@@ -428,12 +456,15 @@ export interface RegistryCategory {
   pluginIds: string[];
 }
 
+export type IntegrationFlow = 'apple' | 'cloudflare';
+
 export interface IntegrationField {
   key: string;
   label: string;
   placeholder: string;
   hint: string;
   type: 'text' | 'password' | 'textarea';
+  optional?: boolean;
 }
 
 export interface IntegrationConfig {
@@ -447,6 +478,7 @@ export interface IntegrationConfig {
   docsUrl: string;
   fields: IntegrationField[];
   supportsOAuth?: boolean;
+  customFlow?: IntegrationFlow;
 }
 
 export interface IntegrationDependencyStatus {
@@ -480,6 +512,8 @@ export interface ConnectedProviders {
   firebase: boolean;
   expo: boolean;
   github: boolean;
+  apple: boolean;
+  cloudflare: boolean;
 }
 
 export const mapGcpStepToSetupStatus = (

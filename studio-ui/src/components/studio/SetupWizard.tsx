@@ -4,14 +4,19 @@ import {
   Bell,
   Info,
   CheckCircle2,
+  Copy,
+  ChevronDown,
+  ChevronRight,
   Cloud,
   Database,
+  Download,
   ExternalLink,
   GitBranch,
   Github,
   Globe,
   HardDrive,
   KeyRound,
+  ListChecks,
   Loader2,
   Lock,
   Package,
@@ -33,9 +38,12 @@ import type { LucideIcon } from 'lucide-react';
 import { api, provisioningNodeDescription } from './helpers';
 import { useOAuthSession } from '../../hooks/useOAuthSession';
 import { CompletedStepArtifactsPanel } from './CompletedStepArtifactsPanel';
+import { StepSecretsPanel, stepHasVaultSecrets } from './StepSecretsPanel';
+import { P8FileInput, extractKeyIdFromP8FileName } from './P8FileInput';
 import {
   JOURNEY_PHASE_TITLE,
   type JourneyPhaseId,
+  type ManualInstructions,
   type NodeState,
   type NodeStatus,
   type ProvisioningGraphNode,
@@ -166,15 +174,31 @@ type PlanNodeResetResponse = ProvisioningPlanResponse & {
 };
 
 /**
+ * Structured information about a single unmet dependency. Surfaced in the
+ * "Not ready yet — complete these first" panel so the user can click through
+ * to the upstream step instead of having to hunt for it in the sidebar.
+ */
+interface DependencyBlocker {
+  /** Node key of the upstream dependency (used to navigate back to it). */
+  nodeKey: string;
+  /** Human-readable label of the upstream node. */
+  label: string;
+  /** Per-environment instance this blocker applies to, when relevant. */
+  environment?: string;
+  /** Humanised status of the upstream node (e.g. "not started", "failed"). */
+  statusText: string;
+}
+
+/**
  * Required dependencies for one execution context (global node, or one per-env instance).
  */
 function getBlockersForInstance(
   node: ProvisioningGraphNode,
   instanceEnv: string | undefined,
   plan: ProvisioningPlanResponse,
-): string[] {
+): DependencyBlocker[] {
   const nodeMap = new Map(plan.nodes.map((n) => [n.key, n]));
-  const reasons: string[] = [];
+  const reasons: DependencyBlocker[] = [];
 
   for (const dep of node.dependencies) {
     if (!dep.required) continue;
@@ -188,21 +212,35 @@ function getBlockersForInstance(
         const sk = `${dep.nodeKey}@${instanceEnv}`;
         const st = plan.nodeStates[sk]?.status ?? 'not-started';
         if (!statusIsDone(st)) {
-          reasons.push(`${depNode.label} (${instanceEnv}): ${humanizeStatus(st)}`);
+          reasons.push({
+            nodeKey: dep.nodeKey,
+            label: depNode.label,
+            environment: instanceEnv,
+            statusText: humanizeStatus(st),
+          });
         }
       } else {
         for (const env of plan.environments) {
           const sk = `${dep.nodeKey}@${env}`;
           const st = plan.nodeStates[sk]?.status ?? 'not-started';
           if (!statusIsDone(st)) {
-            reasons.push(`${depNode.label} (${env}): ${humanizeStatus(st)}`);
+            reasons.push({
+              nodeKey: dep.nodeKey,
+              label: depNode.label,
+              environment: env,
+              statusText: humanizeStatus(st),
+            });
           }
         }
       }
     } else {
       const st = plan.nodeStates[dep.nodeKey]?.status ?? 'not-started';
       if (!statusIsDone(st)) {
-        reasons.push(`${depNode.label}: ${humanizeStatus(st)}`);
+        reasons.push({
+          nodeKey: dep.nodeKey,
+          label: depNode.label,
+          statusText: humanizeStatus(st),
+        });
       }
     }
   }
@@ -213,7 +251,7 @@ function getBlockersForInstance(
 /**
  * Blockers for the next work on this node (first per-env instance that is not done and cannot run yet, or global).
  */
-function getDependencyBlockers(node: ProvisioningGraphNode, plan: ProvisioningPlanResponse): string[] {
+function getDependencyBlockers(node: ProvisioningGraphNode, plan: ProvisioningPlanResponse): DependencyBlocker[] {
   const status = getNodeStatus(node, plan.nodeStates, plan.environments);
   if (status === 'completed' || status === 'skipped') return [];
 
@@ -298,6 +336,201 @@ function computeFallbackNodeOrder(nodes: ProvisioningGraphNode[]) {
     }
   }
   return order;
+}
+
+/**
+ * Collapsible "Manual steps required" panel.
+ *
+ * The instructions are still authored as if the user is about to perform them
+ * (they double as a runbook for re-runs / audit), but once the step is
+ * `completed` or `skipped` we don't want them eating vertical space above the
+ * artifacts panel — the user has already finished the work. We default to
+ * collapsed in that case while leaving an explicit chevron for re-opening.
+ *
+ * For any other status (in-progress, waiting-on-user, failed, blocked,
+ * not-started) we default to expanded so the user sees the next action
+ * without an extra click.
+ *
+ * Per-step open state is tracked via `nodeKey` so navigating between steps
+ * doesn't sticky a stale toggle, and so re-opening the same step preserves
+ * whatever the user manually toggled within this session.
+ */
+function ManualInstructionsPanel({
+  nodeKey,
+  manual,
+  status,
+}: {
+  nodeKey: string;
+  manual: ManualInstructions;
+  status: NodeStatus;
+}) {
+  const isFinished = status === 'completed' || status === 'skipped';
+  const [openOverride, setOpenOverride] = useState<boolean | null>(null);
+  const [copyingDownloadKey, setCopyingDownloadKey] = useState<string | null>(null);
+  const [copiedDownloadKey, setCopiedDownloadKey] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
+
+  // Reset the override whenever we navigate to a different step so each step
+  // starts from its status-driven default again.
+  useEffect(() => {
+    setOpenOverride(null);
+    setCopyingDownloadKey(null);
+    setCopiedDownloadKey(null);
+    setCopyError(null);
+  }, [nodeKey]);
+
+  const isOpen = openOverride ?? !isFinished;
+  const isPromptDownload = (url: string): boolean => url.includes('/integration-kit/auth/prompt');
+
+  const copyPromptDownload = async (downloadUrl: string, downloadKey: string) => {
+    setCopyError(null);
+    setCopyingDownloadKey(downloadKey);
+    try {
+      const response = await fetch(downloadUrl, { cache: 'no-store' });
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        let message = response.statusText || 'Failed to fetch prompt text.';
+        if (body) {
+          try {
+            const parsed = JSON.parse(body) as { error?: string };
+            message = parsed.error || message;
+          } catch {
+            message = body;
+          }
+        }
+        throw new Error(message);
+      }
+      const promptText = await response.text();
+      await navigator.clipboard.writeText(promptText);
+      setCopiedDownloadKey(downloadKey);
+      window.setTimeout(() => {
+        setCopiedDownloadKey((current) => (current === downloadKey ? null : current));
+      }, 1600);
+    } catch (err) {
+      setCopyError((err as Error).message || 'Failed to copy prompt.');
+    } finally {
+      setCopyingDownloadKey(null);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-blue-500/30 bg-blue-500/5">
+      <button
+        type="button"
+        onClick={() => setOpenOverride(!isOpen)}
+        className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-blue-500/10 rounded-lg transition-colors"
+        aria-expanded={isOpen}
+      >
+        {isOpen ? (
+          <ChevronDown size={14} className="text-blue-700 dark:text-blue-300 shrink-0" />
+        ) : (
+          <ChevronRight size={14} className="text-blue-700 dark:text-blue-300 shrink-0" />
+        )}
+        <ListChecks size={14} className="text-blue-700 dark:text-blue-300 shrink-0" />
+        <span className="text-[11px] font-bold uppercase tracking-wide text-blue-700 dark:text-blue-300 flex-1">
+          {isFinished ? 'Manual steps (completed)' : 'Manual steps required'}
+        </span>
+        <span className="text-[10px] font-medium text-blue-700/70 dark:text-blue-300/70">
+          {manual.steps.length} step{manual.steps.length === 1 ? '' : 's'}
+        </span>
+      </button>
+      {isOpen ? (
+        <div className="px-4 pb-4 space-y-3">
+          {manual.intro ? (
+            <p className="text-xs text-blue-900/90 dark:text-blue-100/90 leading-relaxed pl-6">
+              {manual.intro}
+            </p>
+          ) : null}
+          <ol className="space-y-2 pl-1">
+            {manual.steps.map((step, idx) => (
+              <li key={`${nodeKey}-manual-${idx}`} className="flex items-start gap-2.5">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-[10px] font-bold text-blue-700 dark:text-blue-300">
+                  {idx + 1}
+                </span>
+                <div className="space-y-1 min-w-0">
+                  <p className="text-sm text-foreground leading-snug">{step.title}</p>
+                  {step.detail ? (
+                    step.detail.startsWith('http://') || step.detail.startsWith('https://') ? (
+                      <a
+                        href={step.detail}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs font-mono text-blue-700 dark:text-blue-300 hover:underline break-all"
+                      >
+                        <ExternalLink size={10} className="opacity-70 shrink-0" />
+                        {step.detail}
+                      </a>
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground leading-snug">{step.detail}</p>
+                    )
+                  ) : null}
+                  {step.downloads && step.downloads.length > 0 ? (
+                    <div className="flex flex-col gap-1.5 pt-1">
+                      {step.downloads.map((download, dIdx) => (
+                        <div
+                          key={`${nodeKey}-manual-${idx}-dl-${dIdx}`}
+                          className="flex flex-col gap-0.5"
+                        >
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <a
+                              href={download.url}
+                              download={download.filename}
+                              className="inline-flex items-center gap-1.5 self-start rounded-md border border-blue-500/40 bg-blue-500/10 px-2.5 py-1.5 text-xs font-semibold font-mono text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 transition-colors"
+                            >
+                              <Download size={11} className="shrink-0" />
+                              {download.filename}
+                            </a>
+                            {isPromptDownload(download.url) ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void copyPromptDownload(
+                                    download.url,
+                                    `${nodeKey}-manual-${idx}-dl-${dIdx}`,
+                                  )
+                                }
+                                disabled={copyingDownloadKey === `${nodeKey}-manual-${idx}-dl-${dIdx}`}
+                                className="inline-flex items-center gap-1 rounded-md border border-blue-500/40 bg-blue-500/10 px-2 py-1.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="Copy prompt text to clipboard"
+                              >
+                                {copyingDownloadKey === `${nodeKey}-manual-${idx}-dl-${dIdx}` ? (
+                                  <Loader2 size={11} className="animate-spin shrink-0" />
+                                ) : (
+                                  <Copy size={11} className="shrink-0" />
+                                )}
+                                {copiedDownloadKey === `${nodeKey}-manual-${idx}-dl-${dIdx}`
+                                  ? 'Copied'
+                                  : 'Copy'}
+                              </button>
+                            ) : null}
+                          </div>
+                          {download.description ? (
+                            <p className="text-[11px] text-muted-foreground leading-snug">
+                              {download.description}
+                            </p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+          {manual.note ? (
+            <p className="text-[11px] italic text-blue-900/70 dark:text-blue-100/70 leading-snug border-t border-blue-500/20 pt-2">
+              {manual.note}
+            </p>
+          ) : null}
+          {copyError ? (
+            <p className="text-[11px] text-red-600 dark:text-red-400 leading-snug border-t border-red-500/20 pt-2">
+              {copyError}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function SetupWizard({
@@ -416,6 +649,8 @@ export function SetupWizard({
   const currentStepNode = currentNode?.type === 'step' ? (currentNode as ProvisioningStepNode) : null;
   const currentInputFields = currentStepNode?.inputFields?.length ? currentStepNode.inputFields : null;
   const currentNodeState = currentNode && plan ? plan.nodeStates[currentNode.key] : undefined;
+  const [githubOwnerOptions, setGithubOwnerOptions] = useState<string[]>([]);
+  const [refreshingGithubOwners, setRefreshingGithubOwners] = useState(false);
 
   useEffect(() => {
     if (!currentInputFields) {
@@ -425,8 +660,15 @@ export function SetupWizard({
     }
     const saved = currentNodeState?.userInputs ?? {};
     const defaults: Record<string, string> = {};
+    const declaredFieldKeys = new Set(currentInputFields.map((field) => field.key));
     for (const field of currentInputFields) {
       defaults[field.key] = saved[field.key] ?? field.defaultValue ?? '';
+    }
+    // Preserve side-channel inputs not declared in inputFields (e.g.
+    // apple_auth_key_id set by the reuse-key picker) so Save/Run does not
+    // accidentally wipe them from nodeState.userInputs.
+    for (const [key, value] of Object.entries(saved)) {
+      if (!declaredFieldKeys.has(key)) defaults[key] = value;
     }
     setStepInputs(defaults);
     setStepInputsDirty(false);
@@ -437,10 +679,13 @@ export function SetupWizard({
     setStepInputsDirty(true);
   };
 
-  const handleSaveStepInputs = async () => {
-    if (!currentNode) return;
-    setSavingStepInputs(true);
-    setError(null);
+  /**
+   * Persist the current `stepInputs` map for the active node. Returns true on
+   * success so callers (e.g. runCurrentStep) can chain a follow-up action
+   * without racing against the "dirty" flag.
+   */
+  const persistStepInputs = useCallback(async (): Promise<boolean> => {
+    if (!currentNode) return false;
     try {
       await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/${encodeURIComponent(currentNode.key)}/inputs`, {
         method: 'PUT',
@@ -448,13 +693,59 @@ export function SetupWizard({
         body: JSON.stringify({ inputs: stepInputs }),
       });
       setStepInputsDirty(false);
-      await onRefresh();
+      return true;
     } catch (err) {
       setError((err as Error).message);
+      return false;
+    }
+  }, [currentNode, projectId, stepInputs]);
+
+  const handleSaveStepInputs = async () => {
+    setSavingStepInputs(true);
+    setError(null);
+    try {
+      const ok = await persistStepInputs();
+      if (ok) await onRefresh();
     } finally {
       setSavingStepInputs(false);
     }
   };
+
+  const refreshGithubOwnerOptions = useCallback(async () => {
+    setRefreshingGithubOwners(true);
+    try {
+      const result = await api<{
+        connected?: boolean;
+        details?: { username?: string; orgNames?: string[] };
+      }>('/api/integrations/github/connection');
+      const username = result.details?.username?.trim() ?? '';
+      const orgNames = (result.details?.orgNames ?? [])
+        .map((name) => name.trim())
+        .filter(Boolean);
+      const options = Array.from(new Set([username, ...orgNames].filter(Boolean)));
+      setGithubOwnerOptions(options);
+      if (options.length > 0) {
+        setStepInputs((prev) => {
+          const current = prev['github_owner']?.trim();
+          if (current) return prev;
+          return { ...prev, github_owner: options[0] };
+        });
+        setStepInputsDirty(true);
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRefreshingGithubOwners(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!currentInputFields?.some((field) => field.key === 'github_owner')) {
+      setGithubOwnerOptions([]);
+      return;
+    }
+    void refreshGithubOwnerOptions();
+  }, [currentNode?.key, currentInputFields, refreshGithubOwnerOptions]);
 
   const phaseProgress = useMemo(() => {
     if (!plan || !currentNode) return { done: 0, total: 0, phase: null as JourneyPhaseId | null };
@@ -470,9 +761,24 @@ export function SetupWizard({
   }, [plan, orderedNodes, currentNode]);
 
   const currentBlockers = useMemo(() => {
-    if (!plan || !currentNode) return [] as string[];
+    if (!plan || !currentNode) return [] as DependencyBlocker[];
     return getDependencyBlockers(currentNode, plan);
   }, [plan, currentNode]);
+
+  /**
+   * Navigate the wizard to the upstream dependency the user clicked on so they
+   * can resolve it without scanning the sidebar. We resolve by node key
+   * against the canonically-ordered list (environment scope is intentionally
+   * ignored — the wizard renders a single panel per node and surfaces
+   * per-environment progress inside that panel).
+   */
+  const focusNodeByKey = useCallback(
+    (nodeKey: string) => {
+      const idx = orderedNodes.findIndex((n) => n.key === nodeKey);
+      if (idx >= 0) setSidebarFocusIndex(idx);
+    },
+    [orderedNodes],
+  );
 
   const isTeardown = currentNode?.type === 'step' && currentNode.direction === 'teardown';
 
@@ -508,6 +814,18 @@ export function SetupWizard({
     setSyncInfo(null);
     setIsRunning(true);
     try {
+      // Auto-persist any unsaved input edits before kicking off the run.
+      // The backend executor reads from the persisted userInputs (not the
+      // wizard's in-memory state), so without this the run can silently
+      // no-op when the user uploads a file and immediately clicks Run.
+      // For Apple Auth Key steps in particular the executor IS just a
+      // "verify file + write to vault + mark complete" path, so the saved
+      // inputs are the only signal that drives the work.
+      if (stepInputsDirty) {
+        const ok = await persistStepInputs();
+        if (!ok) return;
+      }
+
       const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
         `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`,
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeKeys: [currentNode.key] }) },
@@ -634,7 +952,34 @@ export function SetupWizard({
   }
 
   async function revalidateStep() {
-    if (!currentNode || currentNode.type !== 'step') return;
+    if (!currentNode) return;
+    if (currentNode.type === 'user-action') {
+      setError(null);
+      setSyncInfo(null);
+      setIsRevalidating(true);
+      try {
+        const res = await api<{ ok: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
+          `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`,
+          { method: 'POST' },
+        );
+        if (res.needsReauth && res.authUrl && res.sessionId) {
+          const reauthStatus = await gcpOAuthSession.pollExternal(res.sessionId, res.authUrl);
+          if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
+            await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/sync`, { method: 'POST' });
+          } else {
+            setError(gcpOAuthSession.error ?? 'Google re-authentication failed. Please try again.');
+            return;
+          }
+        }
+        await onRefresh();
+        setSyncInfo('Sync complete.');
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setIsRevalidating(false);
+      }
+      return;
+    }
     setError(null);
     setSyncInfo(null);
     setIsRevalidating(true);
@@ -645,11 +990,50 @@ export function SetupWizard({
         message?: string;
         plan: ProvisioningPlanResponse;
         results?: Array<{ environment?: string; stillValid: boolean }>;
+        needsReauth?: boolean;
+        sessionId?: string;
+        authUrl?: string;
       }>(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/revalidate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nodeKey: currentNode.key }),
       });
+      if (res.needsReauth && res.authUrl && res.sessionId) {
+        const reauthStatus = await gcpOAuthSession.pollExternal(res.sessionId, res.authUrl);
+        if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
+          const retried = await api<{
+            supported: boolean;
+            message?: string;
+            plan: ProvisioningPlanResponse;
+            results?: Array<{ environment?: string; stillValid: boolean }>;
+          }>(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/revalidate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nodeKey: currentNode.key }),
+          });
+          onPlanChange(retried.plan);
+          await onRefresh();
+          if (!retried.supported) {
+            setSyncInfo(retried.message ?? 'Sync is not available for this step.');
+          } else if (retried.results?.length) {
+            const failed = retried.results.filter((r) => !r.stillValid);
+            if (failed.length > 0) {
+              if (priorStatus === 'completed') {
+                setError(
+                  failed.length === retried.results.length
+                    ? 'Resource no longer exists in the provider — step has been reset.'
+                    : `${failed.length} environment(s) no longer exist and were reset.`,
+                );
+              } else {
+                setSyncInfo('Not created yet — run this step to provision the resource.');
+              }
+            }
+          }
+        } else {
+          setError(gcpOAuthSession.error ?? 'Google re-authentication failed. Please try again.');
+        }
+        return;
+      }
       onPlanChange(res.plan);
       await onRefresh();
       if (!res.supported) {
@@ -730,10 +1114,13 @@ export function SetupWizard({
   const showRevert =
     currentStatus === 'completed' || currentStatus === 'skipped' || currentStatus === 'failed';
   const showRevalidate =
-    currentNode?.type === 'step' &&
+    (
+      (currentNode?.type === 'step' && !isTeardown) ||
+      (currentNode?.type === 'user-action' &&
+        currentNode.verification.type === 'api-check')
+    ) &&
     currentStatus !== 'in-progress' &&
-    currentStatus !== 'waiting-on-user' &&
-    !isTeardown;
+    currentStatus !== 'waiting-on-user';
   const showSkip =
     Boolean(currentNode && plan) &&
     !['completed', 'skipped', 'in-progress'].includes(currentStatus) &&
@@ -903,13 +1290,6 @@ export function SetupWizard({
             </span>
           )}
 
-          {currentStatus === 'waiting-on-user' && (
-            <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
-              <PauseCircle size={12} />
-              Waiting for user action
-            </span>
-          )}
-
           {showSkip ? (
             <button
               type="button"
@@ -1032,10 +1412,42 @@ export function SetupWizard({
                     <Lock size={12} className="shrink-0 opacity-80" />
                     Not ready yet — complete these first:
                   </p>
-                  <ul className="mt-2 list-disc pl-4 text-xs text-amber-900/90 dark:text-amber-100/90 space-y-1">
-                    {currentBlockers.map((line) => (
-                      <li key={line}>{line}</li>
-                    ))}
+                  <ul className="mt-2 space-y-1">
+                    {currentBlockers.map((blocker, idx) => {
+                      const targetIndex = orderedNodes.findIndex((n) => n.key === blocker.nodeKey);
+                      const canNavigate = targetIndex >= 0;
+                      const key = `${blocker.nodeKey}-${blocker.environment ?? 'global'}-${idx}`;
+                      return (
+                        <li key={key}>
+                          <button
+                            type="button"
+                            disabled={!canNavigate}
+                            onClick={() => {
+                              if (canNavigate) focusNodeByKey(blocker.nodeKey);
+                            }}
+                            title={canNavigate ? 'Open this step' : undefined}
+                            className="group w-full flex items-center gap-2 rounded-md border border-transparent px-2 py-1 text-left text-xs text-amber-900/90 dark:text-amber-100/90 transition-colors hover:border-amber-500/40 hover:bg-amber-500/10 focus:outline-none focus-visible:border-amber-500/60 focus-visible:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:border-transparent disabled:hover:bg-transparent"
+                          >
+                            <span className="flex-1 leading-snug">
+                              <span className="font-semibold underline decoration-amber-500/30 decoration-dotted underline-offset-2 group-hover:decoration-amber-500/70 group-disabled:no-underline">
+                                {blocker.label}
+                              </span>
+                              {blocker.environment ? (
+                                <span className="opacity-80"> ({blocker.environment})</span>
+                              ) : null}
+                              <span className="opacity-70">: {blocker.statusText}</span>
+                            </span>
+                            {canNavigate ? (
+                              <ChevronRight
+                                size={12}
+                                className="shrink-0 opacity-60 transition-opacity group-hover:opacity-100"
+                                aria-hidden
+                              />
+                            ) : null}
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               ) : null}
@@ -1058,10 +1470,243 @@ export function SetupWizard({
             </span>
           </div>
 
-          {currentInputFields && currentStatus !== 'completed' && currentStatus !== 'skipped' && (
+          {(() => {
+            const manual = plan.manualInstructionsByNodeKey?.[currentNode.key];
+            if (!manual || manual.steps.length === 0) return null;
+            return (
+              <ManualInstructionsPanel
+                nodeKey={currentNode.key}
+                manual={manual}
+                status={currentStatus}
+              />
+            );
+          })()}
+
+          {(() => {
+            const portalLinks = (currentNode.completionPortalLinks ?? []).filter((link) => link.href);
+            if (portalLinks.length === 0) return null;
+            const headingLabel =
+              currentStatus === 'completed' ? 'Verify in portal' : 'Where this will appear';
+            const headingHint =
+              currentStatus === 'completed'
+                ? 'Open these to confirm the resource exists in the provider portal.'
+                : 'Open these in a new tab so you can watch the resource appear after you run this step.';
+            return (
+              <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2">
+                <div className="flex items-start gap-1.5">
+                  <ExternalLink size={11} className="text-muted-foreground mt-1 shrink-0" />
+                  <div className="space-y-0.5">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                      {headingLabel}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground leading-snug">{headingHint}</p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 pl-5">
+                  {portalLinks.map((link) => (
+                    <a
+                      key={`${currentNode.key}-portal-${link.label}-${link.href}`}
+                      href={link.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-muted/60"
+                    >
+                      <ExternalLink size={11} className="opacity-70" />
+                      {link.label}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {currentInputFields && currentStatus !== 'completed' && currentStatus !== 'skipped' && (() => {
+            // Apple Auth Key picker:
+            //   The APNs and Sign In with Apple steps share a single .p8 per
+            //   project — Apple keys can carry multiple capabilities. The
+            //   apple_auth_key_id is no longer typed by the user; it is
+            //   derived from the AuthKey_<KEYID>.p8 filename Apple sets at
+            //   download time. For projects that already have a vaulted key,
+            //   the picker below lets the user reuse it (no .p8 upload at
+            //   all — the backend just records the new capability annotation
+            //   against the existing key in the unified Apple Auth Key
+            //   registry).
+            const isAppleAuthKeyStep =
+              currentStepNode?.key === 'apple:generate-apns-key' ||
+              currentStepNode?.key === 'apple:create-sign-in-key';
+
+            const stepCapabilityInfo: Record<string, { producedKey: string; capLabel: string }> = {
+              'apple:generate-apns-key': {
+                producedKey: 'apple_auth_key_id_apns',
+                capLabel: 'APNs',
+              },
+              'apple:create-sign-in-key': {
+                producedKey: 'apple_auth_key_id_sign_in_with_apple',
+                capLabel: 'Sign in with Apple',
+              },
+            };
+
+            // Capabilities-by-key summary from OTHER Apple key steps (don't
+            // self-list the current step's own typed value — that would
+            // suggest reusing what the user is currently uploading).
+            const appleAuthKeysSummary: Array<{ keyId: string; capabilities: string[] }> = [];
+            if (isAppleAuthKeyStep && plan?.nodeStates && currentStepNode) {
+              const map = new Map<string, Set<string>>();
+              for (const state of Object.values(plan.nodeStates)) {
+                if (state.nodeKey === currentStepNode.key) continue;
+                const info = stepCapabilityInfo[state.nodeKey];
+                if (!info) continue;
+                const id = (
+                  state.resourcesProduced?.[info.producedKey]?.trim() ||
+                  state.userInputs?.['apple_auth_key_id']?.trim() ||
+                  ''
+                ).toUpperCase();
+                if (!id) continue;
+                const set = map.get(id) ?? new Set<string>();
+                set.add(info.capLabel);
+                map.set(id, set);
+              }
+              for (const [keyId, caps] of map) {
+                appleAuthKeysSummary.push({ keyId, capabilities: Array.from(caps) });
+              }
+              appleAuthKeysSummary.sort((a, b) => a.keyId.localeCompare(b.keyId));
+            }
+
+            const selectedAuthKeyId = stepInputs['apple_auth_key_id']?.trim().toUpperCase() ?? '';
+            const hasUploadedPem = Boolean(stepInputs['apple_auth_key_p8']?.trim());
+            const isReusingExistingAuthKey =
+              isAppleAuthKeyStep &&
+              !hasUploadedPem &&
+              appleAuthKeysSummary.some((k) => k.keyId === selectedAuthKeyId);
+
+            const handleReuseAppleAuthKey = (keyId: string) => {
+              setStepInputs((prev) => ({
+                ...prev,
+                apple_auth_key_id: keyId,
+                apple_auth_key_p8: '',
+              }));
+              setStepInputsDirty(true);
+            };
+
+            const handleApplePemUpload = (pem: string, fileName?: string) => {
+              if (!pem) {
+                setStepInputs((prev) => ({
+                  ...prev,
+                  apple_auth_key_id: '',
+                  apple_auth_key_p8: '',
+                }));
+                setStepInputsDirty(true);
+                return;
+              }
+              const keyIdFromFile = extractKeyIdFromP8FileName(fileName);
+              setStepInputs((prev) => ({
+                ...prev,
+                apple_auth_key_p8: pem,
+                ...(keyIdFromFile ? { apple_auth_key_id: keyIdFromFile } : {}),
+              }));
+              setStepInputsDirty(true);
+            };
+
+            return (
             <div className="rounded-lg border border-border p-4 space-y-3">
               <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Configuration</p>
-              {currentInputFields.map((field) => (
+              {currentInputFields.map((field) => {
+                const isAppleAuthP8Field = field.key === 'apple_auth_key_p8';
+                if (isAppleAuthP8Field && isAppleAuthKeyStep) {
+                  // Custom picker: existing-key chips + upload dropzone +
+                  // "currently reusing" banner. The Key ID is wired into
+                  // stepInputs.apple_auth_key_id either from the chip click
+                  // or from the AuthKey_<KEYID>.p8 filename on upload.
+                  const synthesizedFileName =
+                    selectedAuthKeyId && hasUploadedPem
+                      ? `AuthKey_${selectedAuthKeyId}.p8`
+                      : undefined;
+                  return (
+                    <div key={field.key} className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-foreground">
+                          {field.label}
+                          {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                        </label>
+                        {field.description && (
+                          <p className="text-[11px] text-muted-foreground leading-snug">{field.description}</p>
+                        )}
+                      </div>
+
+                      {appleAuthKeysSummary.length > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                            Reuse an existing key
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {appleAuthKeysSummary.map((k) => {
+                              const isSelected = isReusingExistingAuthKey && k.keyId === selectedAuthKeyId;
+                              return (
+                                <button
+                                  key={k.keyId}
+                                  type="button"
+                                  onClick={() => handleReuseAppleAuthKey(k.keyId)}
+                                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors ${
+                                    isSelected
+                                      ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                      : 'border-border bg-card hover:bg-muted/60 text-foreground'
+                                  }`}
+                                >
+                                  {isSelected ? (
+                                    <CheckCircle2 size={12} className="shrink-0" />
+                                  ) : (
+                                    <KeyRound size={12} className="opacity-70 shrink-0" />
+                                  )}
+                                  <span className="font-mono font-semibold">{k.keyId}</span>
+                                  <span className="text-[10px] text-muted-foreground/80">
+                                    bears: {k.capabilities.join(', ')}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {isReusingExistingAuthKey ? (
+                        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 flex items-start gap-2">
+                          <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" />
+                          <div className="space-y-1 min-w-0 flex-1">
+                            <p className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                              Reusing key <span className="font-mono">{selectedAuthKeyId}</span>
+                            </p>
+                            <p className="text-xs text-emerald-900 dark:text-emerald-100 leading-relaxed">
+                              No .p8 re-upload needed — saving will record this capability against the existing key.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => handleReuseAppleAuthKey('')}
+                              className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 hover:underline"
+                            >
+                              Pick a different key
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {appleAuthKeysSummary.length > 0 && (
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                              — or upload a new key —
+                            </p>
+                          )}
+                          <P8FileInput
+                            value={stepInputs[field.key] ?? ''}
+                            onChange={handleApplePemUpload}
+                            fileName={synthesizedFileName}
+                            ariaLabel={field.label}
+                            requireAppleAuthKeyFileName
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                return (
                 <div key={field.key} className="space-y-1.5">
                   <label className="text-xs font-semibold text-foreground">
                     {field.label}
@@ -1070,27 +1715,77 @@ export function SetupWizard({
                   {field.description && (
                     <p className="text-[11px] text-muted-foreground leading-snug">{field.description}</p>
                   )}
-                  {field.type === 'select' && field.options ? (
-                    <select
-                      value={stepInputs[field.key] ?? field.defaultValue ?? ''}
-                      onChange={(e) => handleStepInputChange(field.key, e.target.value)}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
-                    >
-                      {field.options.map((opt) => (
-                        <option key={opt} value={opt}>{opt}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      value={stepInputs[field.key] ?? ''}
-                      onChange={(e) => handleStepInputChange(field.key, e.target.value)}
-                      placeholder={field.placeholder}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
-                    />
-                  )}
+                  {(() => {
+                    if (field.type === 'p8') {
+                      return (
+                        <P8FileInput
+                          value={stepInputs[field.key] ?? ''}
+                          onChange={(pem) => handleStepInputChange(field.key, pem)}
+                          ariaLabel={field.label}
+                        />
+                      );
+                    }
+                    const isGithubOwnerField = field.key === 'github_owner';
+                    const selectOptions = isGithubOwnerField
+                      ? githubOwnerOptions
+                      : (field.options ?? []);
+                    const renderSelect = (field.type === 'select' && selectOptions.length > 0) ||
+                      (isGithubOwnerField && selectOptions.length > 0);
+                    const value = stepInputs[field.key] ?? field.defaultValue ?? '';
+                    if (renderSelect) {
+                      return (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={value}
+                            onChange={(e) => handleStepInputChange(field.key, e.target.value)}
+                            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                          >
+                            {selectOptions.map((opt) => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                          </select>
+                          {isGithubOwnerField && (
+                            <button
+                              type="button"
+                              onClick={() => void refreshGithubOwnerOptions()}
+                              disabled={refreshingGithubOwners}
+                              title="Refresh GitHub org memberships from PAT"
+                              className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              {refreshingGithubOwners ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                              Refresh
+                            </button>
+                          )}
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={stepInputs[field.key] ?? ''}
+                          onChange={(e) => handleStepInputChange(field.key, e.target.value)}
+                          placeholder={field.placeholder}
+                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                        />
+                        {isGithubOwnerField && (
+                          <button
+                            type="button"
+                            onClick={() => void refreshGithubOwnerOptions()}
+                            disabled={refreshingGithubOwners}
+                            title="Refresh GitHub org memberships from PAT"
+                            className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {refreshingGithubOwners ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                            Refresh
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
-              ))}
+                );
+              })}
               <button
                 type="button"
                 disabled={savingStepInputs || !stepInputsDirty}
@@ -1101,7 +1796,8 @@ export function SetupWizard({
                 {savingStepInputs ? 'Saving…' : stepInputsDirty ? 'Save Configuration' : 'Configuration Saved'}
               </button>
             </div>
-          )}
+            );
+          })()}
 
           {currentInputFields && (currentStatus === 'completed' || currentStatus === 'skipped') && currentNodeState?.userInputs && (
             <div className="rounded-lg border border-border p-4 space-y-2">
@@ -1109,10 +1805,21 @@ export function SetupWizard({
               <div className="flex flex-wrap gap-2">
                 {currentInputFields.map((field) => {
                   const val = currentNodeState.userInputs?.[field.key] ?? field.defaultValue ?? '';
+                  const isSecret = field.type === 'p8';
+                  const reusedAppleKeyId = field.key === 'apple_auth_key_p8'
+                    ? currentNodeState.userInputs?.['apple_auth_key_id']?.trim().toUpperCase()
+                    : '';
+                  const display = isSecret
+                    ? val
+                      ? `\u2713 vaulted (${val.length.toLocaleString()} chars)`
+                      : reusedAppleKeyId
+                        ? `\u2713 reusing ${reusedAppleKeyId}`
+                        : '\u2014'
+                    : val;
                   return (
                     <span key={field.key} className="inline-flex items-center gap-1.5 text-xs font-mono bg-muted border border-border px-2 py-1 rounded text-foreground" title={field.description}>
                       <span className="text-[10px] text-muted-foreground/70">{field.label}:</span>
-                      <span>{val}</span>
+                      <span>{display}</span>
                     </span>
                   );
                 })}
@@ -1185,6 +1892,10 @@ export function SetupWizard({
               plan={plan}
               stepStatus={currentStatus}
             />
+          )}
+
+          {currentNode.type === 'step' && stepHasVaultSecrets(currentNode.key) && (
+            <StepSecretsPanel projectId={projectId} stepKey={currentNode.key} />
           )}
 
           {isUserAction && currentStatus !== 'completed' && currentStatus !== 'skipped' && (() => {

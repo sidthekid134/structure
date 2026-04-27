@@ -146,6 +146,32 @@ const CREATE_ENV_VAR_FOR_APP = `
   }
 `;
 
+const APP_ENV_VARS_BY_NAME = `
+  query StudioAppEnvVarsByName($appId: String!, $filterNames: [String!]) {
+    app {
+      byId(appId: $appId) {
+        id
+        environmentVariables(filterNames: $filterNames) {
+          id
+          name
+          value
+          environments
+        }
+      }
+    }
+  }
+`;
+
+const DELETE_ENV_VAR = `
+  mutation StudioDeleteEnvVar($id: ID!) {
+    environmentVariable {
+      deleteEnvironmentVariable(id: $id) {
+        id
+      }
+    }
+  }
+`;
+
 const CREATE_ASC_API_KEY = `
   mutation StudioCreateAscApiKey($accountId: ID!, $input: AppStoreConnectApiKeyInput!) {
     appStoreConnectApiKey {
@@ -218,6 +244,177 @@ const SET_ANDROID_SA_FOR_SUBMIT = `
       setGoogleServiceAccountKeyForSubmissions(
         id: $androidCredentialsId
         googleServiceAccountKeyId: $googleServiceAccountKeyId
+      ) {
+        id
+      }
+    }
+  }
+`;
+
+// ---------------------------------------------------------------------------
+// EAS-managed iOS App Store distribution signing
+// ---------------------------------------------------------------------------
+//
+// Mutation/query field names are taken verbatim from eas-cli main:
+//   src/credentials/ios/api/graphql/{mutations,queries}/Apple*.ts
+//   src/credentials/ios/api/graphql/{mutations,queries}/IosAppBuildCredentials*.ts
+// Schema is treated as eas-cli's source of truth — if Expo renames a field,
+// upgrade @expo/apple-utils alongside this file.
+
+const APPLE_TEAM_BY_IDENTIFIER_QUERY = `
+  query StudioAppleTeamByIdentifier($accountId: ID!, $appleTeamIdentifier: String!) {
+    appleTeam {
+      byAppleTeamIdentifier(accountId: $accountId, identifier: $appleTeamIdentifier) {
+        id
+      }
+    }
+  }
+`;
+
+const CREATE_APPLE_TEAM_MUTATION = `
+  mutation StudioCreateAppleTeam($appleTeamInput: AppleTeamInput!, $accountId: ID!) {
+    appleTeam {
+      createAppleTeam(appleTeamInput: $appleTeamInput, accountId: $accountId) {
+        id
+      }
+    }
+  }
+`;
+
+const APPLE_APP_IDENTIFIER_BY_BUNDLE_ID_QUERY = `
+  query StudioAppleAppIdentifierByBundle($accountName: String!, $bundleIdentifier: String!) {
+    account {
+      byName(accountName: $accountName) {
+        id
+        appleAppIdentifiers(bundleIdentifier: $bundleIdentifier) {
+          id
+          bundleIdentifier
+        }
+      }
+    }
+  }
+`;
+
+const CREATE_APPLE_APP_IDENTIFIER_MUTATION = `
+  mutation StudioCreateAppleAppIdentifier(
+    $appleAppIdentifierInput: AppleAppIdentifierInput!
+    $accountId: ID!
+  ) {
+    appleAppIdentifier {
+      createAppleAppIdentifier(
+        appleAppIdentifierInput: $appleAppIdentifierInput
+        accountId: $accountId
+      ) {
+        id
+      }
+    }
+  }
+`;
+
+const IOS_APP_BUILD_CREDENTIALS_QUERY = `
+  query StudioIosBuildCredsByAppleIdentifier(
+    $appId: String!
+    $appleAppIdentifierId: String!
+    $iosDistributionType: IosDistributionType
+  ) {
+    app {
+      byId(appId: $appId) {
+        id
+        iosAppCredentials(filter: { appleAppIdentifierId: $appleAppIdentifierId }) {
+          id
+          iosAppBuildCredentialsList(filter: { iosDistributionType: $iosDistributionType }) {
+            id
+            distributionCertificate {
+              id
+              developerPortalIdentifier
+              serialNumber
+            }
+            provisioningProfile {
+              id
+              developerPortalIdentifier
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const CREATE_APPLE_DIST_CERT_MUTATION = `
+  mutation StudioCreateAppleDistCert(
+    $appleDistributionCertificateInput: AppleDistributionCertificateInput!
+    $accountId: ID!
+  ) {
+    appleDistributionCertificate {
+      createAppleDistributionCertificate(
+        appleDistributionCertificateInput: $appleDistributionCertificateInput
+        accountId: $accountId
+      ) {
+        id
+      }
+    }
+  }
+`;
+
+const CREATE_APPLE_PROVISIONING_PROFILE_MUTATION = `
+  mutation StudioCreateAppleProvisioningProfile(
+    $appleProvisioningProfileInput: AppleProvisioningProfileInput!
+    $accountId: ID!
+    $appleAppIdentifierId: ID!
+  ) {
+    appleProvisioningProfile {
+      createAppleProvisioningProfile(
+        appleProvisioningProfileInput: $appleProvisioningProfileInput
+        accountId: $accountId
+        appleAppIdentifierId: $appleAppIdentifierId
+      ) {
+        id
+      }
+    }
+  }
+`;
+
+const CREATE_IOS_APP_BUILD_CREDS_MUTATION = `
+  mutation StudioCreateIosAppBuildCreds(
+    $iosAppBuildCredentialsInput: IosAppBuildCredentialsInput!
+    $iosAppCredentialsId: ID!
+  ) {
+    iosAppBuildCredentials {
+      createIosAppBuildCredentials(
+        iosAppBuildCredentialsInput: $iosAppBuildCredentialsInput
+        iosAppCredentialsId: $iosAppCredentialsId
+      ) {
+        id
+      }
+    }
+  }
+`;
+
+const SET_DIST_CERT_ON_BUILD_CREDS_MUTATION = `
+  mutation StudioSetDistCertOnBuildCreds(
+    $iosAppBuildCredentialsId: ID!
+    $distributionCertificateId: ID!
+  ) {
+    iosAppBuildCredentials {
+      setDistributionCertificate(
+        id: $iosAppBuildCredentialsId
+        distributionCertificateId: $distributionCertificateId
+      ) {
+        id
+      }
+    }
+  }
+`;
+
+const SET_PROVISIONING_PROFILE_ON_BUILD_CREDS_MUTATION = `
+  mutation StudioSetProvisioningProfileOnBuildCreds(
+    $iosAppBuildCredentialsId: ID!
+    $provisioningProfileId: ID!
+  ) {
+    iosAppBuildCredentials {
+      setProvisioningProfile(
+        id: $iosAppBuildCredentialsId
+        provisioningProfileId: $provisioningProfileId
       ) {
         id
       }
@@ -536,6 +733,65 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     }
   }
 
+  /**
+   * Lists app-scoped EAS environment variables matching `name` across every Expo
+   * env slot. Returns the variable's id, name, value, and the env slots it is
+   * attached to (e.g. `['DEVELOPMENT']`).
+   */
+  async listAppEnvironmentVariablesByName(
+    expoAppId: string,
+    name: string,
+  ): Promise<Array<{ id: string; name: string; value: string | null; environments: string[] }>> {
+    type Q = {
+      app: {
+        byId: {
+          id: string;
+          environmentVariables: Array<{
+            id: string;
+            name: string;
+            value: string | null;
+            environments: string[] | null;
+          }>;
+        } | null;
+      };
+    };
+    const data = await expoGraphqlRequest<Q>(this.expoToken, APP_ENV_VARS_BY_NAME, {
+      appId: expoAppId,
+      filterNames: [name],
+    });
+    const vars = data.app?.byId?.environmentVariables ?? [];
+    return vars.map((v) => ({
+      id: v.id,
+      name: v.name,
+      value: v.value,
+      environments: v.environments ?? [],
+    }));
+  }
+
+  /** Deletes a single EAS environment variable by id. */
+  async deleteEnvironmentVariable(envVarId: string): Promise<void> {
+    type M = { environmentVariable: { deleteEnvironmentVariable: { id: string } } };
+    await expoGraphqlRequest<M>(this.expoToken, DELETE_ENV_VAR, { id: envVarId });
+  }
+
+  /**
+   * Removes the `STUDIO_EAS_ENV` marker from the Expo app for a specific Studio
+   * environment (matching by Expo env slot — e.g. studio "development" → DEVELOPMENT).
+   * Idempotent: returns the number of variables actually deleted.
+   */
+  async removeStudioEasEnvironmentMarkerOnApp(
+    expoAppId: string,
+    studioEnvironment: string,
+  ): Promise<number> {
+    const expoSlot = studioEnvironmentToExpoVariableEnvironments(studioEnvironment)[0];
+    const vars = await this.listAppEnvironmentVariablesByName(expoAppId, 'STUDIO_EAS_ENV');
+    const matching = vars.filter((v) => (v.environments ?? []).includes(expoSlot!));
+    for (const v of matching) {
+      await this.deleteEnvironmentVariable(v.id);
+    }
+    return matching.length;
+  }
+
   async configureIosEasSubmit(input: {
     expoAppId: string;
     organization?: string;
@@ -620,6 +876,385 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
       iosAppCredentialsId: iosCredId,
       ascApiKeyId: ascKeyId,
     });
+  }
+
+  /**
+   * Uploads an iOS App Store distribution certificate + provisioning profile
+   * to EAS and binds them to the app's build credentials.
+   *
+   * Idempotency: if the app already has APP_STORE iosAppBuildCredentials with
+   * both a distribution cert and a provisioning profile attached, returns the
+   * existing IDs without uploading anything. Callers should mint fresh assets
+   * via `mintAppleAppStoreSigningAssets` ONLY after this method returns
+   * `wasAlreadyConfigured: false` — otherwise we waste an Apple cert slot
+   * (Apple caps each team at 2 active iOS Distribution certs).
+   */
+  async checkExistingEasIosAppStoreSigning(input: {
+    expoAppId: string;
+    organization?: string;
+    bundleIdentifier: string;
+  }): Promise<
+    | null
+    | {
+        accountId: string;
+        accountName: string;
+        appleAppIdentifierId: string;
+        iosAppCredentialsId: string;
+        iosAppBuildCredentialsId: string;
+        distributionCertificateId: string;
+        provisioningProfileId: string;
+        certDeveloperPortalIdentifier: string | null;
+        certSerialNumber: string | null;
+        profileDeveloperPortalIdentifier: string | null;
+      }
+  > {
+    const { accountId, accountName } = await this.resolveAccountId(input.organization);
+    const appleAppIdentifierId = await this.findAppleAppIdentifierId({
+      accountName,
+      bundleIdentifier: input.bundleIdentifier,
+    });
+    if (!appleAppIdentifierId) return null;
+
+    type Q = {
+      app: {
+        byId: {
+          id: string;
+          iosAppCredentials: Array<{
+            id: string;
+            iosAppBuildCredentialsList: Array<{
+              id: string;
+              distributionCertificate: {
+                id: string;
+                developerPortalIdentifier: string | null;
+                serialNumber: string | null;
+              } | null;
+              provisioningProfile: {
+                id: string;
+                developerPortalIdentifier: string | null;
+              } | null;
+            }>;
+          }>;
+        } | null;
+      };
+    };
+    const data = await expoGraphqlRequest<Q>(this.expoToken, IOS_APP_BUILD_CREDENTIALS_QUERY, {
+      appId: input.expoAppId,
+      appleAppIdentifierId,
+      iosDistributionType: 'APP_STORE',
+    });
+    const cred = data.app?.byId?.iosAppCredentials?.[0];
+    const buildCred = cred?.iosAppBuildCredentialsList?.[0];
+    if (!cred || !buildCred?.distributionCertificate || !buildCred?.provisioningProfile) {
+      return null;
+    }
+    return {
+      accountId,
+      accountName,
+      appleAppIdentifierId,
+      iosAppCredentialsId: cred.id,
+      iosAppBuildCredentialsId: buildCred.id,
+      distributionCertificateId: buildCred.distributionCertificate.id,
+      provisioningProfileId: buildCred.provisioningProfile.id,
+      certDeveloperPortalIdentifier:
+        buildCred.distributionCertificate.developerPortalIdentifier ?? null,
+      certSerialNumber: buildCred.distributionCertificate.serialNumber ?? null,
+      profileDeveloperPortalIdentifier:
+        buildCred.provisioningProfile.developerPortalIdentifier ?? null,
+    };
+  }
+
+  /**
+   * Uploads a freshly-minted distribution certificate + provisioning profile
+   * to EAS and creates (or updates) the iosAppBuildCredentials record.
+   * Caller is responsible for ensuring this is needed by first checking
+   * `checkExistingEasIosAppStoreSigning`.
+   */
+  async provisionEasIosAppStoreSigning(input: {
+    expoAppId: string;
+    organization?: string;
+    bundleIdentifier: string;
+    appleTeamIdentifier: string;
+    appleTeamName?: string;
+    cert: {
+      certP12Base64: string;
+      certPassword: string;
+      certPrivateSigningKey: string;
+      developerPortalIdentifier: string;
+    };
+    profile: {
+      profileContentBase64: string;
+      developerPortalIdentifier: string;
+    };
+  }): Promise<{
+    accountId: string;
+    accountName: string;
+    appleTeamId: string;
+    appleAppIdentifierId: string;
+    iosAppCredentialsId: string;
+    iosAppBuildCredentialsId: string;
+    appleDistributionCertificateId: string;
+    appleProvisioningProfileId: string;
+  }> {
+    const { accountId, accountName } = await this.resolveAccountId(input.organization);
+
+    type AppOwnerQ = {
+      app: {
+        byId: {
+          id: string;
+          ownerAccount: { id: string };
+        } | null;
+      };
+    };
+    const appData = await expoGraphqlRequest<AppOwnerQ>(this.expoToken, APP_BY_ID_FOR_AUTOMATION, {
+      appId: input.expoAppId,
+    });
+    const app = appData.app?.byId;
+    if (!app || app.ownerAccount.id !== accountId) {
+      throw new Error('Expo app not found or wrong Expo account.');
+    }
+
+    const appleTeamId = await this.ensureAppleTeam({
+      accountId,
+      appleTeamIdentifier: input.appleTeamIdentifier,
+      appleTeamName: input.appleTeamName,
+    });
+
+    const appleAppIdentifierId = await this.ensureAppleAppIdentifier({
+      accountId,
+      accountName,
+      bundleIdentifier: input.bundleIdentifier,
+      appleTeamId,
+    });
+
+    type CertM = {
+      appleDistributionCertificate: { createAppleDistributionCertificate: { id: string } };
+    };
+    const certResp = await expoGraphqlRequest<CertM>(
+      this.expoToken,
+      CREATE_APPLE_DIST_CERT_MUTATION,
+      {
+        appleDistributionCertificateInput: {
+          certP12: input.cert.certP12Base64,
+          certPassword: input.cert.certPassword,
+          certPrivateSigningKey: input.cert.certPrivateSigningKey,
+          developerPortalIdentifier: input.cert.developerPortalIdentifier,
+          appleTeamId,
+        },
+        accountId,
+      },
+    );
+    const appleDistributionCertificateId =
+      certResp.appleDistributionCertificate.createAppleDistributionCertificate.id;
+
+    type ProfM = {
+      appleProvisioningProfile: { createAppleProvisioningProfile: { id: string } };
+    };
+    const profResp = await expoGraphqlRequest<ProfM>(
+      this.expoToken,
+      CREATE_APPLE_PROVISIONING_PROFILE_MUTATION,
+      {
+        appleProvisioningProfileInput: {
+          appleProvisioningProfile: input.profile.profileContentBase64,
+          developerPortalIdentifier: input.profile.developerPortalIdentifier,
+        },
+        accountId,
+        appleAppIdentifierId,
+      },
+    );
+    const appleProvisioningProfileId =
+      profResp.appleProvisioningProfile.createAppleProvisioningProfile.id;
+
+    const iosAppCredentialsId = await this.ensureIosAppCredentials({
+      expoAppId: input.expoAppId,
+      appleAppIdentifierId,
+      appleTeamId,
+    });
+
+    const existingBuildCreds = await this.findIosAppBuildCredentialsId({
+      expoAppId: input.expoAppId,
+      appleAppIdentifierId,
+    });
+
+    let iosAppBuildCredentialsId: string;
+    if (existingBuildCreds) {
+      iosAppBuildCredentialsId = existingBuildCreds;
+      type SetCertM = { iosAppBuildCredentials: { setDistributionCertificate: { id: string } } };
+      await expoGraphqlRequest<SetCertM>(this.expoToken, SET_DIST_CERT_ON_BUILD_CREDS_MUTATION, {
+        iosAppBuildCredentialsId,
+        distributionCertificateId: appleDistributionCertificateId,
+      });
+      type SetProfM = { iosAppBuildCredentials: { setProvisioningProfile: { id: string } } };
+      await expoGraphqlRequest<SetProfM>(
+        this.expoToken,
+        SET_PROVISIONING_PROFILE_ON_BUILD_CREDS_MUTATION,
+        {
+          iosAppBuildCredentialsId,
+          provisioningProfileId: appleProvisioningProfileId,
+        },
+      );
+    } else {
+      type CreateBuildCredsM = {
+        iosAppBuildCredentials: { createIosAppBuildCredentials: { id: string } };
+      };
+      const created = await expoGraphqlRequest<CreateBuildCredsM>(
+        this.expoToken,
+        CREATE_IOS_APP_BUILD_CREDS_MUTATION,
+        {
+          iosAppBuildCredentialsInput: {
+            iosDistributionType: 'APP_STORE',
+            distributionCertificateId: appleDistributionCertificateId,
+            provisioningProfileId: appleProvisioningProfileId,
+          },
+          iosAppCredentialsId,
+        },
+      );
+      iosAppBuildCredentialsId =
+        created.iosAppBuildCredentials.createIosAppBuildCredentials.id;
+    }
+
+    return {
+      accountId,
+      accountName,
+      appleTeamId,
+      appleAppIdentifierId,
+      iosAppCredentialsId,
+      iosAppBuildCredentialsId,
+      appleDistributionCertificateId,
+      appleProvisioningProfileId,
+    };
+  }
+
+  private async findAppleAppIdentifierId(args: {
+    accountName: string;
+    bundleIdentifier: string;
+  }): Promise<string | null> {
+    type Q = {
+      account: {
+        byName: {
+          id: string;
+          appleAppIdentifiers: Array<{ id: string; bundleIdentifier: string }>;
+        } | null;
+      };
+    };
+    const data = await expoGraphqlRequest<Q>(
+      this.expoToken,
+      APPLE_APP_IDENTIFIER_BY_BUNDLE_ID_QUERY,
+      { accountName: args.accountName, bundleIdentifier: args.bundleIdentifier },
+    );
+    const ids = data.account?.byName?.appleAppIdentifiers ?? [];
+    const match = ids.find(
+      (a) => a.bundleIdentifier.toLowerCase() === args.bundleIdentifier.toLowerCase(),
+    );
+    return match?.id ?? null;
+  }
+
+  private async ensureAppleAppIdentifier(args: {
+    accountId: string;
+    accountName: string;
+    bundleIdentifier: string;
+    appleTeamId: string;
+  }): Promise<string> {
+    const existing = await this.findAppleAppIdentifierId({
+      accountName: args.accountName,
+      bundleIdentifier: args.bundleIdentifier,
+    });
+    if (existing) return existing;
+
+    type CreateM = {
+      appleAppIdentifier: { createAppleAppIdentifier: { id: string } };
+    };
+    const created = await expoGraphqlRequest<CreateM>(
+      this.expoToken,
+      CREATE_APPLE_APP_IDENTIFIER_MUTATION,
+      {
+        appleAppIdentifierInput: {
+          bundleIdentifier: args.bundleIdentifier,
+          appleTeamId: args.appleTeamId,
+        },
+        accountId: args.accountId,
+      },
+    );
+    return created.appleAppIdentifier.createAppleAppIdentifier.id;
+  }
+
+  private async ensureAppleTeam(args: {
+    accountId: string;
+    appleTeamIdentifier: string;
+    appleTeamName?: string;
+  }): Promise<string> {
+    type Q = {
+      appleTeam: { byAppleTeamIdentifier: { id: string } | null };
+    };
+    const lookup = await expoGraphqlRequest<Q>(this.expoToken, APPLE_TEAM_BY_IDENTIFIER_QUERY, {
+      accountId: args.accountId,
+      appleTeamIdentifier: args.appleTeamIdentifier,
+    });
+    if (lookup.appleTeam?.byAppleTeamIdentifier?.id) {
+      return lookup.appleTeam.byAppleTeamIdentifier.id;
+    }
+    type CreateM = { appleTeam: { createAppleTeam: { id: string } } };
+    const created = await expoGraphqlRequest<CreateM>(this.expoToken, CREATE_APPLE_TEAM_MUTATION, {
+      appleTeamInput: {
+        appleTeamIdentifier: args.appleTeamIdentifier,
+        ...(args.appleTeamName ? { appleTeamName: args.appleTeamName } : {}),
+      },
+      accountId: args.accountId,
+    });
+    return created.appleTeam.createAppleTeam.id;
+  }
+
+  private async ensureIosAppCredentials(args: {
+    expoAppId: string;
+    appleAppIdentifierId: string;
+    appleTeamId: string;
+  }): Promise<string> {
+    type AppQ = {
+      app: {
+        byId: {
+          id: string;
+          iosAppCredentials: Array<{ id: string }>;
+        } | null;
+      };
+    };
+    const appData = await expoGraphqlRequest<AppQ>(this.expoToken, APP_BY_ID_FOR_AUTOMATION, {
+      appId: args.expoAppId,
+    });
+    const existing = appData.app?.byId?.iosAppCredentials?.[0]?.id;
+    if (existing) return existing;
+
+    type CreateM = { iosAppCredentials: { createIosAppCredentials: { id: string } } };
+    const created = await expoGraphqlRequest<CreateM>(
+      this.expoToken,
+      CREATE_IOS_APP_CREDENTIALS,
+      {
+        appId: args.expoAppId,
+        appleAppIdentifierId: args.appleAppIdentifierId,
+        input: { appleTeamId: args.appleTeamId },
+      },
+    );
+    return created.iosAppCredentials.createIosAppCredentials.id;
+  }
+
+  private async findIosAppBuildCredentialsId(args: {
+    expoAppId: string;
+    appleAppIdentifierId: string;
+  }): Promise<string | null> {
+    type Q = {
+      app: {
+        byId: {
+          iosAppCredentials: Array<{
+            iosAppBuildCredentialsList: Array<{ id: string }>;
+          }>;
+        } | null;
+      };
+    };
+    const data = await expoGraphqlRequest<Q>(this.expoToken, IOS_APP_BUILD_CREDENTIALS_QUERY, {
+      appId: args.expoAppId,
+      appleAppIdentifierId: args.appleAppIdentifierId,
+      iosDistributionType: 'APP_STORE',
+    });
+    const list = data.app?.byId?.iosAppCredentials?.[0]?.iosAppBuildCredentialsList ?? [];
+    return list[0]?.id ?? null;
   }
 
   async configureAndroidEasSubmit(input: {

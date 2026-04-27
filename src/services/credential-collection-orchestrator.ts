@@ -120,9 +120,23 @@ export class CredentialCollectionOrchestrator {
     }
   }
 
+  private cloudflareTokenSatisfiedByOrganization(): boolean {
+    try {
+      return this.projectManager.getOrganization().integrations.cloudflare?.status === 'configured';
+    } catch {
+      return false;
+    }
+  }
+
   private filterMissingCredentials(projectId: string, missing: CredentialType[]): CredentialType[] {
-    if (!this.domainSatisfiedByProject(projectId)) return missing;
-    return missing.filter((t) => t !== 'domain_name');
+    let filtered = missing;
+    if (this.domainSatisfiedByProject(projectId)) {
+      filtered = filtered.filter((t) => t !== 'domain_name');
+    }
+    if (this.cloudflareTokenSatisfiedByOrganization()) {
+      filtered = filtered.filter((t) => t !== 'cloudflare_token');
+    }
+    return filtered;
   }
 
   /**

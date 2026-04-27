@@ -97,5 +97,27 @@ export async function tryGetManualRevertAction(
     return expoProjectManualDeleteAction(projectManager, context.projectId, candidates);
   }
 
+  if (stepKey === 'apple:revoke-signing-assets') {
+    return {
+      stepKey,
+      title: 'Revoke Apple signing assets manually',
+      body:
+        'Open Apple Developer and App Store Connect, then revoke the certificates, provisioning profiles, APNs key, and App Store Connect API key used by this project.',
+      primaryUrl: 'https://developer.apple.com/account/resources',
+      primaryLabel: 'Open Apple Developer resources',
+    };
+  }
+
+  if (stepKey === 'apple:remove-app-store-listing') {
+    return {
+      stepKey,
+      title: 'Remove App Store Connect listing manually',
+      body:
+        'Open App Store Connect and archive/remove the app listing. Apple may not allow permanent deletion after publishing, so complete the available removal steps manually.',
+      primaryUrl: 'https://appstoreconnect.apple.com/apps',
+      primaryLabel: 'Open App Store Connect apps',
+    };
+  }
+
   return null;
 }
