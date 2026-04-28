@@ -160,6 +160,38 @@ function humanizeStatus(s: NodeStatus | undefined): string {
   return s.replace(/-/g, ' ');
 }
 
+function getNodeInvalidation(
+  node: ProvisioningGraphNode,
+  nodeStates: Record<string, NodeState>,
+  environments: string[],
+): {
+  isInvalidated: boolean;
+  by?: string;
+  reason?: string;
+  environments?: string[];
+} {
+  if (node.type === 'step' && node.environmentScope === 'per-environment') {
+    const invalidated = environments
+      .map((env) => ({ env, state: nodeStates[`${node.key}@${env}`] }))
+      .filter(({ state }) => Boolean(state?.invalidatedBy));
+    if (invalidated.length === 0) return { isInvalidated: false };
+    const first = invalidated[0]!.state!;
+    return {
+      isInvalidated: true,
+      by: first.invalidatedBy,
+      reason: first.error,
+      environments: invalidated.map(({ env }) => env),
+    };
+  }
+  const state = nodeStates[node.key];
+  if (!state?.invalidatedBy) return { isInvalidated: false };
+  return {
+    isInvalidated: true,
+    by: state.invalidatedBy,
+    reason: state.error,
+  };
+}
+
 /** Expo robot tokens cannot call app deletion; server still returns a generic warning line. */
 function isExpoRobotDeleteRevertWarning(line: string): boolean {
   return /robot access to this api is not supported/i.test(line);
@@ -172,6 +204,13 @@ type PlanNodeResetResponse = ProvisioningPlanResponse & {
   sessionId?: string;
   authUrl?: string;
 };
+
+const REFRESHABLE_STEP_FALLBACK_KEYS = new Set<string>([
+  'apple:store-signing-in-eas',
+  'oauth:register-oauth-client-ios',
+  'oauth:register-oauth-client-android',
+  'oauth:prepare-app-integration-kit',
+]);
 
 /**
  * Structured information about a single unmet dependency. Surfaced in the
@@ -645,6 +684,10 @@ export function SetupWizard({
 
   const currentNode = orderedNodes[displayIndex] ?? null;
   const currentStatus = currentNode && plan ? getNodeStatus(currentNode, plan.nodeStates, plan.environments) : 'not-started';
+  const currentInvalidation = useMemo(() => {
+    if (!currentNode || !plan) return { isInvalidated: false } as const;
+    return getNodeInvalidation(currentNode, plan.nodeStates, plan.environments);
+  }, [currentNode, plan]);
 
   const currentStepNode = currentNode?.type === 'step' ? (currentNode as ProvisioningStepNode) : null;
   const currentInputFields = currentStepNode?.inputFields?.length ? currentStepNode.inputFields : null;
@@ -801,6 +844,16 @@ export function SetupWizard({
     currentStatus !== 'skipped' &&
     currentStatus !== 'in-progress' &&
     stepHasRunnableInstance(currentNode, plan!);
+  const stepSupportsRefresh =
+    currentNode?.type === 'step' &&
+    currentNode.automationLevel !== 'manual' &&
+    (Boolean(currentNode.refreshTriggers?.length) ||
+      REFRESHABLE_STEP_FALLBACK_KEYS.has(currentNode.key));
+  const showCompletedRefreshAction =
+    Boolean(stepSupportsRefresh) &&
+    currentStatus === 'completed' &&
+    !planHasInProgress &&
+    !isTeardown;
   const canRunCurrent = Boolean(stepRunnable);
   const isUserAction = currentNode?.type === 'user-action';
   const userActionCanSubmit =
@@ -808,7 +861,18 @@ export function SetupWizard({
     currentStatus !== 'completed' &&
     userActionDepsSatisfied(currentNode, plan!);
 
-  async function runCurrentStep() {
+  const runIntentForNodeKey = useCallback((nodeKey: string): 'create' | 'refresh' => {
+    if (!plan) return 'create';
+    const direct = plan.nodeStates[nodeKey];
+    if (direct?.invalidatedBy) return 'refresh';
+    const hasPerEnvInvalidation = Object.entries(plan.nodeStates).some(
+      ([stateKey, state]) =>
+        stateKey.startsWith(`${nodeKey}@`) && Boolean(state.invalidatedBy),
+    );
+    return hasPerEnvInvalidation ? 'refresh' : 'create';
+  }, [plan]);
+
+  async function runCurrentStep(forcedIntent?: 'create' | 'refresh') {
     if (!currentNode || currentNode.type !== 'step') return;
     setError(null);
     setSyncInfo(null);
@@ -826,9 +890,14 @@ export function SetupWizard({
         if (!ok) return;
       }
 
+      const intent = forcedIntent ?? runIntentForNodeKey(currentNode.key);
       const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
         `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeKeys: [currentNode.key] }) },
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeKeys: [currentNode.key], intent }),
+        },
       );
 
       if (result.needsReauth && result.sessionId && result.authUrl) {
@@ -838,7 +907,7 @@ export function SetupWizard({
           await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nodeKeys: [currentNode.key] }),
+            body: JSON.stringify({ nodeKeys: [currentNode.key], intent }),
           });
         } else {
           setError(gcpOAuthSession.error ?? 'Google sign-in required before running this step.');
@@ -1152,6 +1221,7 @@ export function SetupWizard({
                 const isActive = index === displayIndex;
                 const isWizardCursor = index === currentIndex && sidebarFocusIndex === null;
                 const waitingOnDeps = isDependencyWaiting(node, plan, status);
+                const stale = getNodeInvalidation(node, plan.nodeStates, plan.environments).isInvalidated;
                 return (
                   <li key={node.key}>
                     <button
@@ -1204,6 +1274,11 @@ export function SetupWizard({
                               You
                             </span>
                           )}
+                          {stale && (
+                            <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide text-orange-700 dark:text-orange-300 bg-orange-500/15 border border-orange-500/30 px-1 py-px rounded">
+                              Stale
+                            </span>
+                          )}
                           {waitingOnDeps && (
                             <span
                               className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-muted-foreground bg-muted px-1 py-px rounded border border-border"
@@ -1236,10 +1311,39 @@ export function SetupWizard({
               type="button"
               onClick={() => void runCurrentStep()}
               disabled={isRunning}
+              title={currentInvalidation.isInvalidated ? 'Re-run this step in refresh mode' : undefined}
               className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-xs font-bold disabled:opacity-50"
             >
-              {isRunning ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
-              {isRunning ? 'Running...' : isTeardown ? 'Confirm Deletion' : 'Run Step'}
+              {isRunning ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : currentInvalidation.isInvalidated ? (
+                <RefreshCw size={13} />
+              ) : (
+                <Play size={13} />
+              )}
+              {isRunning
+                ? 'Running...'
+                : isTeardown
+                  ? 'Confirm Deletion'
+                  : currentInvalidation.isInvalidated
+                    ? 'Refresh Step'
+                    : 'Run Step'}
+            </button>
+          )}
+          {showCompletedRefreshAction && (
+            <button
+              type="button"
+              onClick={() => void runCurrentStep('refresh')}
+              disabled={isRunning}
+              title="Rotate and rebind this step using refresh mode"
+              className="inline-flex items-center gap-2 rounded-lg border border-primary/35 bg-primary/10 text-primary px-3 py-2 text-xs font-bold hover:bg-primary/15 disabled:opacity-50"
+            >
+              {isRunning ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <RefreshCw size={13} />
+              )}
+              {isRunning ? 'Refreshing...' : 'Refresh'}
             </button>
           )}
 
@@ -1402,6 +1506,21 @@ export function SetupWizard({
               <p className="text-sm text-muted-foreground mt-1">
                 {provisioningNodeDescription(currentNode, plan.environments)}
               </p>
+              {currentInvalidation.isInvalidated ? (
+                <div className="mt-3 rounded-lg border border-orange-500/35 bg-orange-500/5 p-3">
+                  <p className="text-xs font-semibold text-orange-800 dark:text-orange-200 flex items-center gap-1.5">
+                    <RefreshCw size={12} className="shrink-0" />
+                    Refresh required
+                  </p>
+                  <p className="text-xs text-orange-900/80 dark:text-orange-100/80 mt-1 leading-snug">
+                    {currentInvalidation.reason || 'This step was marked stale and must be re-run.'}
+                    {currentInvalidation.by ? ` Triggered by: ${currentInvalidation.by}.` : ''}
+                    {currentInvalidation.environments?.length
+                      ? ` Affected envs: ${currentInvalidation.environments.join(', ')}.`
+                      : ''}
+                  </p>
+                </div>
+              ) : null}
               {currentBlockers.length > 0 ? (
                 <div
                   className="mt-3 rounded-lg border border-amber-500/35 bg-amber-500/5 p-3"
@@ -1466,7 +1585,11 @@ export function SetupWizard({
                           : 'border-border bg-muted text-muted-foreground'
                 }`}
             >
-              {currentStatus === 'resolving' ? 'auto-resolving' : currentStatus.replace('-', ' ')}
+              {currentInvalidation.isInvalidated
+                ? 'stale'
+                : currentStatus === 'resolving'
+                  ? 'auto-resolving'
+                  : currentStatus.replace('-', ' ')}
             </span>
           </div>
 

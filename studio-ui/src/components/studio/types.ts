@@ -47,6 +47,9 @@ export interface CompletionRelatedLink {
 
 export interface ResourceOutputPresentation {
   sensitive?: boolean;
+  destinationType?: string;
+  secretType?: string;
+  writeBehavior?: string;
   primaryLinkFromValue?: boolean;
   primaryHrefTemplate?: string;
   relatedLinks?: CompletionRelatedLink[];
@@ -129,6 +132,8 @@ export interface ProvisioningStepNode {
   completionPortalLinks?: CompletionPortalLink[];
   interactiveAction?: InteractiveAction;
   inputFields?: StepInputField[];
+  refreshTriggers?: string[];
+  managedEnvKeys?: string[];
 }
 
 export type ProvisioningGraphNode = UserActionNode | ProvisioningStepNode;
@@ -154,6 +159,8 @@ export interface NodeState {
   userPrompt?: string;
   resourcesProduced?: Record<string, string>;
   userInputs?: Record<string, string>;
+  invalidatedBy?: string;
+  invalidatedAt?: number;
 }
 
 /**

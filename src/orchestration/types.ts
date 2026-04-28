@@ -9,7 +9,7 @@
  * Orchestrator.provisionBySteps().
  */
 
-import type { ProviderType } from '../providers/types.js';
+import type { ProviderType, StepExecutionIntent } from '../providers/types.js';
 
 // ---------------------------------------------------------------------------
 // OperationError — structured error with recovery guidance
@@ -95,6 +95,8 @@ export interface OrchestrationOptions {
    * @default 'sequential'
    */
   stepExecutionMode?: 'parallel' | 'sequential';
+  /** Execution intent for step invocations. Defaults to `create`. */
+  stepExecutionIntent?: StepExecutionIntent;
   /** Merged into step `upstreamResources` before execution (e.g. app domain from project settings). */
   initialUpstreamResources?: Record<string, string>;
 }

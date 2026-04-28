@@ -378,7 +378,9 @@ export class Orchestrator {
       const stateKey = item.environment ? `${item.nodeKey}@${item.environment}` : item.nodeKey;
       const currentState = plan.nodeStates.get(stateKey);
 
-      if (currentState?.status === 'completed' || currentState?.status === 'skipped') {
+      const shouldSkipCompleted =
+        currentState?.status === 'completed' || currentState?.status === 'skipped';
+      if (shouldSkipCompleted && options.stepExecutionIntent !== 'refresh') {
         if (currentState.resourcesProduced) {
           Object.assign(upstreamResources, currentState.resourcesProduced);
         }
@@ -569,6 +571,7 @@ export class Orchestrator {
         },
         vaultRead: vaultRead ?? (async (_key: string) => null),
         vaultWrite: vaultWrite ?? (async (_key: string, _value: string) => {}),
+        executionIntent: options.stepExecutionIntent ?? 'create',
       };
 
       try {
@@ -609,6 +612,7 @@ export class Orchestrator {
               : result.status === 'waiting-on-user'
                 ? 'waiting-on-user'
                 : 'failure',
+          error: result.error,
           resourcesProduced: result.resourcesProduced,
           userPrompt: result.userPrompt,
           timestamp: new Date(),
@@ -836,6 +840,7 @@ export class Orchestrator {
           upstreamResources: { ...upstreamResources },
           vaultRead: vaultRead ?? (async (_key: string) => null),
           vaultWrite: vaultWrite ?? (async (_key: string, _value: string) => {}),
+          executionIntent: options.stepExecutionIntent ?? 'create',
         };
 
         try {
@@ -870,6 +875,7 @@ export class Orchestrator {
                   : result.status === 'waiting-on-user'
                     ? 'waiting-on-user'
                     : 'failure',
+              error: result.error,
               resourcesProduced: result.resourcesProduced,
               userPrompt: result.userPrompt,
               timestamp: new Date(),

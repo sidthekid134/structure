@@ -220,6 +220,13 @@ export interface DriftReport {
 
 export type ReconcileDirection = 'manifest→live' | 'live→manifest';
 
+/**
+ * How a step invocation should behave:
+ * - create: default idempotent provision path
+ * - refresh: force regeneration/rebinding for steps that support rotation
+ */
+export type StepExecutionIntent = 'create' | 'refresh';
+
 // ---------------------------------------------------------------------------
 // Provider adapter interface
 // ---------------------------------------------------------------------------
@@ -231,6 +238,7 @@ export interface StepContext {
   upstreamResources: Record<string, string>;
   vaultRead: (key: string) => Promise<string | null>;
   vaultWrite: (key: string, value: string) => Promise<void>;
+  executionIntent?: StepExecutionIntent;
 }
 
 export interface StepResult {

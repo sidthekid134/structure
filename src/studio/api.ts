@@ -40,6 +40,7 @@ import {
   buildProvisioningPlan,
   buildProvisioningPlanForModules,
   buildTeardownPlan,
+  getAllProvisioningSteps,
   recomputePlanForModules,
 } from '../provisioning/step-registry.js';
 import { StepResolver } from '../provisioning/step-resolver.js';
@@ -55,6 +56,7 @@ import type {
   ProviderManifest,
   ProviderConfig,
   StepContext,
+  StepExecutionIntent,
 } from '../providers/types.js';
 import { PLATFORM_CORE_VERSION } from '../providers/types.js';
 import { formatRun, integrationProgress } from '../core/formatting.js';
@@ -110,6 +112,10 @@ import { buildPlannedOutputPreviewByNodeKey } from './planned-output-previews.js
 import { buildManualInstructionsByNodeKey } from './manual-step-instructions.js';
 import { buildAuthIntegrationKitBundle } from './auth-integration-kit.js';
 import { buildProjectEnvBundle } from './project-env-file.js';
+import {
+  extractFirebaseApiKeyFromAndroidConfig,
+  extractFirebaseApiKeyFromIosConfig,
+} from '../provisioning/runtime-env.js';
 import {
   findStepSecretDescriptor,
   getStepSecretDescriptors,
@@ -182,30 +188,6 @@ function isGitHubAuthFailure(error: Error): boolean {
     message.includes('github api /user failed (401)') ||
     (message.includes('github api /user failed') && message.includes('bad credentials'))
   );
-}
-
-function extractFirebaseApiKeyFromAndroidConfig(jsonText: string): string | null {
-  try {
-    const parsed = JSON.parse(jsonText) as {
-      client?: Array<{ api_key?: Array<{ current_key?: string }> }>;
-    };
-    const clients = parsed.client ?? [];
-    for (const client of clients) {
-      const key = client.api_key?.find(
-        (entry) => typeof entry.current_key === 'string' && entry.current_key.trim().length > 0,
-      )?.current_key;
-      if (key) return key.trim();
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function extractFirebaseApiKeyFromIosConfig(plistText: string): string | null {
-  const match = plistText.match(/<key>\s*API_KEY\s*<\/key>\s*<string>\s*([^<]+)\s*<\/string>/);
-  const key = match?.[1]?.trim();
-  return key && key.length > 0 ? key : null;
 }
 
 /** Structured [studio-api] lines for operator visibility (avoid logging raw secrets). */
@@ -315,6 +297,63 @@ export function createApiRouter(
   ]);
 
   const ORGANIZATION_CREDENTIAL_SCOPE_ID = '__organization__';
+  const refreshTriggerByStepKey = new Map(
+    getAllProvisioningSteps().map((step) => [step.key, step.refreshTriggers ?? []] as const),
+  );
+
+  function resolveRefreshTriggers(node: ProvisioningNode): string[] {
+    if (node.type !== 'step') return [];
+    if (Array.isArray(node.refreshTriggers) && node.refreshTriggers.length > 0) {
+      return node.refreshTriggers;
+    }
+    return refreshTriggerByStepKey.get(node.key) ?? [];
+  }
+
+  function invalidateRefreshTriggeredNodes(
+    plan: ProvisioningPlan,
+    triggerNodeKey: string,
+    triggerEnvironment?: string,
+  ): Array<{ nodeKey: string; environment?: string; reason: string }> {
+    const touched: Array<{ nodeKey: string; environment?: string; reason: string }> = [];
+    for (const node of plan.nodes) {
+      if (node.type !== 'step') continue;
+      const triggers = resolveRefreshTriggers(node);
+      if (!triggers.includes(triggerNodeKey)) continue;
+
+      const reason = `Marked stale by "${triggerNodeKey}" completion; rerun this step in refresh mode.`;
+      if (node.environmentScope === 'per-environment') {
+        const targetEnvs = triggerEnvironment ? [triggerEnvironment] : plan.environments;
+        for (const env of targetEnvs) {
+          const stateKey = `${node.key}@${env}`;
+          const prev = plan.nodeStates.get(stateKey);
+          if (!prev || prev.status === 'in-progress') continue;
+          plan.nodeStates.set(stateKey, {
+            nodeKey: node.key,
+            status: 'not-started',
+            environment: env,
+            error: reason,
+            invalidatedBy: triggerNodeKey,
+            invalidatedAt: Date.now(),
+            ...(prev.userInputs ? { userInputs: prev.userInputs } : {}),
+          });
+          touched.push({ nodeKey: node.key, environment: env, reason });
+        }
+      } else {
+        const prev = plan.nodeStates.get(node.key);
+        if (!prev || prev.status === 'in-progress') continue;
+        plan.nodeStates.set(node.key, {
+          nodeKey: node.key,
+          status: 'not-started',
+          error: reason,
+          invalidatedBy: triggerNodeKey,
+          invalidatedAt: Date.now(),
+          ...(prev.userInputs ? { userInputs: prev.userInputs } : {}),
+        });
+        touched.push({ nodeKey: node.key, reason });
+      }
+    }
+    return touched;
+  }
 
   function collectDependentNodeKeys(rootKey: string, nodes: ProvisioningNode[]): Set<string> {
     const dependents = new Set<string>();
@@ -333,7 +372,11 @@ export function createApiRouter(
     return dependents;
   }
 
-  function clearLogicalNodeState(plan: ProvisioningPlan, node: ProvisioningNode): void {
+  function clearLogicalNodeState(
+    plan: ProvisioningPlan,
+    node: ProvisioningNode,
+    opts?: { invalidatedBy?: string; reason?: string },
+  ): void {
     if (node.type === 'step' && node.environmentScope === 'per-environment') {
       for (const env of plan.environments) {
         const prev = plan.nodeStates.get(`${node.key}@${env}`);
@@ -341,6 +384,8 @@ export function createApiRouter(
           nodeKey: node.key,
           status: 'not-started',
           environment: env,
+          ...(opts?.reason ? { error: opts.reason } : {}),
+          ...(opts?.invalidatedBy ? { invalidatedBy: opts.invalidatedBy, invalidatedAt: Date.now() } : {}),
           ...(prev?.userInputs ? { userInputs: prev.userInputs } : {}),
         });
       }
@@ -349,6 +394,8 @@ export function createApiRouter(
       plan.nodeStates.set(node.key, {
         nodeKey: node.key,
         status: 'not-started',
+        ...(opts?.reason ? { error: opts.reason } : {}),
+        ...(opts?.invalidatedBy ? { invalidatedBy: opts.invalidatedBy, invalidatedAt: Date.now() } : {}),
         ...(prev?.userInputs ? { userInputs: prev.userInputs } : {}),
       });
     }
@@ -3336,7 +3383,7 @@ export function createApiRouter(
   // POST /api/projects/:projectId/provisioning/plan/run
   // Starts step-level provisioning via provisionBySteps(). Responds immediately;
   // step progress is streamed to the WS channel for the project.
-  // Body: { providers?: string[] }
+  // Body: { providers?: string[], intent?: 'create' | 'refresh' }
   // -------------------------------------------------------------------------
   router.post('/projects/:projectId/provisioning/plan/run', async (req: Request, res: Response) => {
     try {
@@ -3344,6 +3391,16 @@ export function createApiRouter(
       const module = projectManager.getProject(projectId);
       const planProviders: ProviderType[] =
         (req.body?.providers as ProviderType[] | undefined) ?? ['firebase', 'github', 'eas'];
+      const requestedIntent = req.body?.intent as StepExecutionIntent | undefined;
+      if (
+        requestedIntent !== undefined &&
+        requestedIntent !== 'create' &&
+        requestedIntent !== 'refresh'
+      ) {
+        res.status(400).json({ error: 'intent must be either "create" or "refresh".' });
+        return;
+      }
+      const executionIntent: StepExecutionIntent = requestedIntent ?? 'create';
       const environments = normalizeExpoEnvironments(module.project.environments);
 
       // Pre-check: validate that credentials exist for steps in the plan.
@@ -3527,6 +3584,7 @@ export function createApiRouter(
                 module.project,
                 projectManager.getOrganization(),
               ),
+              stepExecutionIntent: executionIntent,
             },
             vaultRead,
             vaultWrite,
@@ -3536,6 +3594,7 @@ export function createApiRouter(
             const normalizedEnvironment =
               event.environment && event.environment !== 'global' ? event.environment : undefined;
             const stateKey = normalizedEnvironment ? `${event.nodeKey}@${normalizedEnvironment}` : event.nodeKey;
+            const previousState = currentPlan.nodeStates.get(stateKey);
 
             currentPlan.nodeStates.set(stateKey, {
               nodeKey: event.nodeKey,
@@ -3557,7 +3616,22 @@ export function createApiRouter(
               userPrompt: event.userPrompt,
               resourcesProduced: event.resourcesProduced,
               completedAt: event.status === 'success' || event.status === 'skipped' ? Date.now() : undefined,
+              ...(previousState?.userInputs ? { userInputs: previousState.userInputs } : {}),
             });
+            if (event.status === 'success' && event.nodeType === 'step') {
+              const invalidated = invalidateRefreshTriggeredNodes(
+                currentPlan,
+                event.nodeKey,
+                normalizedEnvironment,
+              );
+              for (const stale of invalidated) {
+                console.log(
+                  `[plan/run] studio="${projectId}" | ↻ "${stale.nodeKey}"` +
+                    (stale.environment ? `@${stale.environment}` : '') +
+                    ` invalidated by "${event.nodeKey}".`,
+                );
+              }
+            }
 
             wsHandler.broadcastStepProgress(
               projectId,
@@ -3579,10 +3653,11 @@ export function createApiRouter(
       logStudioApiAction('provisioning/plan/run POST', {
         projectId,
         planProviders,
+        executionIntent,
         reusedExistingPlanWhileRunning: planIsRunning,
         ...summarizeProvisionPlanForLog(plan),
       });
-      res.json({ started: true, projectId });
+      res.json({ started: true, projectId, intent: executionIntent });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
@@ -3602,16 +3677,26 @@ export function createApiRouter(
   // Steps without a registered handler (github/*, eas/*) are forwarded to
   // the orchestrator which uses its provider adapter system.
   //
-  // Body: { nodeKeys: string[] }
+  // Body: { nodeKeys: string[], intent?: 'create' | 'refresh' }
   // -------------------------------------------------------------------------
   router.post('/projects/:projectId/provisioning/plan/run/nodes', async (req: Request, res: Response) => {
     try {
       const { projectId } = req.params;
       const nodeKeys: string[] = (req.body?.nodeKeys as string[] | undefined) ?? [];
+      const requestedIntent = req.body?.intent as StepExecutionIntent | undefined;
       if (!nodeKeys.length) {
         res.status(400).json({ error: 'nodeKeys must be a non-empty array.' });
         return;
       }
+      if (
+        requestedIntent !== undefined &&
+        requestedIntent !== 'create' &&
+        requestedIntent !== 'refresh'
+      ) {
+        res.status(400).json({ error: 'intent must be either "create" or "refresh".' });
+        return;
+      }
+      const executionIntent: StepExecutionIntent = requestedIntent ?? 'create';
 
       const plan = loadPersistedPlan(projectId);
       if (!plan) {
@@ -3736,7 +3821,11 @@ export function createApiRouter(
         const planNode = plan.nodes.find((n) => n.key === baseKey || n.key === nk);
         if (planNode?.type === 'step') {
           const existing = plan.nodeStates.get(nk);
-          if (existing?.status !== 'completed' && existing?.status !== 'skipped') {
+          if (
+            (existing?.status !== 'completed' &&
+              existing?.status !== 'skipped') ||
+            executionIntent === 'refresh'
+          ) {
             plan.nodeStates.set(nk, {
               nodeKey: baseKey,
               status: 'in-progress',
@@ -3757,6 +3846,7 @@ export function createApiRouter(
       savePersistedPlan(projectId, plan);
       logStudioApiAction('provisioning/plan/run/nodes POST', {
         projectId,
+        executionIntent,
         requestedNodeKeys: nodeKeys,
         effectiveNodeKeys,
         handlerBackedCount: handlerBacked.length,
@@ -3764,7 +3854,7 @@ export function createApiRouter(
         handlerBacked,
         orchestratorBacked,
       });
-      res.json({ started: true, projectId, nodeKeys: effectiveNodeKeys });
+      res.json({ started: true, projectId, nodeKeys: effectiveNodeKeys, intent: executionIntent });
 
       // ── Background execution ───────────────────────────────────────────────
       void (async () => {
@@ -3817,6 +3907,7 @@ export function createApiRouter(
             environment,
             upstreamArtifacts: { ...upstreamArtifacts },
             userInputs: existingState?.userInputs,
+            executionIntent,
             async getToken(providerId: string): Promise<string> {
               const cached = tokenCache.get(providerId);
               if (cached) return cached;
@@ -3854,6 +3945,18 @@ export function createApiRouter(
                 userInputs: existingState?.userInputs,
               });
               wsHandler.broadcastStepProgress(projectId, baseKey, 'step', 'success', environment, resources);
+              const invalidated = invalidateRefreshTriggeredNodes(
+                currentPlan,
+                baseKey,
+                environment,
+              );
+              for (const stale of invalidated) {
+                console.log(
+                  `[plan/run/nodes] studio="${projectId}" | ↻ "${stale.nodeKey}"` +
+                    (stale.environment ? `@${stale.environment}` : '') +
+                    ` invalidated by "${baseKey}".`,
+                );
+              }
               const summary = result.message ? ` — ${result.message}` : '';
               console.log(`[plan/run/nodes] studio="${projectId}" | ✓ "${baseKey}" completed.${summary}`);
             } else {
@@ -3985,16 +4088,21 @@ export function createApiRouter(
           const vaultRead = createVaultReader(vaultManager);
           const vaultWrite = createVaultWriter(vaultManager);
           const nodeKeysFilter = new Set(orchestratorBacked);
+          const initialUpstreamResources = {
+            ...buildInitialUpstreamSeed(
+              projectModule.project,
+              projectManager.getOrganization(),
+            ),
+            ...upstreamArtifacts,
+          };
 
           try {
             for await (const event of orchestrator.provisionBySteps(
               currentPlan,
               manifest,
               {
-                initialUpstreamResources: buildInitialUpstreamSeed(
-                  projectModule.project,
-                  projectManager.getOrganization(),
-                ),
+                initialUpstreamResources,
+                stepExecutionIntent: executionIntent,
               },
               vaultRead,
               vaultWrite,
@@ -4028,6 +4136,20 @@ export function createApiRouter(
                 completedAt: event.status === 'success' || event.status === 'skipped' ? Date.now() : undefined,
                 ...(previousState?.userInputs ? { userInputs: previousState.userInputs } : {}),
               });
+              if (event.status === 'success' && event.nodeType === 'step') {
+                const invalidated = invalidateRefreshTriggeredNodes(
+                  currentPlan,
+                  event.nodeKey,
+                  normalizedEnvironment,
+                );
+                for (const stale of invalidated) {
+                  console.log(
+                    `[plan/run/nodes] studio="${projectId}" | ↻ "${stale.nodeKey}"` +
+                      (stale.environment ? `@${stale.environment}` : '') +
+                      ` invalidated by "${event.nodeKey}".`,
+                  );
+                }
+              }
               wsHandler.broadcastStepProgress(
                 projectId, event.nodeKey, event.nodeType, event.status,
                 normalizedEnvironment, event.resourcesProduced, event.error, event.userPrompt,
@@ -4138,19 +4260,21 @@ export function createApiRouter(
       const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim() ?? '';
       let revertWarnings: string[] = [];
       const revertManualActions: RevertManualAction[] = [];
+      const revertArtifactSnapshot: Record<string, string> = {};
+      for (const st of plan.nodeStates.values()) {
+        if (st.status === 'completed' && st.resourcesProduced) {
+          Object.assign(revertArtifactSnapshot, st.resourcesProduced);
+        }
+      }
 
       if (handlerKeysToDelete.length > 0) {
         // Delete from leaf to root (reverse order so dependents are torn down first)
         const deleteOrder = [...handlerKeysToDelete].reverse();
         console.log(`[studio-api] node/reset: deleting GCP resources for ${projectId}: ${deleteOrder.join(', ')}`);
-
-        const revertArtifactSnapshot: Record<string, string> = {};
-        for (const st of plan.nodeStates.values()) {
-          if (st.status === 'completed' && st.resourcesProduced) {
-            Object.assign(revertArtifactSnapshot, st.resourcesProduced);
-          }
-        }
-        applyProjectDomainToUpstreamArtifacts(revertArtifactSnapshot, projectManager.getProject(projectId).project);
+        applyProjectDomainToUpstreamArtifacts(
+          revertArtifactSnapshot,
+          projectManager.getProject(projectId).project,
+        );
 
         for (const stepKey of deleteOrder) {
           const handler = globalStepHandlerRegistry.get(stepKey);
@@ -4227,6 +4351,27 @@ export function createApiRouter(
           primaryLabel: 'Open App Store Connect apps',
         });
       }
+      if (allKeysToReset.includes('apple:configure-testflight-group')) {
+        const ascAppId = revertArtifactSnapshot['asc_app_id']?.trim();
+        const testflightGroupId = revertArtifactSnapshot['testflight_group_id']?.trim();
+        const groupName = revertArtifactSnapshot['testflight_group_name']?.trim() || 'the TestFlight group';
+        const primaryUrl =
+          ascAppId && testflightGroupId
+            ? `https://appstoreconnect.apple.com/apps/${encodeURIComponent(ascAppId)}/testflight/groups/${encodeURIComponent(testflightGroupId)}`
+            : 'https://appstoreconnect.apple.com/access/testers';
+        revertManualActions.push({
+          stepKey: 'apple:configure-testflight-group',
+          title: 'Remove TestFlight group/testers manually',
+          body:
+            `Open ${groupName} in App Store Connect and remove testers or delete the group. ` +
+            'Apple TestFlight cleanup is not automated during Studio revert yet.',
+          primaryUrl,
+          primaryLabel:
+            ascAppId && testflightGroupId
+              ? 'Open TestFlight group'
+              : 'Open App Store Connect testers',
+        });
+      }
 
       // Reverting credential-upload gates should also remove org-scoped tokens
       // from vault so subsequent steps cannot continue using stale credentials.
@@ -4253,10 +4398,20 @@ export function createApiRouter(
 
       const hasManualRevertStep = revertManualActions.some((action) => allKeysToReset.includes(action.stepKey));
       if (!hasManualRevertStep) {
-        clearLogicalNodeState(plan, node);
+        clearLogicalNodeState(plan, node, {
+          invalidatedBy: `manual-reset:${nodeKey}`,
+          reason:
+            `Step was manually reverted from "${nodeKey}". Next run executes in refresh mode when supported.`,
+        });
         for (const depKey of dependents) {
           const n = plan.nodes.find((x) => x.key === depKey);
-          if (n) clearLogicalNodeState(plan, n);
+          if (n) {
+            clearLogicalNodeState(plan, n, {
+              invalidatedBy: `manual-reset:${nodeKey}`,
+              reason:
+                `Step was manually reverted from "${nodeKey}". Next run executes in refresh mode when supported.`,
+            });
+          }
         }
       }
 
@@ -4433,10 +4588,20 @@ export function createApiRouter(
       }
 
       const dependents = collectDependentNodeKeys(nodeKey, plan.nodes);
-      clearLogicalNodeState(plan, node);
+      clearLogicalNodeState(plan, node, {
+        invalidatedBy: `manual-reset:${nodeKey}`,
+        reason:
+          `Manual revert finalized from "${nodeKey}". Next run executes in refresh mode when supported.`,
+      });
       for (const depKey of dependents) {
         const depNode = plan.nodes.find((x) => x.key === depKey);
-        if (depNode) clearLogicalNodeState(plan, depNode);
+        if (depNode) {
+          clearLogicalNodeState(plan, depNode, {
+            invalidatedBy: `manual-reset:${nodeKey}`,
+            reason:
+              `Manual revert finalized from "${nodeKey}". Next run executes in refresh mode when supported.`,
+          });
+        }
       }
 
       savePersistedPlan(projectId, plan);

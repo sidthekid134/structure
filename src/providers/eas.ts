@@ -4,6 +4,7 @@
  */
 
 import * as crypto from 'crypto';
+import { GoogleAuth } from 'google-auth-library';
 import {
   ProviderAdapter,
   EasManifestConfig,
@@ -20,6 +21,17 @@ import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
 import type { GitHubApiClient } from './github.js';
 import { ExpoGraphqlEasApiClient } from './expo-graphql-eas-client.js';
+import {
+  downloadFirebaseAndroidAppConfig,
+  downloadFirebaseIosAppConfig,
+} from '../core/gcp/gcp-api-client.js';
+import {
+  extractFirebaseApiKeyFromAndroidConfig,
+  extractFirebaseApiKeyFromIosConfig,
+  PROJECT_RUNTIME_ENV_KEYS,
+  PROJECT_RUNTIME_ENV_SECRET_TYPES,
+  resolveProjectRuntimeEnvValues,
+} from '../provisioning/runtime-env.js';
 
 // ---------------------------------------------------------------------------
 // API client interface
@@ -34,6 +46,10 @@ export interface EasApiClient {
     projectId: string,
     environment: Environment,
     envVars: Record<string, string>,
+    options?: {
+      visibilityByName?: Record<string, 'PUBLIC' | 'SENSITIVE' | 'SECRET'>;
+      targetEnvironments?: Environment[];
+    },
   ): Promise<void>;
   getEnvVars(projectId: string, environment: Environment): Promise<Record<string, string>>;
 }
@@ -61,6 +77,10 @@ export class StubEasApiClient implements EasApiClient {
     _projectId: string,
     _environment: Environment,
     _envVars: Record<string, string>,
+    _options?: {
+      visibilityByName?: Record<string, 'PUBLIC' | 'SENSITIVE' | 'SECRET'>;
+      targetEnvironments?: Environment[];
+    },
   ): Promise<void> {
     throw new Error(
       'StubEasApiClient cannot upload EAS environment data. Configure EasAdapter with a real EAS API client.',
@@ -92,6 +112,49 @@ function parseGithubHttpsRepo(url: string): { owner: string; repo: string } {
     );
   }
   return { owner: m[1]!, repo: m[2]! };
+}
+
+function studioEnvToExpoSlot(env: string): string {
+  const normalized = env.trim().toLowerCase();
+  if (normalized === 'development') return 'DEVELOPMENT';
+  if (normalized === 'preview') return 'PREVIEW';
+  if (normalized === 'production') return 'PRODUCTION';
+  throw new AdapterError(
+    `Unsupported Studio environment "${env}". Expected development, preview, or production.`,
+    'eas',
+    'checkStep',
+  );
+}
+
+function buildRuntimeEnvResourcesProduced(
+  runtimeValues: Record<string, string>,
+  firebaseApiKey: string,
+): Record<string, string> {
+  const out: Record<string, string> = { firebase_api_key: firebaseApiKey };
+  const mapping: Array<[sourceKey: string, producedKey: string]> = [
+    ['FIREBASE_PROJECT_ID', 'eas_env_firebase_project_id'],
+    ['FIREBASE_IOS_APP_ID', 'eas_env_firebase_ios_app_id'],
+    ['FIREBASE_ANDROID_APP_ID', 'eas_env_firebase_android_app_id'],
+    ['GOOGLE_WEB_CLIENT_ID', 'eas_env_google_web_client_id'],
+    ['GOOGLE_IOS_CLIENT_ID', 'eas_env_google_ios_client_id'],
+    ['GOOGLE_ANDROID_CLIENT_ID', 'eas_env_google_android_client_id'],
+    ['APPLE_SERVICE_ID', 'eas_env_apple_service_id'],
+    ['AUTH_DEEP_LINK_BASE_URL', 'eas_env_auth_deep_link_base_url'],
+    ['AUTH_LANDING_URL', 'eas_env_auth_landing_url'],
+  ];
+  for (const [sourceKey, producedKey] of mapping) {
+    const value = runtimeValues[sourceKey]?.trim() ?? '';
+    if (value) out[producedKey] = value;
+  }
+  return out;
+}
+
+function isNonPublicRuntimeEnvKey(name: string): boolean {
+  if (!PROJECT_RUNTIME_ENV_KEYS.includes(name as (typeof PROJECT_RUNTIME_ENV_KEYS)[number])) {
+    return false;
+  }
+  const visibility = PROJECT_RUNTIME_ENV_SECRET_TYPES[name as keyof typeof PROJECT_RUNTIME_ENV_SECRET_TYPES];
+  return visibility === 'SENSITIVE' || visibility === 'SECRET';
 }
 
 export interface EasJsonSubmitInfo {
@@ -325,6 +388,79 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
     );
   }
 
+  private async readGcpAccessTokenFromServiceAccount(context: StepContext): Promise<string> {
+    const saJson = (await context.vaultRead(`${context.projectId}/service_account_json`))?.trim();
+    if (!saJson) {
+      throw new AdapterError(
+        `Missing ${context.projectId}/service_account_json in vault. Run Firebase service-account key generation first.`,
+        'eas',
+        'executeStep',
+      );
+    }
+    let credentials: Record<string, unknown>;
+    try {
+      credentials = JSON.parse(saJson) as Record<string, unknown>;
+    } catch {
+      throw new AdapterError(
+        `${context.projectId}/service_account_json is not valid JSON.`,
+        'eas',
+        'executeStep',
+      );
+    }
+    const auth = new GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    });
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    const token = tokenResponse?.token?.trim();
+    if (!token) {
+      throw new AdapterError(
+        'Failed to obtain GCP access token from service-account credentials.',
+        'eas',
+        'executeStep',
+      );
+    }
+    return token;
+  }
+
+  private async deriveFirebaseApiKey(context: StepContext): Promise<string> {
+    const upstream = context.upstreamResources;
+    const gcpProjectId = upstream['firebase_project_id']?.trim() || upstream['gcp_project_id']?.trim() || '';
+    const androidAppId = upstream['firebase_android_app_id']?.trim() || '';
+    const iosAppId = upstream['firebase_ios_app_id']?.trim() || '';
+    if (!gcpProjectId) {
+      throw new AdapterError(
+        'Missing firebase_project_id/gcp_project_id in upstream resources. Run Firebase setup steps first.',
+        'eas',
+        'executeStep',
+      );
+    }
+    if (!androidAppId && !iosAppId) {
+      throw new AdapterError(
+        'Cannot derive Firebase API key: no firebase_android_app_id or firebase_ios_app_id found upstream.',
+        'eas',
+        'executeStep',
+      );
+    }
+    const accessToken = await this.readGcpAccessTokenFromServiceAccount(context);
+    if (androidAppId) {
+      const androidConfig = await downloadFirebaseAndroidAppConfig(accessToken, gcpProjectId, androidAppId);
+      const androidKey = extractFirebaseApiKeyFromAndroidConfig(androidConfig)?.trim() ?? '';
+      if (androidKey) return androidKey;
+    }
+    if (iosAppId) {
+      const iosConfig = await downloadFirebaseIosAppConfig(accessToken, gcpProjectId, iosAppId);
+      const iosKey = extractFirebaseApiKeyFromIosConfig(iosConfig)?.trim() ?? '';
+      if (iosKey) return iosKey;
+    }
+    throw new AdapterError(
+      `Unable to extract Firebase API key from Firebase app configs on project "${gcpProjectId}".`,
+      'eas',
+      'executeStep',
+    );
+  }
+
   async provision(config: EasManifestConfig): Promise<ProviderState> {
     this.log.info('Starting EAS provisioning', { projectName: config.project_name });
 
@@ -432,6 +568,49 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
           resourcesProduced: {},
           userPrompt:
             'Studio recorded which EAS environment slot matches this Studio environment. You must still maintain `eas.json` build profiles (development / preview / production) in your app repository — Expo builds read that file, not Studio.',
+        };
+      }
+      case 'eas:sync-runtime-env': {
+        const appId = context.upstreamResources['eas_project_id']?.trim() ?? '';
+        if (!appId) {
+          throw new AdapterError('Create the EAS project first (missing eas_project_id).', 'eas', 'executeStep');
+        }
+        const env = (context.environment ?? config.environments[0] ?? 'development') as Environment;
+        const firebaseApiKey =
+          context.upstreamResources['firebase_api_key']?.trim() || (await this.deriveFirebaseApiKey(context));
+        const runtime = resolveProjectRuntimeEnvValues({
+          projectId: context.projectId,
+          upstream: context.upstreamResources,
+          readVault: () => undefined,
+          firebaseApiKeyOverride: firebaseApiKey,
+          includesIos: Boolean(context.upstreamResources['firebase_ios_app_id']?.trim()),
+          includesAndroid: Boolean(context.upstreamResources['firebase_android_app_id']?.trim()),
+        });
+        if (runtime.missingRequiredKeys.length > 0) {
+          throw new AdapterError(
+            `Missing required runtime env keys for EAS sync: ${runtime.missingRequiredKeys.join(', ')}.`,
+            'eas',
+            'executeStep',
+          );
+        }
+        const visibilityByName: Record<string, 'PUBLIC' | 'SENSITIVE' | 'SECRET'> = {};
+        for (const key of Object.keys(runtime.values)) {
+          visibilityByName[key] =
+            PROJECT_RUNTIME_ENV_SECRET_TYPES[key as keyof typeof PROJECT_RUNTIME_ENV_SECRET_TYPES] ??
+            'PUBLIC';
+        }
+        await this.apiClient.uploadEnvFile(appId, env, runtime.values, {
+          visibilityByName,
+          targetEnvironments: config.environments,
+        });
+        const setCount = Object.values(runtime.values).filter((v) => v.trim().length > 0).length;
+        const removeCount = Object.keys(runtime.values).length - setCount;
+        return {
+          status: 'completed',
+          resourcesProduced: buildRuntimeEnvResourcesProduced(runtime.values, firebaseApiKey),
+          userPrompt:
+            `Synced runtime env vars for "${env}": ` +
+            `${setCount} upserted, ${removeCount} removed (when absent from current endpoint config).`,
         };
       }
       case 'eas:store-token-in-github': {
@@ -748,6 +927,80 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
           };
         }
         return { status: 'completed', resourcesProduced: {} };
+      }
+      case 'eas:sync-runtime-env': {
+        const projectId = context.upstreamResources['eas_project_id']?.trim();
+        if (!projectId) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'Cannot validate runtime env sync without eas_project_id.',
+          };
+        }
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'Runtime env sync validation requires the real Expo GraphQL client.',
+          };
+        }
+        const env = (context.environment ?? config.environments[0] ?? 'development') as Environment;
+        const firebaseApiKey =
+          context.upstreamResources['firebase_api_key']?.trim() || (await this.deriveFirebaseApiKey(context));
+        const runtime = resolveProjectRuntimeEnvValues({
+          projectId: context.projectId,
+          upstream: context.upstreamResources,
+          readVault: () => undefined,
+          firebaseApiKeyOverride: firebaseApiKey,
+          includesIos: Boolean(context.upstreamResources['firebase_ios_app_id']?.trim()),
+          includesAndroid: Boolean(context.upstreamResources['firebase_android_app_id']?.trim()),
+        });
+        if (runtime.missingRequiredKeys.length > 0) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: `Runtime env sync prerequisites missing: ${runtime.missingRequiredKeys.join(', ')}.`,
+          };
+        }
+        const expected = Object.entries(runtime.values);
+        const vars = await expo.listAppEnvironmentVariablesByNames(
+          projectId,
+          expected.map(([name]) => name),
+        );
+        const expoSlot = studioEnvToExpoSlot(env);
+        const mismatched = expected.filter(([name, value]) => {
+          const normalized = value.trim();
+          const slotVars = vars.filter(
+            (v) =>
+              v.name === name &&
+              (v.environments ?? []).includes(expoSlot),
+          );
+          if (!normalized) {
+            return slotVars.length > 0;
+          }
+          if (isNonPublicRuntimeEnvKey(name)) {
+            // EAS may mask/omit values for non-public variables during reads.
+            // For SENSITIVE/SECRET entries, presence in the target env slot is
+            // the durable validation contract.
+            return slotVars.length === 0;
+          }
+          const exact = slotVars.find((v) => (v.value?.trim() ?? '') === normalized);
+          return !exact;
+        });
+        if (mismatched.length > 0) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error:
+              `EAS runtime env is not reconciled for ${env}: ` +
+              `${mismatched.map(([k]) => k).join(', ')}.`,
+          };
+        }
+        return {
+          status: 'completed',
+          resourcesProduced: buildRuntimeEnvResourcesProduced(runtime.values, firebaseApiKey),
+        };
       }
       case 'eas:store-token-in-github': {
         const repoUrl = context.upstreamResources['github_repo_url']?.trim();

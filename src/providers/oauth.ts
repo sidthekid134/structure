@@ -1043,16 +1043,9 @@ export class OAuthAdapter implements ProviderAdapter<OAuthManifestConfig> {
         };
       }
       case 'oauth:prepare-app-integration-kit': {
-        const zipUrl = context.upstreamResources['auth_integration_kit_zip']?.trim();
-        const promptUrl = context.upstreamResources['auth_integration_prompt']?.trim();
-        if (!zipUrl || !promptUrl) {
-          return {
-            status: 'failed',
-            resourcesProduced: {},
-            error:
-              'Auth integration kit URLs are missing. Re-run this step to regenerate downloadable integration assets.',
-          };
-        }
+        const kitBase = `/api/projects/${encodeURIComponent(context.projectId)}/integration-kit/auth`;
+        const zipUrl = context.upstreamResources['auth_integration_kit_zip']?.trim() || `${kitBase}/zip`;
+        const promptUrl = context.upstreamResources['auth_integration_prompt']?.trim() || `${kitBase}/prompt`;
         return {
           status: 'completed',
           resourcesProduced: {

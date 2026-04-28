@@ -7,7 +7,7 @@
  * UserActionNode that requires human intervention.
  */
 
-import type { ProviderType } from '../providers/types.js';
+import type { ProviderType, StepExecutionIntent } from '../providers/types.js';
 
 // ---------------------------------------------------------------------------
 // Environment as a primary concept
@@ -86,6 +86,12 @@ export interface CompletionRelatedLink {
 export interface ResourceOutputPresentation {
   /** Credential-like — never surface raw value in UI. */
   sensitive?: boolean;
+  /** Human-readable storage destination (e.g. "Expo EAS environment variable"). */
+  destinationType?: string;
+  /** Provider visibility/classification (e.g. PUBLIC, SENSITIVE, SECRET). */
+  secretType?: string;
+  /** How this write behaves (e.g. create-only vs upsert/overwrite). */
+  writeBehavior?: string;
   /** When true and the stored value is http(s), treat it as the primary outbound link. */
   primaryLinkFromValue?: boolean;
   /** Primary console link pattern, e.g. `https://console.firebase.google.com/project/{upstream.firebase_project_id}` */
@@ -184,6 +190,11 @@ export interface ProvisioningStepNode {
   /** Configurable input fields — user-provided parameters for this step. */
   inputFields?: StepInputField[];
   /**
+   * When any listed node key completes successfully, this step is considered
+   * stale and should be reset to not-started before the next execution.
+   */
+  refreshTriggers?: string[];
+  /**
    * Which mobile platforms this step applies to. Omitted = all platforms.
    * The plan builder drops steps whose platform mask doesn't intersect the
    * project's `platforms` selection. Required dependencies on filtered-out
@@ -191,6 +202,11 @@ export interface ProvisioningStepNode {
    * don't block their cross-platform peers.
    */
   platforms?: MobilePlatform[];
+  /**
+   * Env var keys this step writes/updates in a downstream build system.
+   * Used by UI to preview exact key names before execution.
+   */
+  managedEnvKeys?: string[];
 }
 
 export type ProvisioningNode = UserActionNode | ProvisioningStepNode;
@@ -222,6 +238,9 @@ export interface NodeState {
   resourcesProduced?: Record<string, string>;
   /** User-provided input values for steps with inputFields. */
   userInputs?: Record<string, string>;
+  /** Step key that invalidated this state and forced re-run. */
+  invalidatedBy?: string;
+  invalidatedAt?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +253,7 @@ export interface StepContext {
   upstreamResources: Record<string, string>; // all resources produced by completed deps
   vaultRead: (key: string) => Promise<string | null>;
   vaultWrite: (key: string, value: string) => Promise<void>;
+  executionIntent?: StepExecutionIntent;
 }
 
 export interface StepResult {

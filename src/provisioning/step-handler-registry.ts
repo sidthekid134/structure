@@ -13,6 +13,7 @@
 
 import type { VaultManager } from '../vault.js';
 import type { ProjectManager } from '../studio/project-manager.js';
+import type { StepExecutionIntent } from '../providers/types.js';
 
 // ---------------------------------------------------------------------------
 // Handler context
@@ -32,6 +33,8 @@ export interface StepHandlerContext {
   upstreamArtifacts: Record<string, string>;
   /** User-provided input values for steps with inputFields. */
   userInputs?: Record<string, string>;
+  /** Invocation intent for this execution (idempotent create vs forced refresh). */
+  executionIntent?: StepExecutionIntent;
   /** Get an OAuth access token for the given provider ('gcp', 'github', …). Throws if unavailable. */
   getToken(providerId: string): Promise<string>;
   /** Returns true if a stored refresh token exists for this provider (does not refresh). */

@@ -26,6 +26,7 @@ export const easBuildsPlugin: PluginDefinition = {
   steps: [
     EAS_STEPS.find((s) => s.key === 'eas:create-project')!,
     EAS_STEPS.find((s) => s.key === 'eas:configure-build-profiles')!,
+    EAS_STEPS.find((s) => s.key === 'eas:sync-runtime-env')!,
     EAS_STEPS.find((s) => s.key === 'eas:store-token-in-github')!,
     EAS_STEPS.find((s) => s.key === 'eas:write-eas-json')!,
   ],

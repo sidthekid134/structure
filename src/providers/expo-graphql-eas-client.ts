@@ -526,6 +526,17 @@ function studioEnvironmentToExpoVariableEnvironments(studioEnv: string): string[
   );
 }
 
+function studioEnvironmentsToExpoVariableEnvironments(studioEnvironments: string[]): string[] {
+  const out: string[] = [];
+  for (const env of studioEnvironments) {
+    const mapped = studioEnvironmentToExpoVariableEnvironments(env);
+    for (const slot of mapped) {
+      if (!out.includes(slot)) out.push(slot);
+    }
+  }
+  return out;
+}
+
 export class ExpoGraphqlEasApiClient implements EasApiClient {
   constructor(private readonly expoToken: string) {
     if (!expoToken?.trim()) {
@@ -733,6 +744,29 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     }
   }
 
+  async upsertAppEnvironmentVariable(
+    expoAppId: string,
+    studioEnvironment: string | string[],
+    name: string,
+    value: string,
+    visibility: 'PUBLIC' | 'SENSITIVE' | 'SECRET' = 'PUBLIC',
+  ): Promise<void> {
+    const expoSlot = Array.isArray(studioEnvironment)
+      ? studioEnvironmentsToExpoVariableEnvironments(studioEnvironment)
+      : studioEnvironmentToExpoVariableEnvironments(studioEnvironment);
+    type M = { environmentVariable: { createEnvironmentVariableForApp: { id: string } } };
+    await expoGraphqlRequest<M>(this.expoToken, CREATE_ENV_VAR_FOR_APP, {
+      appId: expoAppId,
+      input: {
+        name,
+        value,
+        visibility,
+        environments: expoSlot,
+        overwrite: true,
+      },
+    });
+  }
+
   /**
    * Lists app-scoped EAS environment variables matching `name` across every Expo
    * env slot. Returns the variable's id, name, value, and the env slots it is
@@ -768,6 +802,38 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     }));
   }
 
+  async listAppEnvironmentVariablesByNames(
+    expoAppId: string,
+    names: string[],
+  ): Promise<Array<{ id: string; name: string; value: string | null; environments: string[] }>> {
+    const uniqueNames = Array.from(new Set(names.map((n) => n.trim()).filter((n) => n.length > 0)));
+    if (uniqueNames.length === 0) return [];
+    type Q = {
+      app: {
+        byId: {
+          id: string;
+          environmentVariables: Array<{
+            id: string;
+            name: string;
+            value: string | null;
+            environments: string[] | null;
+          }>;
+        } | null;
+      };
+    };
+    const data = await expoGraphqlRequest<Q>(this.expoToken, APP_ENV_VARS_BY_NAME, {
+      appId: expoAppId,
+      filterNames: uniqueNames,
+    });
+    const vars = data.app?.byId?.environmentVariables ?? [];
+    return vars.map((v) => ({
+      id: v.id,
+      name: v.name,
+      value: v.value,
+      environments: v.environments ?? [],
+    }));
+  }
+
   /** Deletes a single EAS environment variable by id. */
   async deleteEnvironmentVariable(envVarId: string): Promise<void> {
     type M = { environmentVariable: { deleteEnvironmentVariable: { id: string } } };
@@ -790,6 +856,36 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
       await this.deleteEnvironmentVariable(v.id);
     }
     return matching.length;
+  }
+
+  async removeAppEnvironmentVariableFromStudioEnvironment(
+    expoAppId: string,
+    studioEnvironment: string,
+    name: string,
+  ): Promise<number> {
+    const expoSlot = studioEnvironmentToExpoVariableEnvironments(studioEnvironment)[0];
+    const vars = await this.listAppEnvironmentVariablesByName(expoAppId, name);
+    const matching = vars.filter((v) => (v.environments ?? []).includes(expoSlot!));
+    for (const v of matching) {
+      await this.deleteEnvironmentVariable(v.id);
+    }
+    return matching.length;
+  }
+
+  async reconcileAppEnvironmentVariableAcrossStudioEnvironments(
+    expoAppId: string,
+    name: string,
+    value: string,
+    visibility: 'PUBLIC' | 'SENSITIVE' | 'SECRET',
+    studioEnvironments: string[],
+  ): Promise<void> {
+    const existing = await this.listAppEnvironmentVariablesByName(expoAppId, name);
+    for (const row of existing) {
+      await this.deleteEnvironmentVariable(row.id);
+    }
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    await this.upsertAppEnvironmentVariable(expoAppId, studioEnvironments, name, trimmed, visibility);
   }
 
   async configureIosEasSubmit(input: {
@@ -1313,14 +1409,30 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
   }
 
   async uploadEnvFile(
-    _projectId: string,
-    _environment: Environment,
+    projectId: string,
+    environment: Environment,
     envVars: Record<string, string>,
+    options?: {
+      visibilityByName?: Record<string, 'PUBLIC' | 'SENSITIVE' | 'SECRET'>;
+      targetEnvironments?: Environment[];
+    },
   ): Promise<void> {
     if (Object.keys(envVars).length === 0) return;
-    throw new Error(
-      'Studio does not push non-empty EAS environment files yet. Configure variables in the Expo dashboard or app repo.',
-    );
+    const targetEnvironments =
+      options?.targetEnvironments && options.targetEnvironments.length > 0
+        ? options.targetEnvironments
+        : [environment];
+    for (const [name, value] of Object.entries(envVars)) {
+      if (!name.trim()) continue;
+      const visibility = options?.visibilityByName?.[name] ?? 'PUBLIC';
+      await this.reconcileAppEnvironmentVariableAcrossStudioEnvironments(
+        projectId,
+        name,
+        value,
+        visibility,
+        targetEnvironments,
+      );
+    }
   }
 
   async getEnvVars(_projectId: string, _environment: Environment): Promise<Record<string, string>> {

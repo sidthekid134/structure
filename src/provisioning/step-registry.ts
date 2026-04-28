@@ -19,6 +19,7 @@ import {
   type ProvisioningContributor,
   type ProvisioningContributorContext,
 } from './contributors.js';
+import { PROJECT_RUNTIME_ENV_KEYS, PROJECT_RUNTIME_ENV_SECRET_TYPES } from './runtime-env.js';
 import {
   DEFAULT_MODULE_IDS,
   type ModuleId,
@@ -1039,6 +1040,12 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
       { nodeKey: 'apple:create-app-store-listing', required: true },
       { nodeKey: 'eas:create-project', required: true },
     ],
+    refreshTriggers: [
+      // OAuth/SIWA changes can alter entitlements and signing needs; force
+      // this step back to not-started so users can invoke a refresh rotation.
+      'apple:create-sign-in-key',
+      'oauth:configure-apple-sign-in',
+    ],
     produces: [
       {
         key: 'apple_distribution_cert_id',
@@ -1110,6 +1117,133 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
     dependencies: [{ nodeKey: 'eas:create-project', required: true }],
     produces: [],
     estimatedDurationMs: 3000,
+  },
+  {
+    type: 'step',
+    key: 'eas:sync-runtime-env',
+    label: 'Sync Firebase/Auth Runtime Env to EAS',
+    description:
+      'Writes Firebase/Auth runtime environment variables (for example FIREBASE_API_KEY, project/app IDs, and OAuth client IDs when present) to the Expo app for this Studio environment.',
+    provider: 'eas',
+    environmentScope: 'per-environment',
+    automationLevel: 'full',
+    dependencies: [
+      { nodeKey: 'eas:create-project', required: true },
+      { nodeKey: 'firebase:enable-firebase', required: true },
+      { nodeKey: 'firebase:register-ios-app', required: false },
+      { nodeKey: 'firebase:register-android-app', required: false },
+      { nodeKey: 'oauth:enable-google-sign-in', required: false },
+      { nodeKey: 'oauth:register-oauth-client-web', required: false },
+      { nodeKey: 'oauth:register-oauth-client-ios', required: false },
+      { nodeKey: 'oauth:register-oauth-client-android', required: false },
+      { nodeKey: 'oauth:configure-apple-sign-in', required: false },
+      { nodeKey: 'oauth:link-deep-link-domain', required: false },
+    ],
+    produces: [
+      {
+        key: 'firebase_api_key',
+        label: 'FIREBASE_API_KEY',
+        description: 'Firebase Web API key resolved from Firebase app config.',
+        presentation: {
+          sensitive: true,
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['FIREBASE_API_KEY'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_firebase_project_id',
+        label: 'FIREBASE_PROJECT_ID',
+        description: 'Firebase project identifier.',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['FIREBASE_PROJECT_ID'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_firebase_ios_app_id',
+        label: 'FIREBASE_IOS_APP_ID',
+        description: 'Firebase iOS app identifier (when iOS app registration exists).',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['FIREBASE_IOS_APP_ID'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_firebase_android_app_id',
+        label: 'FIREBASE_ANDROID_APP_ID',
+        description: 'Firebase Android app identifier (when Android app registration exists).',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['FIREBASE_ANDROID_APP_ID'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_google_web_client_id',
+        label: 'GOOGLE_WEB_CLIENT_ID',
+        description: 'Google OAuth web client ID (when Google OAuth is configured).',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['GOOGLE_WEB_CLIENT_ID'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_google_ios_client_id',
+        label: 'GOOGLE_IOS_CLIENT_ID',
+        description: 'Google OAuth iOS client ID (when iOS OAuth client exists).',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['GOOGLE_IOS_CLIENT_ID'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_google_android_client_id',
+        label: 'GOOGLE_ANDROID_CLIENT_ID',
+        description: 'Google OAuth Android client ID (when Android OAuth client exists).',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['GOOGLE_ANDROID_CLIENT_ID'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_apple_service_id',
+        label: 'APPLE_SERVICE_ID',
+        description: 'Apple Sign-In service ID (when configured).',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['APPLE_SERVICE_ID'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_auth_deep_link_base_url',
+        label: 'AUTH_DEEP_LINK_BASE_URL',
+        description: 'Deep-link base URL (when configured).',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['AUTH_DEEP_LINK_BASE_URL'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+      {
+        key: 'eas_env_auth_landing_url',
+        label: 'AUTH_LANDING_URL',
+        description: 'Auth landing URL (when configured).',
+        presentation: {
+          destinationType: 'Expo EAS environment variable',
+          secretType: PROJECT_RUNTIME_ENV_SECRET_TYPES['AUTH_LANDING_URL'],
+          writeBehavior: 'Upsert (overwrite existing value)',
+        },
+      },
+    ],
+    managedEnvKeys: [...PROJECT_RUNTIME_ENV_KEYS],
+    estimatedDurationMs: 6000,
   },
   {
     type: 'step',
@@ -1411,6 +1545,12 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
       { nodeKey: 'firebase:create-gcp-project', required: true },
       { nodeKey: 'firebase:register-ios-app', required: true },
     ],
+    refreshTriggers: [
+      'firebase:register-ios-app',
+      // SIWA setup often changes iOS auth plumbing; refresh iOS client IDs.
+      'apple:create-sign-in-key',
+      'oauth:configure-apple-sign-in',
+    ],
     produces: [
       {
         key: 'oauth_client_id_ios',
@@ -1447,6 +1587,11 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
         description:
           'Optional path: when firebase-messaging / google-play-publishing is enabled, SHA-1 can flow from Play App Signing.',
       },
+    ],
+    refreshTriggers: [
+      'firebase:register-android-sha1',
+      'google-play:extract-fingerprints',
+      'google-play:add-fingerprints-to-firebase',
     ],
     produces: [
       {
@@ -1575,6 +1720,13 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
         description:
           'When deep-link-domain wiring is enabled, include it before generating the final app integration handoff.',
       },
+    ],
+    refreshTriggers: [
+      'oauth:register-oauth-client-web',
+      'oauth:register-oauth-client-ios',
+      'oauth:register-oauth-client-android',
+      'oauth:configure-apple-sign-in',
+      'apple:store-signing-in-eas',
     ],
     produces: [
       {

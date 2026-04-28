@@ -81,6 +81,15 @@ function ResourceRow({
   const primary = value !== undefined && !secured ? getPrimaryHref(presentation, value, upstream) : null;
   const related = value !== undefined && !secured ? getResolvedRelatedLinks(presentation, value, upstream) : [];
   const hasValue = value !== undefined && value !== '';
+  const normalizedPlanned = (plannedName ?? '').trim();
+  const showPlannedName =
+    (status === 'planned' || status === 'in_progress') &&
+    normalizedPlanned.length > 0 &&
+    normalizedPlanned !== resource.key &&
+    normalizedPlanned !== resource.label &&
+    normalizedPlanned !== 'Named when this step runs' &&
+    normalizedPlanned !== 'Identifier assigned when this step completes' &&
+    normalizedPlanned !== 'URL assigned when this step completes';
 
   const cardBorder =
     status === 'complete'
@@ -98,6 +107,21 @@ function ResourceRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-xs font-bold text-foreground">{resource.label}</p>
+            {presentation.destinationType ? (
+              <span className="shrink-0 inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full border border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300">
+                {presentation.destinationType}
+              </span>
+            ) : null}
+            {presentation.secretType ? (
+              <span className="shrink-0 inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full border border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300">
+                {presentation.secretType}
+              </span>
+            ) : null}
+            {presentation.writeBehavior ? (
+              <span className="shrink-0 inline-flex items-center text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                {presentation.writeBehavior}
+              </span>
+            ) : null}
             <AnimatePresence mode="wait" initial={false}>
               <motion.span
                 key={status}
@@ -125,10 +149,10 @@ function ResourceRow({
         {hasValue && !secured && status === 'complete' ? <CopyValueButton text={value!} /> : null}
       </div>
 
-      {(status === 'planned' || status === 'in_progress') && plannedName?.trim() ? (
+      {showPlannedName ? (
         <div className="rounded-md border border-border/70 bg-muted/25 px-2.5 py-2">
           <p className="text-[9px] font-bold uppercase tracking-wide text-muted-foreground">Name it will create</p>
-          <p className="text-xs text-foreground mt-1 leading-snug break-words">{plannedName}</p>
+          <p className="text-xs text-foreground mt-1 leading-snug break-words">{normalizedPlanned}</p>
         </div>
       ) : null}
 

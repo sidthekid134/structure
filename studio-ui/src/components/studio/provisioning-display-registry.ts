@@ -225,6 +225,9 @@ function deepMergePresentation(
   if (!override) return base;
   return {
     sensitive: override.sensitive ?? base.sensitive,
+    destinationType: override.destinationType ?? base.destinationType,
+    secretType: override.secretType ?? base.secretType,
+    writeBehavior: override.writeBehavior ?? base.writeBehavior,
     primaryLinkFromValue: override.primaryLinkFromValue ?? base.primaryLinkFromValue,
     primaryHrefTemplate: override.primaryHrefTemplate ?? base.primaryHrefTemplate,
     relatedLinks: [...(base.relatedLinks ?? []), ...(override.relatedLinks ?? [])],

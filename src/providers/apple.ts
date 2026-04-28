@@ -24,6 +24,7 @@ import type { LoggingCallback } from '../types.js';
 import { ExpoGraphqlEasApiClient } from './expo-graphql-eas-client.js';
 import {
   mintAppleAppStoreSigningAssets,
+  revokeAppleAppStoreSigningAssets,
   type AppleAppStoreSigningAssets,
 } from './apple-eas-signing.js';
 
@@ -719,6 +720,8 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
     const attributes: Record<string, unknown> = { name };
     if (isInternalGroup) {
       attributes['isInternalGroup'] = true;
+      // Mirrors ASC's "Enable automatic distribution" toggle for internal groups.
+      attributes['hasAccessToAllBuilds'] = true;
     } else {
       attributes['publicLinkEnabled'] = false;
       attributes['publicLinkLimitEnabled'] = false;
@@ -842,6 +845,26 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
     return { id: response.data.id };
   }
 
+  private async listBetaGroupTesterEmails(
+    auth: AppleAscAuth,
+    betaGroupId: string,
+  ): Promise<Set<string>> {
+    // List testers directly under the group so we can verify membership by email.
+    // Using include/fields keeps payload small while still exposing attributes.email.
+    const path =
+      `/v1/betaGroups/${encodeURIComponent(betaGroupId)}/betaTesters` +
+      `?fields[betaTesters]=email&limit=200`;
+    const response = await requestAppStoreConnect<
+      AppleApiEnvelope<Array<{ id: string; attributes?: { email?: string } }>>
+    >(auth, 'GET', path);
+    const emails = new Set<string>();
+    for (const tester of response.data ?? []) {
+      const email = tester.attributes?.email?.trim().toLowerCase();
+      if (email) emails.add(email);
+    }
+    return emails;
+  }
+
   private async addTesterToBetaGroup(
     auth: AppleAscAuth,
     betaGroupId: string,
@@ -855,6 +878,44 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         data: [{ type: 'betaTesters', id: betaTesterId }],
       },
     );
+  }
+
+  private async ensureTesterInBetaGroup(
+    auth: AppleAscAuth,
+    args: {
+      betaGroupId: string;
+      email: string;
+      firstName?: string;
+      lastName?: string;
+      addedEmails: string[];
+      reusedEmails: string[];
+    },
+  ): Promise<void> {
+    const existingTester = await this.findBetaTesterByEmail(auth, args.email);
+    const testerId = existingTester
+      ? existingTester.id
+      : (
+        await this.createBetaTester(auth, {
+          email: args.email,
+          firstName: args.firstName,
+          lastName: args.lastName,
+          betaGroupId: args.betaGroupId,
+        })
+      ).id;
+
+    try {
+      // Always attach explicitly. Relying on createBetaTester relationship linkage
+      // alone is not reliable across Apple ASC API behavior.
+      await this.addTesterToBetaGroup(auth, args.betaGroupId, testerId);
+      args.addedEmails.push(args.email);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message.includes('409') || message.toLowerCase().includes('already')) {
+        args.reusedEmails.push(args.email);
+        return;
+      }
+      throw err;
+    }
   }
 
   private parseTesterEmails(raw: string | undefined): string[] {
@@ -1002,51 +1063,48 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         };
       }
       for (const user of resolvedUsers) {
-        const existingTester = await this.findBetaTesterByEmail(auth, user.email);
-        if (existingTester) {
-          try {
-            await this.addTesterToBetaGroup(auth, group.id, existingTester.id);
-            addedEmails.push(user.email);
-          } catch (err) {
-            const message = (err as Error).message;
-            if (message.includes('409') || message.toLowerCase().includes('already')) {
-              reusedEmails.push(user.email);
-            } else {
-              throw err;
-            }
-          }
-        } else {
-          await this.createBetaTester(auth, {
-            email: user.email,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            betaGroupId: group.id,
-          });
-          addedEmails.push(user.email);
-        }
+        await this.ensureTesterInBetaGroup(auth, {
+          betaGroupId: group.id,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          addedEmails,
+          reusedEmails,
+        });
       }
     } else {
       for (const email of testerEmails) {
-        const existingTester = await this.findBetaTesterByEmail(auth, email);
-        if (existingTester) {
-          try {
-            await this.addTesterToBetaGroup(auth, group.id, existingTester.id);
-            addedEmails.push(email);
-          } catch (err) {
-            const message = (err as Error).message;
-            if (message.includes('409') || message.toLowerCase().includes('already')) {
-              reusedEmails.push(email);
-            } else {
-              throw err;
-            }
-          }
-        } else {
-          await this.createBetaTester(auth, {
-            email,
-            betaGroupId: group.id,
-          });
-          addedEmails.push(email);
+        await this.ensureTesterInBetaGroup(auth, {
+          betaGroupId: group.id,
+          email,
+          addedEmails,
+          reusedEmails,
+        });
+      }
+    }
+
+    // Hard verification: every requested tester must now appear on the group.
+    // Apple can take a brief moment to index new tester->group links; retry a
+    // few times and fail loudly if any are still missing.
+    if (testerEmails.length > 0) {
+      const requestedLower = testerEmails.map((e) => e.toLowerCase());
+      let missingLower = new Set<string>(requestedLower);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const current = await this.listBetaGroupTesterEmails(auth, group.id);
+        missingLower = new Set(requestedLower.filter((email) => !current.has(email)));
+        if (missingLower.size === 0) break;
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
         }
+      }
+      if (missingLower.size > 0) {
+        const missing = testerEmails.filter((email) => missingLower.has(email.toLowerCase()));
+        throw new AdapterError(
+          `TestFlight group "${group.name}" was created but these testers are still not in the group after add attempts: ${missing.join(', ')}. ` +
+            `Open https://appstoreconnect.apple.com/apps/${ascAppId}/testflight/groups/${group.id} to confirm membership and retry.`,
+          'apple',
+          'apple:configure-testflight-group',
+        );
       }
     }
 
@@ -1719,6 +1777,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
       context.upstreamResources['expo_account']?.trim() || undefined;
     const ascAuth = await this.readAscAuth(context);
     const expoToken = (await context.vaultRead('expo_token'))?.trim() || undefined;
+    const isRefresh = context.executionIntent === 'refresh';
 
     const missing: string[] = [];
     if (!expoAppId) missing.push('eas_project_id (run "Create EAS Project" first)');
@@ -1745,7 +1804,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
       organization: expoAccount,
       bundleIdentifier: bundleIdentifier!,
     });
-    if (existing) {
+    if (existing && !isRefresh) {
       this.log.info('apple:store-signing-in-eas reusing existing EAS build credentials', {
         bundleIdentifier,
         iosAppCredentialsId: existing.iosAppCredentialsId,
@@ -1762,6 +1821,51 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         },
         userPrompt: easCredentialsBootstrapReminder(bundleIdentifier!),
       };
+    }
+
+    if (existing && isRefresh) {
+      if (!ascAuth) {
+        throw new AdapterError(
+          'Cannot refresh EAS-managed iOS signing without App Store Connect credentials. ' +
+            'Reconnect the org-level Apple integration and retry.',
+          'apple',
+          'executeStep',
+        );
+      }
+
+      const vaultPath = `${context.projectId}/apple/eas-app-store-signing/${bundleIdentifier!}`;
+      const vaultRecordRaw = await context.vaultRead(vaultPath);
+      let certDeveloperPortalId = existing.certDeveloperPortalIdentifier ?? undefined;
+      let profileDeveloperPortalId = existing.profileDeveloperPortalIdentifier ?? undefined;
+      if (vaultRecordRaw) {
+        try {
+          const parsed = JSON.parse(vaultRecordRaw) as {
+            certDeveloperPortalId?: string;
+            profileDeveloperPortalId?: string;
+          };
+          certDeveloperPortalId = certDeveloperPortalId || parsed.certDeveloperPortalId?.trim() || undefined;
+          profileDeveloperPortalId =
+            profileDeveloperPortalId || parsed.profileDeveloperPortalId?.trim() || undefined;
+        } catch (err) {
+          throw new AdapterError(
+            `Corrupt signing metadata in vault path "${vaultPath}": ${(err as Error).message}`,
+            'apple',
+            'executeStep',
+            err,
+          );
+        }
+      }
+
+      this.log.info('apple:store-signing-in-eas refresh requested; revoking prior Apple assets', {
+        bundleIdentifier,
+        certDeveloperPortalId,
+        profileDeveloperPortalId,
+      });
+
+      await revokeAppleAppStoreSigningAssets(ascAuth, {
+        certDeveloperPortalId,
+        profileDeveloperPortalId,
+      });
     }
 
     const profileName = `Studio App Store ${bundleIdentifier!} ${new Date().toISOString().slice(0, 10)}`;

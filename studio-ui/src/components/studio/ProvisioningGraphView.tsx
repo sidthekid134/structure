@@ -190,6 +190,38 @@ function getEffectiveStatus(
   return nodeStates[node.key]?.status ?? 'not-started';
 }
 
+function getNodeInvalidation(
+  node: ProvisioningGraphNode,
+  nodeStates: Record<string, NodeState>,
+  environments: string[],
+): {
+  isInvalidated: boolean;
+  by?: string;
+  reason?: string;
+  environments?: string[];
+} {
+  if (node.type === 'step' && node.environmentScope === 'per-environment') {
+    const invalidated = environments
+      .map((env) => ({ env, state: nodeStates[`${node.key}@${env}`] }))
+      .filter(({ state }) => Boolean(state?.invalidatedBy));
+    if (invalidated.length === 0) return { isInvalidated: false };
+    const first = invalidated[0]!.state!;
+    return {
+      isInvalidated: true,
+      by: first.invalidatedBy,
+      reason: first.error,
+      environments: invalidated.map(({ env }) => env),
+    };
+  }
+  const state = nodeStates[node.key];
+  if (!state?.invalidatedBy) return { isInvalidated: false };
+  return {
+    isInvalidated: true,
+    by: state.invalidatedBy,
+    reason: state.error,
+  };
+}
+
 function statusIcon(status: NodeStatus, size = 14) {
   switch (status) {
     case 'completed': return <CheckCircle2 size={size} className="text-emerald-500" />;
@@ -352,7 +384,7 @@ interface NodeCardProps {
   environments: string[];
   projectId: string;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
-  onRunNode: (nodeKey: string) => void;
+  onRunNode: (nodeKey: string, intent?: 'create' | 'refresh') => void;
   onCancelNode: (nodeKey: string) => void;
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
@@ -360,6 +392,13 @@ interface NodeCardProps {
   resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
   portalLinksByNodeKey?: Record<string, CompletionPortalLink[]>;
 }
+
+const REFRESHABLE_STEP_FALLBACK_KEYS = new Set<string>([
+  'apple:store-signing-in-eas',
+  'oauth:register-oauth-client-ios',
+  'oauth:register-oauth-client-android',
+  'oauth:prepare-app-integration-kit',
+]);
 
 function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: NodeCardProps) {
   const [expanded, setExpanded] = useState(false);
@@ -466,6 +505,7 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
   );
 
   const effectiveStatus = getEffectiveStatus(node, nodeStates, environments);
+  const invalidation = getNodeInvalidation(node, nodeStates, environments);
   const meta = getProviderMeta(node, providerDisplayMeta);
 
   const perEnvInstances =
@@ -480,12 +520,19 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
   const isUserAction = node.type === 'user-action';
   const userActionNode = isUserAction ? (node as UserActionNode) : null;
   const oauthInteractive = userActionNode ? effectiveUserActionInteractiveAction(userActionNode) : undefined;
+  const supportsExplicitRefresh =
+    node.type === 'step' &&
+    node.automationLevel !== 'manual' &&
+    (Boolean((node as ProvisioningStepNode).refreshTriggers?.length) ||
+      REFRESHABLE_STEP_FALLBACK_KEYS.has(node.key));
 
   return (
     <div
       className={`rounded-xl border transition-all duration-300 ${
         isWaiting
           ? 'border-amber-500/40 bg-amber-500/5 shadow-sm shadow-amber-500/10'
+          : invalidation.isInvalidated
+            ? 'border-orange-500/35 bg-orange-500/5 shadow-sm shadow-orange-500/10'
           : effectiveStatus === 'resolving'
             ? 'border-cyan-500/40 bg-cyan-500/5 shadow-sm shadow-cyan-500/10'
             : effectiveStatus === 'in-progress'
@@ -524,6 +571,11 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
                 PER-ENV
               </span>
             )}
+            {invalidation.isInvalidated && (
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-orange-700 dark:text-orange-300 bg-orange-500/10 border-orange-500/30">
+                STALE
+              </span>
+            )}
           </div>
           <span className={`text-sm font-semibold ${effectiveStatus === 'blocked' || effectiveStatus === 'not-started' ? 'text-muted-foreground' : 'text-foreground'}`}>
             {node.label}
@@ -556,13 +608,25 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
           {node.type === 'step' && effectiveStatus !== 'completed' && effectiveStatus !== 'in-progress' && effectiveStatus !== 'skipped' && (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); onRunNode(node.key); }}
+              onClick={(e) => { e.stopPropagation(); onRunNode(node.key, 'create'); }}
               disabled={isGloballyRunning}
-              title={effectiveStatus === 'waiting-on-user' ? 'Verify this step' : 'Run this step'}
+              title={invalidation.isInvalidated ? 'Re-run this step in refresh mode' : effectiveStatus === 'waiting-on-user' ? 'Verify this step' : 'Run this step'}
               className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-primary bg-primary/10 border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Play size={9} />
-              {effectiveStatus === 'waiting-on-user' ? 'VERIFY' : 'RUN'}
+              {invalidation.isInvalidated ? <RefreshCw size={9} /> : <Play size={9} />}
+              {invalidation.isInvalidated ? 'REFRESH' : effectiveStatus === 'waiting-on-user' ? 'VERIFY' : 'RUN'}
+            </button>
+          )}
+          {node.type === 'step' && supportsExplicitRefresh && effectiveStatus !== 'in-progress' && effectiveStatus !== 'skipped' && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRunNode(node.key, 'refresh'); }}
+              disabled={isGloballyRunning}
+              title="Force refresh (rotate/replace) this step's provider resources"
+              className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-orange-700 dark:text-orange-300 bg-orange-500/10 border-orange-500/30 hover:bg-orange-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <RefreshCw size={9} />
+              REFRESH
             </button>
           )}
           {/* Step nodes — CANCEL button when running */}
@@ -654,6 +718,18 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               <p className="text-[11px] text-muted-foreground leading-relaxed">
                 {provisioningNodeDescription(node, environments)}
               </p>
+              {invalidation.isInvalidated ? (
+                <div className="rounded-lg border border-orange-500/35 bg-orange-500/5 px-2.5 py-2">
+                  <p className="text-[11px] font-semibold text-orange-800 dark:text-orange-200 flex items-center gap-1">
+                    <RefreshCw size={11} />
+                    Refresh required
+                  </p>
+                  <p className="text-[11px] text-orange-900/80 dark:text-orange-100/80 mt-1">
+                    {invalidation.reason || 'This node was marked stale and should be re-run.'}
+                    {invalidation.by ? ` Triggered by: ${invalidation.by}.` : ''}
+                  </p>
+                </div>
+              ) : null}
 
               {/* Step input fields */}
               {hasInputFields && stepNode?.inputFields && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
@@ -931,7 +1007,7 @@ interface PhaseGroupProps {
   environments: string[];
   projectId: string;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
-  onRunNodes: (nodeKeys: string[]) => void;
+  onRunNodes: (nodeKeys: string[], intent?: 'create' | 'refresh') => void;
   onCancelNode: (nodeKey: string) => void;
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
@@ -958,6 +1034,11 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
       return s !== 'completed' && s !== 'skipped' && s !== 'in-progress';
     })
     .map((n) => n.key);
+  const hasStaleRunnable = phase.nodes.some((n) => {
+    if (n.type !== 'step') return false;
+    if (!runnableStepKeys.includes(n.key)) return false;
+    return getNodeInvalidation(n, nodeStates, environments).isInvalidated;
+  });
 
   return (
     <div className={`border rounded-2xl overflow-hidden ${
@@ -1028,8 +1109,10 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
             >
               {hasRunning
                 ? <Loader2 size={10} className="animate-spin" />
-                : <Play size={10} />}
-              {hasRunning ? 'Running…' : 'Run Phase'}
+                : hasStaleRunnable
+                  ? <RefreshCw size={10} />
+                  : <Play size={10} />}
+              {hasRunning ? 'Running…' : hasStaleRunnable ? 'Refresh Phase' : 'Run Phase'}
             </button>
           )}
           <ChevronDown
@@ -1057,7 +1140,7 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
                   environments={environments}
                   projectId={projectId}
                   onUserActionComplete={onUserActionComplete}
-                  onRunNode={(key) => onRunNodes([key])}
+                  onRunNode={(key, intent) => onRunNodes([key], intent)}
                   onCancelNode={onCancelNode}
                   onSyncAndRefresh={onSyncAndRefresh}
                   isGloballyRunning={isGloballyRunning}
@@ -1168,10 +1251,15 @@ export function ProvisioningGraphView({
     setIsRunning(true);
     setRunError(null);
     try {
+      const intent: 'create' | 'refresh' = Object.values(plan?.nodeStates ?? {}).some(
+        (state) => Boolean(state.invalidatedBy),
+      )
+        ? 'refresh'
+        : 'create';
       await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ intent }),
       });
       await onRefresh();
     } catch (err) {
@@ -1195,12 +1283,31 @@ export function ProvisioningGraphView({
     }
   };
 
-  const handleRunNodes = async (nodeKeys: string[]) => {
+  const handleRunNodes = async (
+    nodeKeys: string[],
+    forcedIntent?: 'create' | 'refresh',
+  ) => {
     setRunError(null);
     try {
+      const intent: 'create' | 'refresh' = forcedIntent ?? (
+        nodeKeys.some((nodeKey) => {
+          const direct = plan?.nodeStates[nodeKey];
+          if (direct?.invalidatedBy) return true;
+          return Object.entries(plan?.nodeStates ?? {}).some(
+            ([stateKey, state]) =>
+              stateKey.startsWith(`${nodeKey}@`) && Boolean(state.invalidatedBy),
+          );
+        })
+          ? 'refresh'
+          : 'create'
+      );
       const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
         `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeKeys }) },
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeKeys, intent }),
+        },
       );
 
       if (result.needsReauth && result.sessionId && result.authUrl) {
@@ -1211,7 +1318,7 @@ export function ProvisioningGraphView({
           await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nodeKeys }),
+            body: JSON.stringify({ nodeKeys, intent }),
           });
         } else {
           setRunError(gcpOAuthSession.error ?? 'Google sign-in required before running this step.');

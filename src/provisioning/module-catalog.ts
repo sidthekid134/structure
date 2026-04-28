@@ -173,6 +173,7 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     stepKeys: [
       'eas:create-project',
       'eas:configure-build-profiles',
+      'eas:sync-runtime-env',
       'eas:store-token-in-github',
       'eas:write-eas-json',
     ],

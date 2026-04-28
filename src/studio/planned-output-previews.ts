@@ -156,6 +156,48 @@ function previewFor(
       return `Firebase iOS app (${ctx.bundleId || ctx.slug})`;
     case 'firebase_android_app_id':
       return `Firebase Android app (${ctx.bundleId || ctx.slug})`;
+    case 'firebase_api_key': {
+      const resolved = ctx.upstream['firebase_api_key']?.trim();
+      return resolved || 'Resolved from Firebase app config when this step runs';
+    }
+    case 'eas_env_firebase_project_id': {
+      const resolved =
+        ctx.upstream['firebase_project_id']?.trim() ||
+        ctx.upstream['gcp_project_id']?.trim();
+      return resolved || 'Requires Firebase project id';
+    }
+    case 'eas_env_firebase_ios_app_id': {
+      const resolved = ctx.upstream['firebase_ios_app_id']?.trim();
+      return resolved || 'Set when iOS Firebase app is registered';
+    }
+    case 'eas_env_firebase_android_app_id': {
+      const resolved = ctx.upstream['firebase_android_app_id']?.trim();
+      return resolved || 'Set when Android Firebase app is registered';
+    }
+    case 'eas_env_google_web_client_id': {
+      const resolved = ctx.upstream['oauth_client_id_web']?.trim();
+      return resolved || 'Set when Google OAuth web client is configured';
+    }
+    case 'eas_env_google_ios_client_id': {
+      const resolved = ctx.upstream['oauth_client_id_ios']?.trim();
+      return resolved || 'Set when Google OAuth iOS client is configured';
+    }
+    case 'eas_env_google_android_client_id': {
+      const resolved = ctx.upstream['oauth_client_id_android']?.trim();
+      return resolved || 'Set when Google OAuth Android client is configured';
+    }
+    case 'eas_env_apple_service_id': {
+      const resolved = ctx.upstream['apple_sign_in_service_id']?.trim();
+      return resolved || 'Set when Apple Sign-In service id is configured';
+    }
+    case 'eas_env_auth_deep_link_base_url': {
+      const resolved = ctx.upstream['deep_link_base_url']?.trim();
+      return resolved || 'Set when deep-link base URL is configured';
+    }
+    case 'eas_env_auth_landing_url': {
+      const resolved = ctx.upstream['auth_landing_url']?.trim();
+      return resolved || 'Set when auth landing URL is configured';
+    }
     case 'enabled_services':
       return 'GCP API enablement set on your Firebase / GCP project';
     case 'apple_team_id':
