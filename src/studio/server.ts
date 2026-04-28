@@ -20,6 +20,7 @@ import { WebSocketServer } from 'ws';
 import { EventLog } from '../orchestration/event-log.js';
 import { createApiRouter } from './api.js';
 import { WsHandler } from './ws-handler.js';
+import { registerBuiltinPlugins } from '../plugins/builtin/index.js';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -34,6 +35,25 @@ export interface StudioServerOptions {
   storeDir?: string;
   /** Enables live-reload + source static serving for local development. */
   devMode?: boolean;
+}
+
+/** Safe request logging: field names + value shapes only (no raw secrets). */
+function describeJsonBodyShape(body: unknown, depth = 0): string {
+  if (body === null || body === undefined) return String(body);
+  if (depth > 4) return '…';
+  if (typeof body === 'string') return `string(${body.length} chars)`;
+  if (typeof body === 'number' || typeof body === 'boolean') return String(body);
+  if (Array.isArray(body)) {
+    if (body.length === 0) return '[]';
+    const first = describeJsonBodyShape(body[0], depth + 1);
+    return body.length === 1 ? `[${first}]` : `[${first}, … ×${body.length}]`;
+  }
+  if (typeof body === 'object') {
+    const o = body as Record<string, unknown>;
+    const parts = Object.keys(o).map((k) => `${k}=${describeJsonBodyShape(o[k], depth + 1)}`);
+    return `{${parts.join(', ')}}`;
+  }
+  return typeof body;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,17 +115,33 @@ export class StudioServer {
         if (!req.originalUrl.startsWith('/api')) {
           return;
         }
+        if (req.originalUrl === '/api/health' || req.originalUrl.startsWith('/api/health?')) {
+          return;
+        }
         const durationMs = Date.now() - start;
         const message = `[studio-api] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms)`;
         if (res.statusCode >= 500) {
           console.error(message);
-          return;
-        }
-        if (res.statusCode >= 400) {
+        } else if (res.statusCode >= 400) {
           console.warn(message);
-          return;
+        } else {
+          console.log(message);
         }
-        console.log(message);
+        // Second line: JSON body shape only (never log raw secrets / token values).
+        if (req.method !== 'GET' && req.method !== 'HEAD' && req.body && typeof req.body === 'object') {
+          const keys = Object.keys(req.body as object);
+          if (keys.length > 0) {
+            const detail = describeJsonBodyShape(req.body);
+            const line = `[studio-api]   req body: ${detail}`;
+            if (res.statusCode >= 500) {
+              console.error(line);
+            } else if (res.statusCode >= 400) {
+              console.warn(line);
+            } else {
+              console.log(line);
+            }
+          }
+        }
       });
       next();
     });
@@ -113,6 +149,9 @@ export class StudioServer {
 
   private setupRoutes(storeDir: string): void {
     this.app.use(express.static(this.staticDir, { index: false }));
+
+    // Bootstrap plugins before the API router starts handling requests
+    registerBuiltinPlugins();
 
     // REST API
     this.app.use('/api', createApiRouter(this.eventLog, this.wsHandler, storeDir, this.devMode));

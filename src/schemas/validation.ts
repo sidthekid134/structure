@@ -181,9 +181,9 @@ export class ManifestValidator {
       );
     }
 
-    if (!['dev', 'preview', 'prod'].includes(c['environment'] as string)) {
+    if (!['development', 'preview', 'production'].includes(c['environment'] as string)) {
       throw new ManifestValidationError(
-        `${field}.environment must be one of: dev, preview, prod`,
+        `${field}.environment must be one of: development, preview, production`,
         `${field}.environment`,
       );
     }

@@ -13,6 +13,7 @@
 
 import type { VaultManager } from '../vault.js';
 import type { ProjectManager } from '../studio/project-manager.js';
+import type { StepExecutionIntent } from '../providers/types.js';
 
 // ---------------------------------------------------------------------------
 // Handler context
@@ -20,8 +21,20 @@ import type { ProjectManager } from '../studio/project-manager.js';
 
 export interface StepHandlerContext {
   projectId: string;
+  /**
+   * Studio environment for per-environment steps (e.g. `'development'`,
+   * `'preview'`, `'production'`). Undefined for global-scope steps and for
+   * delete operations (revert is invoked once per base step, not per env).
+   * Per-env handlers that need to clean up across all envs during delete
+   * should iterate `projectManager.getProject(...).project.environments`.
+   */
+  environment?: string;
   /** Artifacts produced by upstream steps (key = ResourceOutput.key). */
   upstreamArtifacts: Record<string, string>;
+  /** User-provided input values for steps with inputFields. */
+  userInputs?: Record<string, string>;
+  /** Invocation intent for this execution (idempotent create vs forced refresh). */
+  executionIntent?: StepExecutionIntent;
   /** Get an OAuth access token for the given provider ('gcp', 'github', …). Throws if unavailable. */
   getToken(providerId: string): Promise<string>;
   /** Returns true if a stored refresh token exists for this provider (does not refresh). */
@@ -37,12 +50,44 @@ export interface StepHandlerContext {
 // Handler result
 // ---------------------------------------------------------------------------
 
+/** Structured guidance for recovering from a step failure. */
+export interface StepFailureRecovery {
+  type: 'retry' | 'reauth' | 'manual-fix' | 'adopt-existing' | 'wait-retry';
+  instructions?: string;
+  portalUrl?: string;
+  /** For 'wait-retry': milliseconds to wait before retrying */
+  retryAfterMs?: number;
+  /** For 'adopt-existing': the resource ID already in the cloud */
+  existingResourceId?: string;
+}
+
 export interface StepHandlerResult {
   reconciled: boolean;
   message?: string;
   resourcesProduced?: Record<string, string>;
   /** When reconciled=false: caller should trigger OAuth re-authentication. */
   suggestsReauth?: boolean;
+  /** Granular progress update for long-running steps. */
+  progress?: { phase: string; percentage?: number; detail?: string };
+  /** Structured recovery guidance when reconciled=false. */
+  recovery?: StepFailureRecovery;
+}
+
+// ---------------------------------------------------------------------------
+// Manual revert action
+// ---------------------------------------------------------------------------
+
+/**
+ * When a handler's delete() returns reconciled=false (e.g. robot token can't delete),
+ * the handler can optionally provide structured instructions for the user to manually
+ * complete the deletion. Returned by getManualRevertAction() when implemented.
+ */
+export interface RevertManualAction {
+  stepKey: string;
+  title: string;
+  body: string;
+  primaryUrl: string;
+  primaryLabel: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +118,12 @@ export interface StepHandler {
    * handler does not apply to the given step (allows fallback to adapter.checkStep).
    */
   sync(context: StepHandlerContext): Promise<StepHandlerResult | null>;
+  /**
+   * Optional: called when delete() returns reconciled=false to get structured manual
+   * instructions for the user to complete the deletion themselves.
+   * Return null when no manual instructions apply.
+   */
+  getManualRevertAction?(context: StepHandlerContext): RevertManualAction | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,6 @@ import {
   ScanSearch,
   Undo2,
   UserCheck,
-  X,
   Zap,
 } from 'lucide-react';
 import { api } from './helpers';
@@ -60,11 +59,12 @@ interface StepCardProps {
   projectId: string;
   flowComplete: boolean;
   syncBusy: boolean;
+  revertBusy: boolean;
   onSyncPipeline: () => void;
-  onRequestRevert: (stepId: OAuthStepId) => void;
+  onRequestRevert: () => void;
 }
 
-function StepCard({ step, index, isLast, projectId, flowComplete, syncBusy, onSyncPipeline, onRequestRevert }: StepCardProps) {
+function StepCard({ step, index, isLast, projectId, flowComplete, syncBusy, revertBusy, onSyncPipeline, onRequestRevert }: StepCardProps) {
   const meta = STEP_META[step.id];
   const Icon = meta.icon;
 
@@ -241,12 +241,12 @@ function StepCard({ step, index, isLast, projectId, flowComplete, syncBusy, onSy
                   {meta.canRevert && (
                     <button
                       type="button"
-                      onClick={() => onRequestRevert(step.id)}
-                      disabled={syncBusy}
+                      onClick={() => onRequestRevert()}
+                      disabled={syncBusy || revertBusy}
                       className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-md border border-red-500/35 text-red-700 dark:text-red-400 bg-red-500/5 hover:bg-red-500/10 disabled:opacity-50"
                     >
-                      <Undo2 size={10} />
-                      Revert
+                      {revertBusy ? <Loader2 size={10} className="animate-spin" /> : <Undo2 size={10} />}
+                      {revertBusy ? 'Reverting…' : 'Revert'}
                     </button>
                   )}
                 </>
@@ -273,65 +273,6 @@ function StepCard({ step, index, isLast, projectId, flowComplete, syncBusy, onSy
 }
 
 // ---------------------------------------------------------------------------
-// Revert confirmation
-// ---------------------------------------------------------------------------
-
-interface RevertDialogProps {
-  busy: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}
-
-function RevertConfirmDialog({ busy, onCancel, onConfirm }: RevertDialogProps) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="bg-card border border-border rounded-xl shadow-lg max-w-md w-full p-4 space-y-3"
-        role="dialog"
-        aria-labelledby="revert-dialog-title"
-      >
-        <div className="flex items-start justify-between gap-2">
-          <h3 id="revert-dialog-title" className="text-sm font-bold text-foreground">
-            Disconnect Google?
-          </h3>
-          <button type="button" onClick={onCancel} disabled={busy} className="p-1 rounded hover:bg-muted text-muted-foreground">
-            <X size={14} />
-          </button>
-        </div>
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          This runs the server-side teardown cascade for your GCP bootstrap: remove provisioner IAM bindings, delete the
-          provisioner service account when possible, then clear OAuth tokens, service account keys, and connection
-          metadata from the local vault.
-        </p>
-        <p className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2 py-1.5">
-          GCP project deletion is never automated — remove the project in Google Cloud Console if you no longer need it.
-        </p>
-        <div className="flex justify-end gap-2 pt-1">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={busy}
-            className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={busy}
-            className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-          >
-            {busy ? <Loader2 size={12} className="animate-spin" /> : <Undo2 size={12} />}
-            Confirm revert
-          </button>
-        </div>
-      </motion.div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // OAuthFlowPanel
 // ---------------------------------------------------------------------------
@@ -352,7 +293,6 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
   const [localError, setLocalError] = useState<string | null>(null);
   const [embeddedHydrated, setEmbeddedHydrated] = useState(!embedded);
 
-  const [revertTarget, setRevertTarget] = useState<OAuthStepId | null>(null);
   const [revertBusy, setRevertBusy] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [discoverHint, setDiscoverHint] = useState<string | null>(null);
@@ -426,7 +366,6 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
   }, [oauthSession]);
 
   const confirmRevert = useCallback(async () => {
-    if (!revertTarget) return;
     setRevertBusy(true);
     setLocalError(null);
     try {
@@ -434,7 +373,6 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
         `/api/projects/${encodeURIComponent(projectId)}/oauth/gcp/connection`,
         { method: 'DELETE' },
       );
-      setRevertTarget(null);
       oauthSession.reset();
       setSteps([]);
       await onCompleted();
@@ -443,7 +381,7 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
     } finally {
       setRevertBusy(false);
     }
-  }, [projectId, revertTarget, onCompleted, oauthSession]);
+  }, [projectId, onCompleted, oauthSession]);
 
   const runSyncProvisioningPlan = useCallback(async () => {
     setSyncBusy(true);
@@ -619,14 +557,6 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
 
   return (
     <div className="space-y-3">
-      {revertTarget && (
-        <RevertConfirmDialog
-          busy={revertBusy}
-          onCancel={() => !revertBusy && setRevertTarget(null)}
-          onConfirm={() => void confirmRevert()}
-        />
-      )}
-
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {oauthComplete ? (
@@ -702,8 +632,9 @@ export function OAuthFlowPanel({ projectId, label, onCompleted, variant = 'stand
             projectId={projectId}
             flowComplete={flowComplete}
             syncBusy={syncBusy}
+            revertBusy={revertBusy}
             onSyncPipeline={() => void runSyncProvisioningPlan()}
-            onRequestRevert={setRevertTarget}
+            onRequestRevert={() => void confirmRevert()}
           />
         ))}
       </div>

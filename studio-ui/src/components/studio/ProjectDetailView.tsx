@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, AlertCircle, CheckCircle2, Settings, Trash2 } from 'lucide-react';
-import { api, formatDate } from './helpers';
+import { Activity, AlertCircle, CheckCircle2, Settings } from 'lucide-react';
+import { api } from './helpers';
 import { inferTemplateIdFromModules, ModuleSelectionWizard } from './ModuleSelectionWizard';
+import { ProjectQuickLinks } from './ProjectQuickLinks';
 import { SetupWizard } from './SetupWizard';
 import { TeardownWizard } from './TeardownWizard';
 import type {
@@ -11,15 +12,17 @@ import type {
   ProvisioningPlanResponse,
 } from './types';
 
-type ProjectTab = 'modules' | 'setup' | 'dashboard' | 'settings';
+export type ProjectSubtab = 'modules' | 'setup' | 'dashboard' | 'settings';
 
 export function ProjectDetailView({
   projectDetail,
+  projectTab,
+  onProjectTabChange,
   onDeleteProject,
 }: {
   projectDetail: ProjectDetail;
-  projectTab?: 'overview' | 'infrastructure' | 'deployments' | 'providers';
-  onProjectTabChange?: (tab: 'overview' | 'infrastructure' | 'deployments' | 'providers') => void;
+  projectTab?: ProjectSubtab;
+  onProjectTabChange?: (tab: ProjectSubtab) => void;
   connectedProviders?: unknown;
   projectPlugins?: string[];
   firebaseConnectionDetails?: unknown;
@@ -33,7 +36,7 @@ export function ProjectDetailView({
   onProjectProvidersRefresh?: unknown;
   onDeleteProject: () => void;
 }) {
-  const [tab, setTab] = useState<ProjectTab>('modules');
+  const [tab, setTab] = useState<ProjectSubtab>('modules');
   const [plan, setPlan] = useState<ProvisioningPlanResponse | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSavingModules, setIsSavingModules] = useState(false);
@@ -43,6 +46,16 @@ export function ProjectDetailView({
   const [selectedModules, setSelectedModules] = useState<ModuleId[]>([]);
 
   const projectId = projectDetail.project.id;
+  const activeTab = projectTab ?? tab;
+  const updateTab = useCallback(
+    (nextTab: ProjectSubtab): void => {
+      onProjectTabChange?.(nextTab);
+      if (projectTab === undefined) {
+        setTab(nextTab);
+      }
+    },
+    [onProjectTabChange, projectTab],
+  );
 
   const loadPlan = useCallback(async () => {
     setIsRefreshing(true);
@@ -58,13 +71,15 @@ export function ProjectDetailView({
       const allDone = Object.values(payload.nodeStates).every(
         (state) => state.status === 'completed' || state.status === 'skipped',
       );
-      if (allDone) setTab('dashboard');
+      if (allDone) {
+        updateTab('dashboard');
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setIsRefreshing(false);
     }
-  }, [projectId]);
+  }, [projectId, updateTab]);
 
   useEffect(() => {
     void loadPlan();
@@ -105,31 +120,16 @@ export function ProjectDetailView({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">{projectDetail.project.name}</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {projectDetail.project.bundleId} · updated {formatDate(projectDetail.project.updatedAt)}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onDeleteProject}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/40 text-red-600 dark:text-red-400 px-3 py-2 text-xs font-bold hover:bg-red-500/10"
-        >
-          <Trash2 size={13} />
-          Delete Project
-        </button>
-      </div>
+      <ProjectQuickLinks plan={plan} onDeleteProject={onDeleteProject} />
 
       <div className="flex items-center gap-1 border-b border-border flex-wrap">
         {(['modules', 'setup', 'dashboard', 'settings'] as const).map((tabId) => (
           <button
             key={tabId}
             type="button"
-            onClick={() => setTab(tabId)}
+            onClick={() => updateTab(tabId)}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px ${
-              tab === tabId
+              activeTab === tabId
                 ? 'border-primary text-primary'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
@@ -152,7 +152,7 @@ export function ProjectDetailView({
         </div>
       )}
 
-      {tab === 'modules' && (
+      {activeTab === 'modules' && (
         <ModuleSelectionWizard
           selectedTemplateId={selectedTemplateId}
           selectedModuleIds={selectedModules}
@@ -179,7 +179,7 @@ export function ProjectDetailView({
                   body: JSON.stringify({ modules: selectedModules }),
                 });
                 await loadPlan();
-                setTab('setup');
+                updateTab('setup');
               } catch (err) {
                 setError((err as Error).message);
               } finally {
@@ -190,7 +190,7 @@ export function ProjectDetailView({
         />
       )}
 
-      {tab === 'setup' && (
+      {activeTab === 'setup' && (
         <SetupWizard
           projectId={projectId}
           plan={plan}
@@ -207,10 +207,19 @@ export function ProjectDetailView({
             await loadPlan();
           }}
           onRefresh={loadPlan}
+          onRecomputePlan={async () => {
+            const modules = (plan?.selectedModules as ModuleId[]) ?? selectedModules;
+            await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/modules`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ modules }),
+            });
+            await loadPlan();
+          }}
         />
       )}
 
-      {tab === 'dashboard' && (
+      {activeTab === 'dashboard' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="rounded-xl border border-border bg-card p-4">
             <p className="text-xs uppercase font-bold tracking-wide text-muted-foreground">Setup</p>
@@ -232,7 +241,7 @@ export function ProjectDetailView({
         </div>
       )}
 
-      {tab === 'settings' && (
+      {activeTab === 'settings' && (
         <div className="space-y-4">
           <div className="rounded-xl border border-border bg-card p-4 flex items-center justify-between">
             <div className="flex items-center gap-2">

@@ -259,6 +259,7 @@ describe('StudioServer', () => {
       {
         name: 'Delete Me',
         slug: 'delete-me',
+        domain: 'delete-me.example.com',
         bundleId: 'com.example.deleteme',
         platforms: ['ios', 'android'],
       },
@@ -283,6 +284,7 @@ describe('StudioServer', () => {
       {
         name: 'Dependency Project',
         slug: 'dependency-project',
+        domain: 'dependency-project.example.com',
         bundleId: 'com.example.dependency',
         platforms: ['ios', 'android'],
       },
@@ -292,7 +294,7 @@ describe('StudioServer', () => {
     const data = await getJson(
       `http://127.0.0.1:${port}/api/projects/dependency-project/integrations/dependencies`,
     ) as {
-      project: { bundleId: string };
+      project: { bundleId: string; domain: string };
       providers: Array<{
         provider: string;
         dependencies: Array<{ key: string; status: string; value: string | null }>;
@@ -301,11 +303,15 @@ describe('StudioServer', () => {
     };
 
     expect(data.project.bundleId).toBe('com.example.dependency');
+    expect(data.project.domain).toBe('dependency-project.example.com');
     const firebase = data.providers.find((provider) => provider.provider === 'firebase');
     expect(firebase).toBeDefined();
     const bundleDependency = firebase!.dependencies.find((dependency) => dependency.key === 'bundle_id');
     expect(bundleDependency?.status).toBe('ready');
     expect(bundleDependency?.value).toBe('com.example.dependency');
+    const domainDep = firebase!.dependencies.find((dependency) => dependency.key === 'project_domain');
+    expect(domainDep?.status).toBe('ready');
+    expect(domainDep?.value).toBe('dependency-project.example.com');
     const serviceAccount = firebase!.plannedResources.find(
       (resource) => resource.key === 'provisioner_service_account',
     );

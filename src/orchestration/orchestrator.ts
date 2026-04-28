@@ -364,7 +364,9 @@ export class Orchestrator {
     const correlationId = crypto.randomUUID();
     const nodeMap = new Map<string, ProvisioningNode>(plan.nodes.map((n) => [n.key, n]));
 
-    const upstreamResources: Record<string, string> = {};
+    const upstreamResources: Record<string, string> = {
+      ...(options.initialUpstreamResources ?? {}),
+    };
 
     const runItem = async (item: {
       nodeKey: string;
@@ -376,15 +378,20 @@ export class Orchestrator {
       const stateKey = item.environment ? `${item.nodeKey}@${item.environment}` : item.nodeKey;
       const currentState = plan.nodeStates.get(stateKey);
 
-      if (currentState?.status === 'completed' || currentState?.status === 'skipped') {
+      const shouldSkipCompleted =
+        currentState?.status === 'completed' || currentState?.status === 'skipped';
+      if (shouldSkipCompleted && options.stepExecutionIntent !== 'refresh') {
         if (currentState.resourcesProduced) {
           Object.assign(upstreamResources, currentState.resourcesProduced);
         }
         return undefined;
       }
 
-      if (nodeKeysFilter && !nodeKeysFilter.has(item.nodeKey)) {
-        return undefined;
+      if (nodeKeysFilter) {
+        const envSuffixed = item.environment ? `${item.nodeKey}@${item.environment}` : item.nodeKey;
+        if (!nodeKeysFilter.has(item.nodeKey) && !nodeKeysFilter.has(envSuffixed)) {
+          return undefined;
+        }
       }
 
       for (const dep of node.dependencies) {
@@ -423,11 +430,19 @@ export class Orchestrator {
         }
       }
 
+      // Preserve `userInputs` across the in-progress transition. The
+      // adapter's executor reads them out of `plan.nodeStates.get(stateKey)`
+      // a few lines below to build `upstreamResources`, so wiping the field
+      // here would silently produce empty inputs and force every step with
+      // user-supplied configuration (Apple Auth Key uploads, GitHub owner,
+      // ASC app name, etc.) into a "waiting-on-user — missing input" loop
+      // even when the user already saved them.
       plan.nodeStates.set(stateKey, {
         nodeKey: item.nodeKey,
         status: 'in-progress',
         environment: item.environment,
         startedAt: Date.now(),
+        ...(currentState?.userInputs ? { userInputs: currentState.userInputs } : {}),
       });
 
       if (node.type === 'user-action') {
@@ -550,9 +565,13 @@ export class Orchestrator {
       const context: StepContext = {
         projectId: plan.projectId,
         environment: item.environment ?? 'global',
-        upstreamResources: { ...upstreamResources },
+        upstreamResources: {
+          ...upstreamResources,
+          ...(plan.nodeStates.get(stateKey)?.userInputs ?? {}),
+        },
         vaultRead: vaultRead ?? (async (_key: string) => null),
         vaultWrite: vaultWrite ?? (async (_key: string, _value: string) => {}),
+        executionIntent: options.stepExecutionIntent ?? 'create',
       };
 
       try {
@@ -568,12 +587,18 @@ export class Orchestrator {
             : result.status === 'waiting-on-user'
               ? 'waiting-on-user'
               : 'failed';
+        // Carry `userInputs` forward so a revert / re-edit doesn't lose what
+        // the user typed (and so resume-from-waiting-on-user keeps the same
+        // values on the next run). The PEM is already vaulted at this point;
+        // the userInputs map just mirrors what the wizard would re-hydrate
+        // its inputs from on next render.
         plan.nodeStates.set(stateKey, {
           nodeKey: item.nodeKey,
           status: newStatus as NodeState['status'],
           environment: item.environment,
           completedAt: Date.now(),
           resourcesProduced: result.resourcesProduced,
+          ...(currentState?.userInputs ? { userInputs: currentState.userInputs } : {}),
         });
 
         return {
@@ -587,6 +612,7 @@ export class Orchestrator {
               : result.status === 'waiting-on-user'
                 ? 'waiting-on-user'
                 : 'failure',
+          error: result.error,
           resourcesProduced: result.resourcesProduced,
           userPrompt: result.userPrompt,
           timestamp: new Date(),
@@ -599,6 +625,7 @@ export class Orchestrator {
           status: 'failed',
           environment: item.environment,
           error,
+          ...(currentState?.userInputs ? { userInputs: currentState.userInputs } : {}),
         });
         return {
           nodeKey: item.nodeKey,
@@ -672,7 +699,9 @@ export class Orchestrator {
   ): AsyncGenerator<StepProgressEvent, void, void> {
     const correlationId = crypto.randomUUID();
     const nodeMap = new Map<string, ProvisioningNode>(plan.nodes.map((n) => [n.key, n]));
-    const upstreamResources: Record<string, string> = {};
+    const upstreamResources: Record<string, string> = {
+      ...(options.initialUpstreamResources ?? {}),
+    };
 
     const executionGroups = StepResolver.resolveTeardownPlan(plan.nodes, plan.environments);
 
@@ -811,6 +840,7 @@ export class Orchestrator {
           upstreamResources: { ...upstreamResources },
           vaultRead: vaultRead ?? (async (_key: string) => null),
           vaultWrite: vaultWrite ?? (async (_key: string, _value: string) => {}),
+          executionIntent: options.stepExecutionIntent ?? 'create',
         };
 
         try {
@@ -845,6 +875,7 @@ export class Orchestrator {
                   : result.status === 'waiting-on-user'
                     ? 'waiting-on-user'
                     : 'failure',
+              error: result.error,
               resourcesProduced: result.resourcesProduced,
               userPrompt: result.userPrompt,
               timestamp: new Date(),

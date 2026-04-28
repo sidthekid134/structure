@@ -47,6 +47,9 @@ export interface CompletionRelatedLink {
 
 export interface ResourceOutputPresentation {
   sensitive?: boolean;
+  destinationType?: string;
+  secretType?: string;
+  writeBehavior?: string;
   primaryLinkFromValue?: boolean;
   primaryHrefTemplate?: string;
   relatedLinks?: CompletionRelatedLink[];
@@ -59,10 +62,42 @@ export interface ResourceOutput {
   presentation?: ResourceOutputPresentation;
 }
 
+export type StepInputFieldType = 'text' | 'select' | 'p8';
+
+export interface StepInputField {
+  key: string;
+  label: string;
+  description?: string;
+  type: StepInputFieldType;
+  placeholder?: string;
+  /** Project tokens ({slug}, {bundleId}, {domain}, {name}) are resolved server-side before delivery. */
+  defaultValue?: string;
+  options?: string[];
+  required?: boolean;
+}
+
 export interface CompletionPortalLink {
   label: string;
   href?: string;
   hrefTemplate?: string;
+}
+
+export interface ManualInstructionDownload {
+  filename: string;
+  url: string;
+  description?: string;
+}
+
+export interface ManualInstructionStep {
+  title: string;
+  detail?: string;
+  downloads?: ManualInstructionDownload[];
+}
+
+export interface ManualInstructions {
+  intro?: string;
+  steps: ManualInstructionStep[];
+  note?: string;
 }
 
 export interface UserActionNode {
@@ -96,6 +131,9 @@ export interface ProvisioningStepNode {
   teardownOf?: string;
   completionPortalLinks?: CompletionPortalLink[];
   interactiveAction?: InteractiveAction;
+  inputFields?: StepInputField[];
+  refreshTriggers?: string[];
+  managedEnvKeys?: string[];
 }
 
 export type ProvisioningGraphNode = UserActionNode | ProvisioningStepNode;
@@ -118,27 +156,40 @@ export interface NodeState {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+  userPrompt?: string;
   resourcesProduced?: Record<string, string>;
+  userInputs?: Record<string, string>;
+  invalidatedBy?: string;
+  invalidatedAt?: number;
 }
 
-export type JourneyPhaseId =
-  | 'accounts'
-  | 'domain_dns'
-  | 'credentials'
-  | 'cloud_firebase'
-  | 'repo'
-  | 'cicd'
-  | 'mobile_build'
-  | 'signing_apple'
-  | 'play'
-  | 'edge_ssl'
-  | 'deep_links'
-  | 'oauth'
-  | 'verification'
-  | 'teardown';
+/**
+ * Open string — built-in phases plus any plugin-contributed ones.
+ * Mirrors the backend `JourneyPhaseId` type.
+ */
+export type JourneyPhaseId = string & { readonly __brand?: 'JourneyPhaseId' };
 
-/** Display titles — keep in sync with `src/provisioning/journey-phases.ts` */
-export const JOURNEY_PHASE_TITLE: Record<JourneyPhaseId, string> = {
+export const BUILTIN_JOURNEY_PHASE_IDS = [
+  'accounts',
+  'domain_dns',
+  'credentials',
+  'cloud_firebase',
+  'repo',
+  'cicd',
+  'mobile_build',
+  'signing_apple',
+  'play',
+  'edge_ssl',
+  'deep_links',
+  'oauth',
+  'verification',
+  'teardown',
+] as const;
+
+export type BuiltinJourneyPhaseId = (typeof BUILTIN_JOURNEY_PHASE_IDS)[number];
+
+/** Display titles — populated from plan response journeyPhaseTitle; fallback to key */
+export const JOURNEY_PHASE_TITLE: Record<string, string> = {
   accounts: 'Accounts & billing',
   domain_dns: 'Domain & DNS',
   credentials: 'Credentials & access',
@@ -160,6 +211,108 @@ export interface SequentialExecutionItem {
   environment?: string;
 }
 
+/** Returned with plan JSON from POST .../provisioning/plan/node/reset when automated cleanup needs a human step. */
+export interface RevertManualAction {
+  stepKey: string;
+  title: string;
+  body: string;
+  primaryUrl: string;
+  primaryLabel: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin display metadata (served in plan response / plugin-catalog endpoint)
+// ---------------------------------------------------------------------------
+
+export interface PluginDisplayMeta {
+  icon: string;
+  colors: {
+    primary: string;
+    text: string;
+    bg: string;
+    border: string;
+  };
+}
+
+export interface ProviderDisplayMeta {
+  label: string;
+  color: string;
+  bg: string;
+  border: string;
+}
+
+export interface ResourceDisplayConfig {
+  sensitive?: boolean;
+  primaryLinkFromValue?: boolean;
+  primaryHrefTemplate?: string;
+  relatedLinks?: Array<{ label: string; href?: string; hrefTemplate?: string }>;
+  previewText?: string;
+}
+
+export interface StepCapabilities {
+  supportsRevalidate: boolean;
+  supportsSync: boolean;
+  supportsRevert: boolean;
+  supportsManualRevert: boolean;
+  hasGuidedFlow: boolean;
+}
+
+export type StepActionId =
+  | 'run'
+  | 'verify'
+  | 'skip'
+  | 'revert'
+  | 'revalidate'
+  | 'mark-done'
+  | 'upload'
+  | 'oauth'
+  | string;
+
+export interface StepActionDescriptor {
+  id: StepActionId;
+  label: string;
+  icon?: string;
+  variant: 'primary' | 'secondary' | 'destructive' | 'ghost';
+  visibleIn: NodeStatus[];
+  enabledIn: NodeStatus[];
+  requiresConfirmation?: boolean;
+  confirmationMessage?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin catalog (served by GET /api/plugin-catalog)
+// ---------------------------------------------------------------------------
+
+export interface PluginCatalogEntry {
+  id: string;
+  label: string;
+  description: string;
+  provider: string;
+  functionGroupId?: string;
+  requiredModules: string[];
+  optionalModules: string[];
+  displayMeta?: PluginDisplayMeta;
+}
+
+export interface FunctionGroupDefinition {
+  id: string;
+  label: string;
+  description: string;
+  order: number;
+}
+
+export interface PluginCatalog {
+  modules: Record<string, PluginCatalogEntry>;
+  functionGroups: FunctionGroupDefinition[];
+  templates: Record<string, { id: string; label: string; description: string; modules: string[] }>;
+  providers: Array<{ id: string; label: string; scope: string; displayMeta?: ProviderDisplayMeta }>;
+  journeyPhases: Array<{ id: string; title: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// Plan response
+// ---------------------------------------------------------------------------
+
 export interface ProvisioningPlanResponse {
   projectId: string;
   environments: string[];
@@ -172,22 +325,60 @@ export interface ProvisioningPlanResponse {
   /** Phases that appear in this plan, in sidebar order. */
   journeyPhaseOrder: JourneyPhaseId[];
   sequentialExecutionItems: SequentialExecutionItem[];
+  /** Maps node key → module id for attribution in the step detail view. */
+  moduleByNodeKey?: Record<string, string>;
+  /** Maps module id → human-readable label. */
+  moduleLabelById?: Record<string, string>;
+  /** nodeKey → resourceKey → human-readable name/identifier this step is expected to produce. */
+  plannedOutputPreviewByNodeKey?: Record<string, Record<string, string>>;
+  /**
+   * nodeKey → step-by-step manual instructions for steps whose underlying
+   * provider API cannot automate the work (e.g. App Store Connect's
+   * /v1/apps endpoint forbids CREATE). Rendered as an always-visible
+   * checklist, before the user clicks Run.
+   */
+  manualInstructionsByNodeKey?: Record<string, ManualInstructions>;
+  /** Step capability flags — which actions are supported per step. */
+  stepCapabilities?: Record<string, StepCapabilities>;
+  /** Button/action descriptors per step key. */
+  stepActions?: Record<string, StepActionDescriptor[]>;
+  /** Display metadata per module id (icon, colors). */
+  pluginDisplayMeta?: Record<string, PluginDisplayMeta>;
+  /** Display metadata per provider id (label, colors). */
+  providerDisplayMeta?: Record<string, ProviderDisplayMeta>;
+  /** Resource display config keyed by resource key. */
+  resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
+  /** Completion portal links keyed by node key. */
+  portalLinksByNodeKey?: Record<string, Array<{ label: string; href?: string; hrefTemplate?: string }>>;
+  /** Journey phase title map (id → human label), includes plugin-contributed phases. */
+  journeyPhaseTitles?: Record<string, string>;
 }
 
-export type ModuleId =
-  | 'firebase-core'
-  | 'firebase-auth'
-  | 'firebase-firestore'
-  | 'firebase-storage'
-  | 'firebase-messaging'
-  | 'github-repo'
-  | 'github-ci'
-  | 'eas-builds'
-  | 'eas-submit'
-  | 'apple-signing'
-  | 'google-play-publishing'
-  | 'cloudflare-domain'
-  | 'oauth-social';
+/**
+ * Open string — built-in modules plus any plugin-contributed ones.
+ * Mirrors the backend `ModuleId` type.
+ */
+export type ModuleId = string & { readonly __brand?: 'ModuleId' };
+
+export type MobilePlatform = 'ios' | 'android';
+
+export const BUILTIN_MODULE_IDS = [
+  'firebase-core',
+  'firebase-auth',
+  'firebase-firestore',
+  'firebase-storage',
+  'firebase-messaging',
+  'github-repo',
+  'github-ci',
+  'eas-builds',
+  'eas-submit',
+  'apple-signing',
+  'google-play-publishing',
+  'cloudflare-domain',
+  'oauth-social',
+] as const;
+
+export type BuiltinModuleId = (typeof BUILTIN_MODULE_IDS)[number];
 
 /** Logical capability buckets for the Studio module picker (UI only). */
 export type ModuleFunctionGroupId =
@@ -249,7 +440,8 @@ export interface WsStepProgressMessage {
     userPrompt?: string;
   };
 }
-export type ProviderId = 'firebase' | 'expo' | 'github';
+/** Open string — built-in providers plus plugin-contributed ones */
+export type ProviderId = string & { readonly __brand?: 'ProviderId' };
 export type SetupTaskStatus = 'idle' | 'running' | 'completed' | 'error' | 'manual-required';
 
 export interface RegistryPlugin {
@@ -271,12 +463,15 @@ export interface RegistryCategory {
   pluginIds: string[];
 }
 
+export type IntegrationFlow = 'apple' | 'cloudflare';
+
 export interface IntegrationField {
   key: string;
   label: string;
   placeholder: string;
   hint: string;
   type: 'text' | 'password' | 'textarea';
+  optional?: boolean;
 }
 
 export interface IntegrationConfig {
@@ -290,6 +485,7 @@ export interface IntegrationConfig {
   docsUrl: string;
   fields: IntegrationField[];
   supportsOAuth?: boolean;
+  customFlow?: IntegrationFlow;
 }
 
 export interface IntegrationDependencyStatus {
@@ -323,6 +519,8 @@ export interface ConnectedProviders {
   firebase: boolean;
   expo: boolean;
   github: boolean;
+  apple: boolean;
+  cloudflare: boolean;
 }
 
 export const mapGcpStepToSetupStatus = (
@@ -383,6 +581,7 @@ export interface ProjectSummary {
   name: string;
   slug: string;
   bundleId: string;
+  domain: string;
   updatedAt: string;
   integration_progress: { configured: number; total: number };
 }
@@ -393,6 +592,7 @@ export interface ProjectDetail {
     name: string;
     slug: string;
     bundleId: string;
+    domain: string;
     updatedAt: string;
   };
   integrations: Record<string, unknown>;

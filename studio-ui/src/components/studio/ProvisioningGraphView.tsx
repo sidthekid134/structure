@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertCircle,
@@ -22,16 +22,19 @@ import {
   Zap,
 } from 'lucide-react';
 import type {
+  CompletionPortalLink,
   NodeState,
   NodeStatus,
   ProvisioningGraphNode,
   ProvisioningPlanResponse,
+  ResourceDisplayConfig,
   ResourceOutput,
   UserActionNode,
   ProvisioningStepNode,
 } from './types';
 import { OAuthFlowPanel } from './OAuthFlowPanel';
-import { api } from './helpers';
+import { StepSecretsPanel, stepHasVaultSecrets } from './StepSecretsPanel';
+import { api, provisioningNodeDescription } from './helpers';
 import { useOAuthSession } from '../../hooks/useOAuthSession';
 import { effectiveUserActionInteractiveAction } from './user-action-interactive';
 import {
@@ -39,13 +42,14 @@ import {
   getPrimaryHref,
   isVaultPlaceholder,
   mergeResourcePresentation,
+  resolvedNodePortalLinks,
 } from './provisioning-display-registry';
 
 // ---------------------------------------------------------------------------
-// Provider metadata
+// Provider metadata — built-in fallback; dynamic data served via plan.providerDisplayMeta
 // ---------------------------------------------------------------------------
 
-const PROVIDER_META: Record<string, { label: string; color: string; bg: string; border: string }> = {
+const BUILTIN_PROVIDER_META: Record<string, { label: string; color: string; bg: string; border: string }> = {
   firebase: { label: 'Firebase', color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/30' },
   github: { label: 'GitHub', color: 'text-slate-600 dark:text-slate-300', bg: 'bg-slate-500/10', border: 'border-slate-500/30' },
   eas: { label: 'EAS', color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/30' },
@@ -56,11 +60,15 @@ const PROVIDER_META: Record<string, { label: string; color: string; bg: string; 
   'user-action': { label: 'Required Action', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30' },
 };
 
-function getProviderMeta(node: ProvisioningGraphNode) {
+function getProviderMeta(
+  node: ProvisioningGraphNode,
+  dynamicMeta?: Record<string, { label: string; color: string; bg: string; border: string }>,
+) {
+  const meta = { ...BUILTIN_PROVIDER_META, ...dynamicMeta };
   if (node.type === 'user-action') {
-    return node.provider ? (PROVIDER_META[node.provider] ?? PROVIDER_META['user-action']) : PROVIDER_META['user-action'];
+    return node.provider ? (meta[node.provider] ?? meta['user-action']) : meta['user-action'];
   }
-  return PROVIDER_META[node.provider] ?? { label: node.provider, color: 'text-muted-foreground', bg: 'bg-muted', border: 'border-border' };
+  return meta[node.provider] ?? { label: node.provider, color: 'text-muted-foreground', bg: 'bg-muted', border: 'border-border' };
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +190,38 @@ function getEffectiveStatus(
   return nodeStates[node.key]?.status ?? 'not-started';
 }
 
+function getNodeInvalidation(
+  node: ProvisioningGraphNode,
+  nodeStates: Record<string, NodeState>,
+  environments: string[],
+): {
+  isInvalidated: boolean;
+  by?: string;
+  reason?: string;
+  environments?: string[];
+} {
+  if (node.type === 'step' && node.environmentScope === 'per-environment') {
+    const invalidated = environments
+      .map((env) => ({ env, state: nodeStates[`${node.key}@${env}`] }))
+      .filter(({ state }) => Boolean(state?.invalidatedBy));
+    if (invalidated.length === 0) return { isInvalidated: false };
+    const first = invalidated[0]!.state!;
+    return {
+      isInvalidated: true,
+      by: first.invalidatedBy,
+      reason: first.error,
+      environments: invalidated.map(({ env }) => env),
+    };
+  }
+  const state = nodeStates[node.key];
+  if (!state?.invalidatedBy) return { isInvalidated: false };
+  return {
+    isInvalidated: true,
+    by: state.invalidatedBy,
+    reason: state.error,
+  };
+}
+
 function statusIcon(status: NodeStatus, size = 14) {
   switch (status) {
     case 'completed': return <CheckCircle2 size={size} className="text-emerald-500" />;
@@ -244,8 +284,8 @@ function categoryIcon(category: string) {
 // Resource display helpers (registry-driven — see provisioning-display-registry.ts)
 // ---------------------------------------------------------------------------
 
-function ResourceValueChip({ resource, value, upstream }: { resource: ResourceOutput; value: string; upstream: Record<string, string> }) {
-  const pres = mergeResourcePresentation(resource);
+function ResourceValueChip({ resource, value, upstream, resourceDisplayByKey }: { resource: ResourceOutput; value: string; upstream: Record<string, string>; resourceDisplayByKey?: Record<string, ResourceDisplayConfig> }) {
+  const pres = mergeResourcePresentation(resource, resourceDisplayByKey);
   const secured = pres.sensitive || isVaultPlaceholder(value);
   const link = !secured ? getPrimaryHref(pres, value, upstream) : null;
 
@@ -288,9 +328,10 @@ interface ResourcesSectionProps {
   nodeStates: Record<string, NodeState>;
   environments: string[];
   upstream: Record<string, string>;
+  resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
 }
 
-function ResourcesSection({ node, nodeStates, environments, upstream }: ResourcesSectionProps) {
+function ResourcesSection({ node, nodeStates, environments, upstream, resourceDisplayByKey }: ResourcesSectionProps) {
   if (node.produces.length === 0) return null;
 
   // Gather all actual produced values across all state keys for this node
@@ -320,7 +361,7 @@ function ResourcesSection({ node, nodeStates, environments, upstream }: Resource
         {node.produces.map((r) => {
           const value = allProduced[r.key];
           if (hasValues && value) {
-            return <ResourceValueChip key={r.key} resource={r} value={value} upstream={upstream} />;
+            return <ResourceValueChip key={r.key} resource={r} value={value} upstream={upstream} resourceDisplayByKey={resourceDisplayByKey} />;
           }
           return (
             <span key={r.key} className="text-[10px] font-mono bg-muted border border-border px-1.5 py-0.5 rounded text-muted-foreground" title={r.description}>
@@ -342,20 +383,130 @@ interface NodeCardProps {
   nodeStates: Record<string, NodeState>;
   environments: string[];
   projectId: string;
-  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void;
-  onRunNode: (nodeKey: string) => void;
+  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
+  onRunNode: (nodeKey: string, intent?: 'create' | 'refresh') => void;
+  onCancelNode: (nodeKey: string) => void;
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
+  providerDisplayMeta?: Record<string, { label: string; color: string; bg: string; border: string }>;
+  resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
+  portalLinksByNodeKey?: Record<string, CompletionPortalLink[]>;
 }
 
-function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onSyncAndRefresh, isGloballyRunning }: NodeCardProps) {
+const REFRESHABLE_STEP_FALLBACK_KEYS = new Set<string>([
+  'apple:store-signing-in-eas',
+  'oauth:register-oauth-client-ios',
+  'oauth:register-oauth-client-android',
+  'oauth:prepare-app-integration-kit',
+]);
+
+function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: NodeCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [credentialInput, setCredentialInput] = useState('');
+  const [userActionBusy, setUserActionBusy] = useState(false);
+  const [localInputs, setLocalInputs] = useState<Record<string, string>>({});
+  const [inputsDirty, setInputsDirty] = useState(false);
+  const [savingInputs, setSavingInputs] = useState(false);
+  const [githubOwnerOptions, setGithubOwnerOptions] = useState<string[]>([]);
+  const [refreshingGithubOwners, setRefreshingGithubOwners] = useState(false);
+
+  const stepNode = node.type === 'step' ? (node as ProvisioningStepNode) : null;
+  const hasInputFields = stepNode?.inputFields && stepNode.inputFields.length > 0;
+  const nodeState = nodeStates[node.key];
+
+  const currentInputs = useMemo(() => {
+    if (!hasInputFields || !stepNode?.inputFields) return {};
+    const saved = nodeState?.userInputs ?? {};
+    const defaults: Record<string, string> = {};
+    for (const field of stepNode.inputFields) {
+      defaults[field.key] = saved[field.key] ?? field.defaultValue ?? '';
+    }
+    return defaults;
+  }, [hasInputFields, stepNode?.inputFields, nodeState?.userInputs]);
+
+  useEffect(() => {
+    if (hasInputFields) {
+      setLocalInputs(currentInputs);
+      setInputsDirty(false);
+    }
+  }, [nodeState?.userInputs]);
+
+  const handleInputChange = (key: string, value: string) => {
+    setLocalInputs((prev) => ({ ...prev, [key]: value }));
+    setInputsDirty(true);
+  };
+
+  const handleSaveInputs = async () => {
+    setSavingInputs(true);
+    try {
+      await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/${encodeURIComponent(node.key)}/inputs`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs: localInputs }),
+      });
+      setInputsDirty(false);
+      await onSyncAndRefresh();
+    } catch {
+      // let it fail visibly
+    } finally {
+      setSavingInputs(false);
+    }
+  };
+
+  const refreshGithubOwnerOptions = useCallback(async () => {
+    setRefreshingGithubOwners(true);
+    try {
+      const result = await api<{
+        connected?: boolean;
+        details?: { username?: string; orgNames?: string[] };
+      }>('/api/integrations/github/connection');
+      const username = result.details?.username?.trim() ?? '';
+      const orgNames = (result.details?.orgNames ?? [])
+        .map((name) => name.trim())
+        .filter(Boolean);
+      const options = Array.from(new Set([username, ...orgNames].filter(Boolean)));
+      setGithubOwnerOptions(options);
+      if (options.length > 0) {
+        setLocalInputs((prev) => {
+          const current = prev['github_owner']?.trim();
+          if (current) return prev;
+          return { ...prev, github_owner: options[0] };
+        });
+        setInputsDirty(true);
+      }
+    } catch {
+      // Let users retry manually; avoid noisy card-level errors.
+    } finally {
+      setRefreshingGithubOwners(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!stepNode?.inputFields?.some((field) => field.key === 'github_owner')) {
+      setGithubOwnerOptions([]);
+      return;
+    }
+    void refreshGithubOwnerOptions();
+  }, [stepNode?.key, stepNode?.inputFields, refreshGithubOwnerOptions]);
+
+  const completeUserAction = async () => {
+    setUserActionBusy(true);
+    try {
+      await Promise.resolve(onUserActionComplete(node.key));
+    } finally {
+      setUserActionBusy(false);
+    }
+  };
 
   const upstream = useMemo(() => collectUpstreamResources(nodeStates), [nodeStates]);
+  const portalLinks = useMemo(
+    () => resolvedNodePortalLinks(node, upstream, portalLinksByNodeKey),
+    [node, upstream, portalLinksByNodeKey],
+  );
 
   const effectiveStatus = getEffectiveStatus(node, nodeStates, environments);
-  const meta = getProviderMeta(node);
+  const invalidation = getNodeInvalidation(node, nodeStates, environments);
+  const meta = getProviderMeta(node, providerDisplayMeta);
 
   const perEnvInstances =
     node.type === 'step' && node.environmentScope === 'per-environment'
@@ -369,12 +520,19 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
   const isUserAction = node.type === 'user-action';
   const userActionNode = isUserAction ? (node as UserActionNode) : null;
   const oauthInteractive = userActionNode ? effectiveUserActionInteractiveAction(userActionNode) : undefined;
+  const supportsExplicitRefresh =
+    node.type === 'step' &&
+    node.automationLevel !== 'manual' &&
+    (Boolean((node as ProvisioningStepNode).refreshTriggers?.length) ||
+      REFRESHABLE_STEP_FALLBACK_KEYS.has(node.key));
 
   return (
     <div
       className={`rounded-xl border transition-all duration-300 ${
         isWaiting
           ? 'border-amber-500/40 bg-amber-500/5 shadow-sm shadow-amber-500/10'
+          : invalidation.isInvalidated
+            ? 'border-orange-500/35 bg-orange-500/5 shadow-sm shadow-orange-500/10'
           : effectiveStatus === 'resolving'
             ? 'border-cyan-500/40 bg-cyan-500/5 shadow-sm shadow-cyan-500/10'
             : effectiveStatus === 'in-progress'
@@ -413,11 +571,18 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
                 PER-ENV
               </span>
             )}
+            {invalidation.isInvalidated && (
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-orange-700 dark:text-orange-300 bg-orange-500/10 border-orange-500/30">
+                STALE
+              </span>
+            )}
           </div>
           <span className={`text-sm font-semibold ${effectiveStatus === 'blocked' || effectiveStatus === 'not-started' ? 'text-muted-foreground' : 'text-foreground'}`}>
             {node.label}
           </span>
-          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug line-clamp-1">{node.description}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug line-clamp-1">
+            {provisioningNodeDescription(node, environments)}
+          </p>
           {/* Inline resource chips — shown for step nodes before completion */}
           {node.type === 'step' && node.produces.length > 0 && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
             <div className="flex flex-wrap gap-1 mt-1.5">
@@ -443,13 +608,37 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
           {node.type === 'step' && effectiveStatus !== 'completed' && effectiveStatus !== 'in-progress' && effectiveStatus !== 'skipped' && (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); onRunNode(node.key); }}
+              onClick={(e) => { e.stopPropagation(); onRunNode(node.key, 'create'); }}
               disabled={isGloballyRunning}
-              title="Run this step"
+              title={invalidation.isInvalidated ? 'Re-run this step in refresh mode' : effectiveStatus === 'waiting-on-user' ? 'Verify this step' : 'Run this step'}
               className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-primary bg-primary/10 border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Play size={9} />
-              RUN
+              {invalidation.isInvalidated ? <RefreshCw size={9} /> : <Play size={9} />}
+              {invalidation.isInvalidated ? 'REFRESH' : effectiveStatus === 'waiting-on-user' ? 'VERIFY' : 'RUN'}
+            </button>
+          )}
+          {node.type === 'step' && supportsExplicitRefresh && effectiveStatus !== 'in-progress' && effectiveStatus !== 'skipped' && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRunNode(node.key, 'refresh'); }}
+              disabled={isGloballyRunning}
+              title="Force refresh (rotate/replace) this step's provider resources"
+              className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-orange-700 dark:text-orange-300 bg-orange-500/10 border-orange-500/30 hover:bg-orange-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <RefreshCw size={9} />
+              REFRESH
+            </button>
+          )}
+          {/* Step nodes — CANCEL button when running */}
+          {node.type === 'step' && effectiveStatus === 'in-progress' && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onCancelNode(node.key); }}
+              title="Cancel this step"
+              className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-red-500 bg-red-500/10 border-red-500/30 hover:bg-red-500/20 transition-colors"
+            >
+              <MinusCircle size={9} />
+              CANCEL
             </button>
           )}
           {/* User-action nodes — interactive action (e.g. OAuth) — expand to use */}
@@ -471,12 +660,27 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               return (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); onUserActionComplete(node.key); }}
+                  onClick={(e) => { e.stopPropagation(); void completeUserAction(); }}
+                  disabled={userActionBusy}
                   title="Mark as completed"
-                  className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20 transition-colors"
+                  className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20 transition-colors disabled:opacity-40"
                 >
-                  <CheckCircle2 size={9} />
+                  {userActionBusy ? <Loader2 size={9} className="animate-spin" /> : <CheckCircle2 size={9} />}
                   DONE
+                </button>
+              );
+            }
+            if (ua.verification.type === 'api-check') {
+              return (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); void completeUserAction(); }}
+                  disabled={userActionBusy}
+                  title="Verify with Expo that the GitHub App is installed for this repo owner"
+                  className="flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 border-indigo-500/30 hover:bg-indigo-500/20 transition-colors disabled:opacity-40"
+                >
+                  {userActionBusy ? <Loader2 size={9} className="animate-spin" /> : <ScanSearch size={9} />}
+                  VERIFY
                 </button>
               );
             }
@@ -511,7 +715,137 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
             className="overflow-hidden"
           >
             <div className="border-t border-border px-3 pb-3 pt-2.5 space-y-3">
-              <p className="text-[11px] text-muted-foreground leading-relaxed">{node.description}</p>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                {provisioningNodeDescription(node, environments)}
+              </p>
+              {invalidation.isInvalidated ? (
+                <div className="rounded-lg border border-orange-500/35 bg-orange-500/5 px-2.5 py-2">
+                  <p className="text-[11px] font-semibold text-orange-800 dark:text-orange-200 flex items-center gap-1">
+                    <RefreshCw size={11} />
+                    Refresh required
+                  </p>
+                  <p className="text-[11px] text-orange-900/80 dark:text-orange-100/80 mt-1">
+                    {invalidation.reason || 'This node was marked stale and should be re-run.'}
+                    {invalidation.by ? ` Triggered by: ${invalidation.by}.` : ''}
+                  </p>
+                </div>
+              ) : null}
+
+              {/* Step input fields */}
+              {hasInputFields && stepNode?.inputFields && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
+                <div className="space-y-2.5 pt-1 border-t border-border">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Configuration
+                  </p>
+                  {stepNode.inputFields.map((field) => (
+                    <div key={field.key} className="space-y-1">
+                      <label className="text-[11px] font-semibold text-foreground">
+                        {field.label}
+                        {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                      </label>
+                      {field.description && (
+                        <p className="text-[10px] text-muted-foreground leading-snug">{field.description}</p>
+                      )}
+                      {(() => {
+                        const isGithubOwnerField = field.key === 'github_owner';
+                        const selectOptions = isGithubOwnerField
+                          ? githubOwnerOptions
+                          : (field.options ?? []);
+                        const renderSelect = (field.type === 'select' && selectOptions.length > 0) ||
+                          (isGithubOwnerField && selectOptions.length > 0);
+                        const value = localInputs[field.key] ?? field.defaultValue ?? '';
+                        if (renderSelect) {
+                          return (
+                            <div className="flex items-center gap-2">
+                              <select
+                                value={value}
+                                onChange={(e) => handleInputChange(field.key, e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full text-xs bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                              >
+                                {selectOptions.map((opt) => (
+                                  <option key={opt} value={opt}>{opt}</option>
+                                ))}
+                              </select>
+                              {isGithubOwnerField && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void refreshGithubOwnerOptions();
+                                  }}
+                                  disabled={refreshingGithubOwners}
+                                  title="Refresh GitHub org memberships from PAT"
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold rounded-md border border-border px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                  {refreshingGithubOwners ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                                  Refresh
+                                </button>
+                              )}
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={localInputs[field.key] ?? ''}
+                              onChange={(e) => handleInputChange(field.key, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              placeholder={field.placeholder}
+                              className="w-full text-xs font-mono bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                            />
+                            {isGithubOwnerField && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void refreshGithubOwnerOptions();
+                                }}
+                                disabled={refreshingGithubOwners}
+                                title="Refresh GitHub org memberships from PAT"
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold rounded-md border border-border px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                {refreshingGithubOwners ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                                Refresh
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    disabled={savingInputs || !inputsDirty}
+                    onClick={(e) => { e.stopPropagation(); void handleSaveInputs(); }}
+                    className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border text-primary bg-primary/10 border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {savingInputs ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
+                    {savingInputs ? 'Saving…' : inputsDirty ? 'Save Configuration' : 'Configuration Saved'}
+                  </button>
+                </div>
+              )}
+
+              {/* Show saved input values when step is complete */}
+              {hasInputFields && stepNode?.inputFields && (effectiveStatus === 'completed' || effectiveStatus === 'skipped') && nodeState?.userInputs && (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Configuration
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {stepNode.inputFields.map((field) => {
+                      const val = nodeState.userInputs?.[field.key] ?? field.defaultValue ?? '';
+                      return (
+                        <span key={field.key} className="inline-flex items-center gap-1 text-[10px] font-mono bg-muted border border-border px-1.5 py-0.5 rounded text-foreground" title={field.description}>
+                          <span className="text-[9px] text-muted-foreground/70">{field.label}:</span>
+                          <span className="max-w-[160px] truncate">{val}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Per-env status breakdown */}
               {perEnvInstances && (
@@ -526,7 +860,31 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
               )}
 
               {/* Resources produced */}
-              <ResourcesSection node={node} nodeStates={nodeStates} environments={environments} upstream={upstream} />
+              <ResourcesSection node={node} nodeStates={nodeStates} environments={environments} upstream={upstream} resourceDisplayByKey={resourceDisplayByKey} />
+
+              {/* Node-level portal links (docs, dashboards, settings) */}
+              {portalLinks.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {portalLinks.map((link) => (
+                    <a
+                      key={`${node.key}:${link.label}:${link.href}`}
+                      href={link.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-primary bg-primary/10 border border-primary/30 px-2 py-1 rounded-md hover:bg-primary/15 transition-colors"
+                    >
+                      <ExternalLink size={10} />
+                      {link.label}
+                    </a>
+                  ))}
+                </div>
+              )}
+
+              {/* Vault secrets uploaded by this step (e.g. EXPO_TOKEN, FIREBASE_SERVICE_ACCOUNT) */}
+              {node.type === 'step' && stepHasVaultSecrets(node.key) && (
+                <StepSecretsPanel projectId={projectId} stepKey={node.key} />
+              )}
 
               {/* OAuth step nodes: the RUN button triggers the OAuth flow automatically
                   when no token is stored. No separate sign-in panel is needed here. */}
@@ -588,18 +946,30 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
                   {(node as UserActionNode).verification.type === 'manual-confirm' && (
                     <button
                       type="button"
-                      onClick={() => onUserActionComplete(node.key)}
-                      className="flex items-center gap-1.5 bg-amber-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-amber-600 transition-colors"
+                      disabled={userActionBusy}
+                      onClick={() => void completeUserAction()}
+                      className="flex items-center gap-1.5 bg-amber-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-50"
                     >
-                      <CheckCircle2 size={11} />
+                      {userActionBusy ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
                       Mark as Completed
                     </button>
                   )}
 
                   {(node as UserActionNode).verification.type === 'api-check' && (
-                    <p className="text-[11px] text-muted-foreground italic">
-                      Verification: {((node as UserActionNode).verification as { type: 'api-check'; description: string }).description}
-                    </p>
+                    <div className="space-y-2">
+                      <p className="text-[11px] text-muted-foreground">
+                        {((node as UserActionNode).verification as { type: 'api-check'; description: string }).description}
+                      </p>
+                      <button
+                        type="button"
+                        disabled={userActionBusy}
+                        onClick={() => void completeUserAction()}
+                        className="flex items-center gap-1.5 bg-indigo-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                      >
+                        {userActionBusy ? <Loader2 size={11} className="animate-spin" /> : <ScanSearch size={11} />}
+                        Verify installation
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -636,13 +1006,17 @@ interface PhaseGroupProps {
   nodeStates: Record<string, NodeState>;
   environments: string[];
   projectId: string;
-  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void;
-  onRunNodes: (nodeKeys: string[]) => void;
+  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
+  onRunNodes: (nodeKeys: string[], intent?: 'create' | 'refresh') => void;
+  onCancelNode: (nodeKey: string) => void;
   onSyncAndRefresh: () => Promise<void>;
   isGloballyRunning: boolean;
+  providerDisplayMeta?: Record<string, { label: string; color: string; bg: string; border: string }>;
+  resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
+  portalLinksByNodeKey?: Record<string, CompletionPortalLink[]>;
 }
 
-function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, onUserActionComplete, onRunNodes, onSyncAndRefresh, isGloballyRunning }: PhaseGroupProps) {
+function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, onUserActionComplete, onRunNodes, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: PhaseGroupProps) {
   const [expanded, setExpanded] = useState(true);
 
   const statuses = phase.nodes.map((n) => getEffectiveStatus(n, nodeStates, environments));
@@ -660,6 +1034,11 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
       return s !== 'completed' && s !== 'skipped' && s !== 'in-progress';
     })
     .map((n) => n.key);
+  const hasStaleRunnable = phase.nodes.some((n) => {
+    if (n.type !== 'step') return false;
+    if (!runnableStepKeys.includes(n.key)) return false;
+    return getNodeInvalidation(n, nodeStates, environments).isInvalidated;
+  });
 
   return (
     <div className={`border rounded-2xl overflow-hidden ${
@@ -730,8 +1109,10 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
             >
               {hasRunning
                 ? <Loader2 size={10} className="animate-spin" />
-                : <Play size={10} />}
-              {hasRunning ? 'Running…' : 'Run Phase'}
+                : hasStaleRunnable
+                  ? <RefreshCw size={10} />
+                  : <Play size={10} />}
+              {hasRunning ? 'Running…' : hasStaleRunnable ? 'Refresh Phase' : 'Run Phase'}
             </button>
           )}
           <ChevronDown
@@ -759,9 +1140,13 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
                   environments={environments}
                   projectId={projectId}
                   onUserActionComplete={onUserActionComplete}
-                  onRunNode={(key) => onRunNodes([key])}
+                  onRunNode={(key, intent) => onRunNodes([key], intent)}
+                  onCancelNode={onCancelNode}
                   onSyncAndRefresh={onSyncAndRefresh}
                   isGloballyRunning={isGloballyRunning}
+                  providerDisplayMeta={providerDisplayMeta}
+                  resourceDisplayByKey={resourceDisplayByKey}
+                  portalLinksByNodeKey={portalLinksByNodeKey}
                 />
               ))}
             </div>
@@ -780,7 +1165,7 @@ interface ProvisioningGraphViewProps {
   projectId: string;
   plan: ProvisioningPlanResponse | null;
   onPlanChange: (plan: ProvisioningPlanResponse) => void;
-  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => Promise<void>;
+  onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
   onRefresh: () => Promise<void>;
 }
 
@@ -866,10 +1251,15 @@ export function ProvisioningGraphView({
     setIsRunning(true);
     setRunError(null);
     try {
+      const intent: 'create' | 'refresh' = Object.values(plan?.nodeStates ?? {}).some(
+        (state) => Boolean(state.invalidatedBy),
+      )
+        ? 'refresh'
+        : 'create';
       await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ intent }),
       });
       await onRefresh();
     } catch (err) {
@@ -879,12 +1269,45 @@ export function ProvisioningGraphView({
     }
   };
 
-  const handleRunNodes = async (nodeKeys: string[]) => {
+  const handleCancelNode = async (nodeKey: string) => {
     setRunError(null);
     try {
+      await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/node/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodeKey }),
+      });
+      await onRefresh();
+    } catch (err) {
+      setRunError((err as Error).message);
+    }
+  };
+
+  const handleRunNodes = async (
+    nodeKeys: string[],
+    forcedIntent?: 'create' | 'refresh',
+  ) => {
+    setRunError(null);
+    try {
+      const intent: 'create' | 'refresh' = forcedIntent ?? (
+        nodeKeys.some((nodeKey) => {
+          const direct = plan?.nodeStates[nodeKey];
+          if (direct?.invalidatedBy) return true;
+          return Object.entries(plan?.nodeStates ?? {}).some(
+            ([stateKey, state]) =>
+              stateKey.startsWith(`${nodeKey}@`) && Boolean(state.invalidatedBy),
+          );
+        })
+          ? 'refresh'
+          : 'create'
+      );
       const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
         `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeKeys }) },
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nodeKeys, intent }),
+        },
       );
 
       if (result.needsReauth && result.sessionId && result.authUrl) {
@@ -895,7 +1318,7 @@ export function ProvisioningGraphView({
           await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nodeKeys }),
+            body: JSON.stringify({ nodeKeys, intent }),
           });
         } else {
           setRunError(gcpOAuthSession.error ?? 'Google sign-in required before running this step.');
@@ -929,22 +1352,27 @@ export function ProvisioningGraphView({
   };
 
   const handleUserActionComplete = async (nodeKey: string, resources?: Record<string, string>) => {
-    await onUserActionComplete(nodeKey, resources);
-    if (plan) {
-      const updated = {
-        ...plan,
-        nodeStates: {
-          ...plan.nodeStates,
-          [nodeKey]: {
-            ...plan.nodeStates[nodeKey],
-            nodeKey,
-            status: 'completed' as const,
-            completedAt: Date.now(),
-            resourcesProduced: resources ?? {},
+    setRunError(null);
+    try {
+      await onUserActionComplete(nodeKey, resources);
+      if (plan) {
+        const updated = {
+          ...plan,
+          nodeStates: {
+            ...plan.nodeStates,
+            [nodeKey]: {
+              ...plan.nodeStates[nodeKey],
+              nodeKey,
+              status: 'completed' as const,
+              completedAt: Date.now(),
+              resourcesProduced: resources ?? {},
+            },
           },
-        },
-      };
-      onPlanChange(updated);
+        };
+        onPlanChange(updated);
+      }
+    } catch (err) {
+      setRunError((err as Error).message);
     }
   };
 
@@ -1070,7 +1498,7 @@ export function ProvisioningGraphView({
         {runError && (
           <div className="mt-3 pt-3 border-t border-border flex items-start gap-2 text-xs text-red-600 dark:text-red-400">
             <AlertCircle size={13} className="shrink-0 mt-0.5" />
-            <span>Failed to start: {runError}</span>
+            <span>Error: {runError}</span>
           </div>
         )}
 
@@ -1094,8 +1522,12 @@ export function ProvisioningGraphView({
             projectId={projectId}
             onUserActionComplete={(nodeKey, resources) => void handleUserActionComplete(nodeKey, resources)}
             onRunNodes={(nodeKeys) => void handleRunNodes(nodeKeys)}
+            onCancelNode={(nodeKey) => void handleCancelNode(nodeKey)}
             onSyncAndRefresh={handleSyncAndRefresh}
             isGloballyRunning={!!(overallStats?.isRunning || isRunning)}
+            providerDisplayMeta={plan.providerDisplayMeta}
+            resourceDisplayByKey={plan.resourceDisplayByKey}
+            portalLinksByNodeKey={plan.portalLinksByNodeKey}
           />
         ))}
       </div>

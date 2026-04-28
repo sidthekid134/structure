@@ -1,19 +1,21 @@
-import { Plus, X } from 'lucide-react';
-import type { ModuleId, ProjectTemplateId } from './types';
+import { X } from 'lucide-react';
+import type { ModuleId, MobilePlatform, ProjectTemplateId } from './types';
+import { isValidAppHostname } from './helpers';
 
 export type CreateProjectForm = {
   name: string;
   slug: string;
-  bundleId: string;
+  domain: string;
   description: string;
-  githubOrg: string;
-  easAccount: string;
   environments: string[];
+  platforms: MobilePlatform[];
   templateId: ProjectTemplateId;
   modules: ModuleId[];
 };
 
-export const DEFAULT_ENVIRONMENTS: string[] = ['qa', 'production'];
+export const REQUIRED_ENVIRONMENTS: string[] = ['preview', 'production'];
+export const DEFAULT_ENVIRONMENTS: string[] = [...REQUIRED_ENVIRONMENTS];
+export const DEFAULT_PLATFORMS: MobilePlatform[] = ['ios', 'android'];
 export const DEFAULT_MODULE_IDS: ModuleId[] = [
   'firebase-core',
   'firebase-auth',
@@ -39,23 +41,33 @@ export function CreateProjectModal({
 }) {
   if (!show) return null;
 
-  function addEnvironment() {
-    onChange({ ...form, environments: [...form.environments, ''] });
+  const developmentEnabled = form.environments.includes('development');
+
+  function toggleDevelopmentEnvironment(enabled: boolean) {
+    if (enabled) {
+      onChange({ ...form, environments: ['development', ...REQUIRED_ENVIRONMENTS] });
+      return;
+    }
+    onChange({ ...form, environments: [...REQUIRED_ENVIRONMENTS] });
   }
 
-  function removeEnvironment(idx: number) {
-    onChange({ ...form, environments: form.environments.filter((_, i) => i !== idx) });
+  const platforms = form.platforms.length > 0 ? form.platforms : DEFAULT_PLATFORMS;
+  function togglePlatform(platform: MobilePlatform, enabled: boolean) {
+    const current = new Set(platforms);
+    if (enabled) {
+      current.add(platform);
+    } else {
+      current.delete(platform);
+    }
+    onChange({ ...form, platforms: Array.from(current) as MobilePlatform[] });
   }
 
-  function updateEnvironment(idx: number, value: string) {
-    const next = [...form.environments];
-    next[idx] = value.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    onChange({ ...form, environments: next });
-  }
-
-  const validEnvs = form.environments.filter((e) => e.trim().length > 0);
   const canCreate =
-    form.name.trim() && form.slug.trim() && form.bundleId.trim() && validEnvs.length > 0 && form.modules.length > 0;
+    form.name.trim() &&
+    form.slug.trim() &&
+    isValidAppHostname(form.domain) &&
+    form.modules.length > 0 &&
+    platforms.length > 0;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4" onClick={onClose}>
@@ -89,19 +101,25 @@ export function CreateProjectModal({
                 onChange={(e) => onChange({ ...form, slug: e.target.value })}
                 placeholder="payments-app"
               />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Used for GitHub repo name, EAS project name, and GCP-style IDs.
+              </p>
             </label>
 
-            <label className="text-sm text-muted-foreground">
-              Bundle ID <span className="text-red-500">*</span>
+            <label className="text-sm text-muted-foreground md:col-span-2">
+              App domain <span className="text-red-500">*</span>
               <input
-                className="mt-1 w-full rounded-lg border border-border px-3 py-2 bg-background text-sm"
-                value={form.bundleId}
-                onChange={(e) => onChange({ ...form, bundleId: e.target.value.trim().toLowerCase() })}
-                placeholder="com.example.payments-app"
+                className="mt-1 w-full rounded-lg border border-border px-3 py-2 bg-background text-sm font-mono"
+                value={form.domain}
+                onChange={(e) => onChange({ ...form, domain: e.target.value.trim().toLowerCase() })}
+                placeholder="app.example.com"
               />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Used for web, auth, and deep links. iOS/Android bundle ID is set automatically from this hostname (reverse-DNS).
+              </p>
             </label>
 
-            <label className="text-sm text-muted-foreground">
+            <label className="text-sm text-muted-foreground md:col-span-2">
               Description
               <input
                 className="mt-1 w-full rounded-lg border border-border px-3 py-2 bg-background text-sm"
@@ -111,61 +129,67 @@ export function CreateProjectModal({
               />
             </label>
 
-            <label className="text-sm text-muted-foreground">
-              GitHub Org
-              <input
-                className="mt-1 w-full rounded-lg border border-border px-3 py-2 bg-background text-sm"
-                value={form.githubOrg}
-                onChange={(e) => onChange({ ...form, githubOrg: e.target.value })}
-                placeholder="my-org"
-              />
-            </label>
-
-            <label className="text-sm text-muted-foreground">
-              EAS Account
-              <input
-                className="mt-1 w-full rounded-lg border border-border px-3 py-2 bg-background text-sm"
-                value={form.easAccount}
-                onChange={(e) => onChange({ ...form, easAccount: e.target.value })}
-                placeholder="my-eas-account"
-              />
-            </label>
-
             <div className="col-span-full">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm text-muted-foreground">
                   Environments <span className="text-red-500">*</span>
                 </span>
-                <button
-                  type="button"
-                  onClick={addEnvironment}
-                  className="flex items-center gap-1 text-xs font-semibold text-primary hover:opacity-80 transition-opacity"
-                >
-                  <Plus size={12} />
-                  Add
-                </button>
               </div>
               <div className="flex flex-wrap gap-2">
-                {form.environments.map((env, idx) => (
-                  <div key={idx} className="flex items-center gap-1 rounded-lg border border-border bg-muted overflow-hidden">
-                    <input
-                      className="w-28 px-2.5 py-1.5 bg-transparent text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 rounded-l-lg"
-                      value={env}
-                      onChange={(e) => updateEnvironment(idx, e.target.value)}
-                      placeholder="e.g. qa"
-                    />
-                    {form.environments.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => removeEnvironment(idx)}
-                        className="px-1.5 py-1.5 text-muted-foreground hover:text-red-500 transition-colors"
-                      >
-                        <X size={11} />
-                      </button>
-                    )}
+                {REQUIRED_ENVIRONMENTS.map((env) => (
+                  <div key={env} className="rounded-lg border border-border bg-muted px-2.5 py-1.5 text-xs font-mono">
+                    {env}
                   </div>
                 ))}
               </div>
+              <label className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={developmentEnabled}
+                  onChange={(e) => toggleDevelopmentEnvironment(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-border"
+                />
+                Enable development environment
+              </label>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Expo supports only development, preview, and production.
+              </p>
+            </div>
+
+            <div className="col-span-full">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-muted-foreground">
+                  Mobile platforms <span className="text-red-500">*</span>
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {(['ios', 'android'] as MobilePlatform[]).map((platform) => {
+                  const active = platforms.includes(platform);
+                  return (
+                    <label
+                      key={platform}
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs cursor-pointer ${
+                        active
+                          ? 'border-primary bg-primary/10 text-primary'
+                          : 'border-border bg-muted text-muted-foreground'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={active}
+                        onChange={(e) => togglePlatform(platform, e.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-border"
+                      />
+                      <span className="font-mono">{platform}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Pick at least one. Pick only one to keep the provisioning plan focused on
+                that platform — sign-ins (Google / Apple / email) and Firebase auth still work
+                independently of the other platform.
+              </p>
             </div>
           </div>
 

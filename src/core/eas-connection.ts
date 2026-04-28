@@ -29,6 +29,26 @@ export class EasConnectionService {
     return this.vaultManager.getCredential(this.getVaultPassphrase(), 'eas', 'expo_token');
   }
 
+  getStoredExpoUsername(): string | undefined {
+    const raw = this.vaultManager.getCredential(this.getVaultPassphrase(), 'eas', 'expo_username');
+    const username = raw?.trim();
+    return username || undefined;
+  }
+
+  getStoredExpoAccountNames(): string[] {
+    const raw = this.vaultManager.getCredential(this.getVaultPassphrase(), 'eas', 'expo_accounts');
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((v) => (typeof v === 'string' ? v.trim() : ''))
+        .filter((v) => v.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
   storeExpoToken(token: string): void {
     if (typeof token !== 'string' || token.trim().length === 0) {
       throw new Error('Expo token is required.');

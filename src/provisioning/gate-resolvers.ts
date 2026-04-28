@@ -114,6 +114,21 @@ export function buildProvisioningGateResolver(deps: {
   gcpConnectionService: GcpConnectionService;
   easConnectionService: EasConnectionService;
   getGitHubToken: () => string | undefined;
+  getCloudflareToken?: (projectId: string) => string | undefined;
+  checkCloudflareZoneOwnership?: (context: StepContext) => Promise<{
+    owned: boolean;
+    zoneId?: string;
+    accountId?: string;
+    zoneStatus?: string;
+    zoneDomain?: string;
+    appDomain?: string;
+    nameservers?: string[];
+  }>;
+  checkExpoGitHubInstall?: (context: StepContext) => Promise<{
+    linked: boolean;
+    githubOwner?: string;
+    githubRepo?: string;
+  }>;
 }): CompositeGateResolver {
   const resolver = new CompositeGateResolver();
 
@@ -129,6 +144,63 @@ export function buildProvisioningGateResolver(deps: {
     'user:provide-expo-token',
     createExpoGateResolver(deps.easConnectionService),
   );
+
+  if (deps.getCloudflareToken) {
+    resolver.register(
+      'user:provide-cloudflare-token',
+      async (context) => {
+        const token = deps.getCloudflareToken!(context.projectId);
+        if (!token?.trim()) return { resolved: false, action: 'wait-on-user' };
+        return {
+          resolved: true,
+          resourcesProduced: { cloudflare_token: '[stored in vault]' },
+        };
+      },
+    );
+  }
+
+  if (deps.checkCloudflareZoneOwnership) {
+    resolver.register(
+      'user:confirm-dns-nameservers',
+      async (context) => {
+        const zone = await deps.checkCloudflareZoneOwnership!(context);
+        if (!zone.owned || zone.zoneStatus !== 'active') {
+          return { resolved: false, action: 'wait-on-user' };
+        }
+        return {
+          resolved: true,
+          resourcesProduced: {
+            ...(zone.zoneId ? { cloudflare_zone_id: zone.zoneId } : {}),
+            ...(zone.accountId ? { cloudflare_account_id: zone.accountId } : {}),
+            ...(zone.zoneStatus ? { cloudflare_zone_status: zone.zoneStatus } : {}),
+            ...(zone.zoneDomain ? { cloudflare_zone_domain: zone.zoneDomain } : {}),
+            ...(zone.appDomain ? { cloudflare_app_domain: zone.appDomain } : {}),
+            ...(zone.nameservers?.length
+              ? { cloudflare_zone_nameservers: zone.nameservers.join(',') }
+              : {}),
+          },
+        };
+      },
+    );
+  }
+
+  if (deps.checkExpoGitHubInstall) {
+    resolver.register(
+      'user:install-expo-github-app',
+      async (context) => {
+        const result = await deps.checkExpoGitHubInstall!(context);
+        if (!result.linked) return { resolved: false, action: 'wait-on-user' };
+        return {
+          resolved: true,
+          resourcesProduced: {
+            expo_github_repo_linked: 'true',
+            ...(result.githubOwner ? { verified_github_owner: result.githubOwner } : {}),
+            ...(result.githubRepo ? { verified_github_repo: result.githubRepo } : {}),
+          },
+        };
+      },
+    );
+  }
 
   return resolver;
 }

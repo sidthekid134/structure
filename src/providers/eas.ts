@@ -1,9 +1,10 @@
 /**
  * EAS (Expo Application Services) adapter — initializes EAS projects and
- * manages environment variables scoped to dev, preview, and production.
+ * manages environment variables scoped to development, preview, and production.
  */
 
 import * as crypto from 'crypto';
+import { GoogleAuth } from 'google-auth-library';
 import {
   ProviderAdapter,
   EasManifestConfig,
@@ -18,6 +19,19 @@ import {
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
+import type { GitHubApiClient } from './github.js';
+import { ExpoGraphqlEasApiClient } from './expo-graphql-eas-client.js';
+import {
+  downloadFirebaseAndroidAppConfig,
+  downloadFirebaseIosAppConfig,
+} from '../core/gcp/gcp-api-client.js';
+import {
+  extractFirebaseApiKeyFromAndroidConfig,
+  extractFirebaseApiKeyFromIosConfig,
+  PROJECT_RUNTIME_ENV_KEYS,
+  PROJECT_RUNTIME_ENV_SECRET_TYPES,
+  resolveProjectRuntimeEnvValues,
+} from '../provisioning/runtime-env.js';
 
 // ---------------------------------------------------------------------------
 // API client interface
@@ -26,34 +40,60 @@ import type { LoggingCallback } from '../types.js';
 export interface EasApiClient {
   createProject(projectName: string, organization?: string): Promise<string>;
   getProject(projectName: string, organization?: string): Promise<string | null>;
+  /** Permanently remove the Expo app / EAS project (async on Expo's side). */
+  deleteProject(projectId: string): Promise<void>;
   uploadEnvFile(
     projectId: string,
     environment: Environment,
     envVars: Record<string, string>,
+    options?: {
+      visibilityByName?: Record<string, 'PUBLIC' | 'SENSITIVE' | 'SECRET'>;
+      targetEnvironments?: Environment[];
+    },
   ): Promise<void>;
   getEnvVars(projectId: string, environment: Environment): Promise<Record<string, string>>;
 }
 
 export class StubEasApiClient implements EasApiClient {
-  async createProject(projectName: string, _organization?: string): Promise<string> {
-    return `eas-${projectName.toLowerCase()}-${Date.now()}`;
+  async createProject(_projectName: string, _organization?: string): Promise<string> {
+    throw new Error(
+      'StubEasApiClient cannot create EAS projects. Configure EasAdapter with a real EAS API client.',
+    );
   }
 
   async getProject(_projectName: string, _organization?: string): Promise<string | null> {
-    return null;
+    throw new Error(
+      'StubEasApiClient cannot query EAS projects. Configure EasAdapter with a real EAS API client.',
+    );
+  }
+
+  async deleteProject(_projectId: string): Promise<void> {
+    throw new Error(
+      'StubEasApiClient cannot delete EAS projects. Configure EasAdapter with a real EAS API client.',
+    );
   }
 
   async uploadEnvFile(
     _projectId: string,
     _environment: Environment,
     _envVars: Record<string, string>,
-  ): Promise<void> {}
+    _options?: {
+      visibilityByName?: Record<string, 'PUBLIC' | 'SENSITIVE' | 'SECRET'>;
+      targetEnvironments?: Environment[];
+    },
+  ): Promise<void> {
+    throw new Error(
+      'StubEasApiClient cannot upload EAS environment data. Configure EasAdapter with a real EAS API client.',
+    );
+  }
 
   async getEnvVars(
     _projectId: string,
     _environment: Environment,
   ): Promise<Record<string, string>> {
-    return {};
+    throw new Error(
+      'StubEasApiClient cannot read EAS environment data. Configure EasAdapter with a real EAS API client.',
+    );
   }
 }
 
@@ -61,14 +101,364 @@ export class StubEasApiClient implements EasApiClient {
 // EAS adapter
 // ---------------------------------------------------------------------------
 
+function parseGithubHttpsRepo(url: string): { owner: string; repo: string } {
+  const u = url.trim().replace(/\.git$/i, '');
+  const m = u.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\/|$)/i);
+  if (!m) {
+    throw new AdapterError(
+      `Expected a github.com repository URL (https://github.com/owner/repo), got: ${url}`,
+      'eas',
+      'executeStep',
+    );
+  }
+  return { owner: m[1]!, repo: m[2]! };
+}
+
+function studioEnvToExpoSlot(env: string): string {
+  const normalized = env.trim().toLowerCase();
+  if (normalized === 'development') return 'DEVELOPMENT';
+  if (normalized === 'preview') return 'PREVIEW';
+  if (normalized === 'production') return 'PRODUCTION';
+  throw new AdapterError(
+    `Unsupported Studio environment "${env}". Expected development, preview, or production.`,
+    'eas',
+    'checkStep',
+  );
+}
+
+function buildRuntimeEnvResourcesProduced(
+  runtimeValues: Record<string, string>,
+  firebaseApiKey: string,
+): Record<string, string> {
+  const out: Record<string, string> = { firebase_api_key: firebaseApiKey };
+  const mapping: Array<[sourceKey: string, producedKey: string]> = [
+    ['FIREBASE_PROJECT_ID', 'eas_env_firebase_project_id'],
+    ['FIREBASE_IOS_APP_ID', 'eas_env_firebase_ios_app_id'],
+    ['FIREBASE_ANDROID_APP_ID', 'eas_env_firebase_android_app_id'],
+    ['GOOGLE_WEB_CLIENT_ID', 'eas_env_google_web_client_id'],
+    ['GOOGLE_IOS_CLIENT_ID', 'eas_env_google_ios_client_id'],
+    ['GOOGLE_ANDROID_CLIENT_ID', 'eas_env_google_android_client_id'],
+    ['APPLE_SERVICE_ID', 'eas_env_apple_service_id'],
+    ['AUTH_DEEP_LINK_BASE_URL', 'eas_env_auth_deep_link_base_url'],
+    ['AUTH_LANDING_URL', 'eas_env_auth_landing_url'],
+  ];
+  for (const [sourceKey, producedKey] of mapping) {
+    const value = runtimeValues[sourceKey]?.trim() ?? '';
+    if (value) out[producedKey] = value;
+  }
+  return out;
+}
+
+function isNonPublicRuntimeEnvKey(name: string): boolean {
+  if (!PROJECT_RUNTIME_ENV_KEYS.includes(name as (typeof PROJECT_RUNTIME_ENV_KEYS)[number])) {
+    return false;
+  }
+  const visibility = PROJECT_RUNTIME_ENV_SECRET_TYPES[name as keyof typeof PROJECT_RUNTIME_ENV_SECRET_TYPES];
+  return visibility === 'SENSITIVE' || visibility === 'SECRET';
+}
+
+export interface EasJsonSubmitInfo {
+  /** App Store Connect numeric app id (produced by `apple:create-app-store-listing`). */
+  ascAppId?: string;
+  /** Apple developer team identifier (10-char) — from the Apple integration / enroll step. */
+  appleTeamId?: string;
+  /** Apple ID email used to log in to App Store Connect. Optional — Expo can resolve from the ASC API key. */
+  appleId?: string;
+}
+
+/**
+ * Default eas.json content for a freshly-provisioned Expo app. Mirrors the structure
+ * of a known-good production eas.json: production profile holds the real settings,
+ * development/preview extend it. Profiles also reference EAS env-var environments
+ * via the `environment` field (set up by `eas:configure-build-profiles`).
+ *
+ * Existing eas.json files are not overwritten by the provisioner; this template is
+ * only used for the initial bootstrap.
+ */
+export function buildDefaultEasJson(environments: Environment[], submit?: EasJsonSubmitInfo): string {
+  const knownChannels = new Set(['development', 'preview', 'production']);
+  const requested = environments
+    .map((env) => env.trim().toLowerCase())
+    .filter((env) => knownChannels.has(env));
+  const profileChannels = requested.length > 0
+    ? Array.from(new Set(['production', ...requested]))
+    : ['development', 'preview', 'production'];
+
+  const build: Record<string, Record<string, unknown>> = {};
+
+  if (profileChannels.includes('production')) {
+    build['production'] = {
+      environment: 'production',
+      autoIncrement: true,
+      ios: {
+        buildConfiguration: 'Release',
+        image: 'auto',
+      },
+      android: {
+        buildType: 'app-bundle',
+      },
+    };
+  }
+  if (profileChannels.includes('development')) {
+    build['development'] = {
+      environment: 'development',
+      developmentClient: true,
+      distribution: 'internal',
+      ios: {
+        simulator: true,
+      },
+      extends: 'production',
+    };
+  }
+  if (profileChannels.includes('preview')) {
+    build['preview'] = {
+      environment: 'preview',
+      distribution: 'internal',
+      extends: 'production',
+    };
+  }
+
+  const submitIos: Record<string, string> = {};
+  if (submit?.appleId) submitIos['appleId'] = submit.appleId;
+  if (submit?.ascAppId) submitIos['ascAppId'] = submit.ascAppId;
+  if (submit?.appleTeamId) submitIos['appleTeamId'] = submit.appleTeamId;
+
+  const easJson = {
+    cli: {
+      version: '>= 16.0.0',
+      appVersionSource: 'remote',
+    },
+    build,
+    submit: {
+      production: {
+        ios: submitIos,
+      },
+    },
+  };
+  return `${JSON.stringify(easJson, null, 2)}\n`;
+}
+
+/**
+ * If the repo has a static `app.json` (and no `app.config.ts/js` overriding it),
+ * patch `expo.extra.eas.projectId` so `eas build` can resolve the project. Returns
+ * the new file content, or null when nothing should be written.
+ */
+export function patchAppJsonWithEasProjectId(
+  appJsonRaw: string,
+  easProjectId: string,
+): string | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(appJsonRaw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const expo = (parsed['expo'] as Record<string, unknown> | undefined) ?? {};
+  const extra = (expo['extra'] as Record<string, unknown> | undefined) ?? {};
+  const easBlock = (extra['eas'] as Record<string, unknown> | undefined) ?? {};
+  if (easBlock['projectId'] === easProjectId) return null;
+  easBlock['projectId'] = easProjectId;
+  extra['eas'] = easBlock;
+  expo['extra'] = extra;
+  parsed['expo'] = expo;
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
+/**
+ * Best-effort patcher for `app.config.js` / `app.config.ts`. Inserts
+ * `eas: { projectId: '<id>' }` inside the existing `extra: { ... }` block, or
+ * creates an `extra` block inside `expo: { ... }` when one doesn't exist.
+ *
+ * Returns the new source on success, the original source when an `eas.projectId`
+ * is already present (no change needed), or null when the file shape is unfamiliar
+ * and we can't safely modify it (caller should surface a manual instruction).
+ */
+export function patchAppConfigJsWithEasProjectId(
+  source: string,
+  easProjectId: string,
+): string | null {
+  if (new RegExp(`projectId\\s*:\\s*['"\`]${easProjectId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`).test(source)) {
+    return null;
+  }
+  if (/eas\s*:\s*\{[^{}]*projectId\s*:/m.test(source)) {
+    return null;
+  }
+
+  const extraMatch = source.match(/(\bextra\s*:\s*\{)/);
+  if (extraMatch && extraMatch.index !== undefined) {
+    const insertAt = extraMatch.index + extraMatch[0].length;
+    const insertion = `\n      eas: { projectId: '${easProjectId}' },`;
+    return source.slice(0, insertAt) + insertion + source.slice(insertAt);
+  }
+
+  const expoMatch = source.match(/(\bexpo\s*:\s*\{)/);
+  if (expoMatch && expoMatch.index !== undefined) {
+    const insertAt = expoMatch.index + expoMatch[0].length;
+    const insertion = `\n    extra: { eas: { projectId: '${easProjectId}' } },`;
+    return source.slice(0, insertAt) + insertion + source.slice(insertAt);
+  }
+
+  return null;
+}
+
+/**
+ * Best-effort patcher to declare `ios.infoPlist.ITSAppUsesNonExemptEncryption: false`
+ * in an `app.config.{js,ts}` file. Apple requires this declaration before TestFlight
+ * access; declaring `false` is correct for apps that only use Apple-provided
+ * encryption (HTTPS, etc.) — apps that ship custom cryptography should change it
+ * to `true` and complete the export compliance questionnaire.
+ *
+ * Returns the new source on success, or null when nothing should be written
+ * (already declared, or the file shape is unfamiliar).
+ */
+export function patchAppConfigJsWithEncryptionDeclaration(source: string): string | null {
+  if (/ITSAppUsesNonExemptEncryption/.test(source)) {
+    return null;
+  }
+
+  const iosInfoPlistMatch = source.match(/(\bios\s*:\s*\{[^{}]*\binfoPlist\s*:\s*\{)/m);
+  if (iosInfoPlistMatch && iosInfoPlistMatch.index !== undefined) {
+    const insertAt = iosInfoPlistMatch.index + iosInfoPlistMatch[0].length;
+    const insertion = `\n        ITSAppUsesNonExemptEncryption: false,`;
+    return source.slice(0, insertAt) + insertion + source.slice(insertAt);
+  }
+
+  const iosBlockMatch = source.match(/(\bios\s*:\s*\{)/);
+  if (iosBlockMatch && iosBlockMatch.index !== undefined) {
+    const insertAt = iosBlockMatch.index + iosBlockMatch[0].length;
+    const insertion = `\n      infoPlist: { ITSAppUsesNonExemptEncryption: false },`;
+    return source.slice(0, insertAt) + insertion + source.slice(insertAt);
+  }
+
+  return null;
+}
+
+/** Same idea for static `app.json` — sets `expo.ios.infoPlist.ITSAppUsesNonExemptEncryption = false` if absent. */
+export function patchAppJsonWithEncryptionDeclaration(appJsonRaw: string): string | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(appJsonRaw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const expo = (parsed['expo'] as Record<string, unknown> | undefined) ?? {};
+  const ios = (expo['ios'] as Record<string, unknown> | undefined) ?? {};
+  const infoPlist = (ios['infoPlist'] as Record<string, unknown> | undefined) ?? {};
+  if ('ITSAppUsesNonExemptEncryption' in infoPlist) return null;
+  infoPlist['ITSAppUsesNonExemptEncryption'] = false;
+  ios['infoPlist'] = infoPlist;
+  expo['ios'] = ios;
+  parsed['expo'] = expo;
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
 export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
   private readonly log: ReturnType<typeof createOperationLogger>;
 
   constructor(
     private readonly apiClient: EasApiClient = new StubEasApiClient(),
     loggingCallback?: LoggingCallback,
+    private readonly githubClient?: GitHubApiClient,
   ) {
     this.log = createOperationLogger('EasAdapter', loggingCallback);
+  }
+
+  private async readVaultSecret(
+    context: StepContext,
+    key: string,
+    options?: { includeAppleScope?: boolean; includeProjectScope?: boolean },
+  ): Promise<string | undefined> {
+    const includeAppleScope = options?.includeAppleScope ?? true;
+    const includeProjectScope = options?.includeProjectScope ?? true;
+    if (includeAppleScope) {
+      const shared = (await context.vaultRead(`apple/${key}`))?.trim();
+      if (shared) return shared;
+    }
+    if (includeProjectScope) {
+      const project = (await context.vaultRead(`${context.projectId}/${key}`))?.trim();
+      if (project) return project;
+    }
+    return undefined;
+  }
+
+  private async readAscIssuerId(context: StepContext): Promise<string | undefined> {
+    return (
+      (await this.readVaultSecret(context, 'asc_issuer_id')) ??
+      (await this.readVaultSecret(context, 'app_store_connect_issuer_id'))
+    );
+  }
+
+  private async readGcpAccessTokenFromServiceAccount(context: StepContext): Promise<string> {
+    const saJson = (await context.vaultRead(`${context.projectId}/service_account_json`))?.trim();
+    if (!saJson) {
+      throw new AdapterError(
+        `Missing ${context.projectId}/service_account_json in vault. Run Firebase service-account key generation first.`,
+        'eas',
+        'executeStep',
+      );
+    }
+    let credentials: Record<string, unknown>;
+    try {
+      credentials = JSON.parse(saJson) as Record<string, unknown>;
+    } catch {
+      throw new AdapterError(
+        `${context.projectId}/service_account_json is not valid JSON.`,
+        'eas',
+        'executeStep',
+      );
+    }
+    const auth = new GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    });
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    const token = tokenResponse?.token?.trim();
+    if (!token) {
+      throw new AdapterError(
+        'Failed to obtain GCP access token from service-account credentials.',
+        'eas',
+        'executeStep',
+      );
+    }
+    return token;
+  }
+
+  private async deriveFirebaseApiKey(context: StepContext): Promise<string> {
+    const upstream = context.upstreamResources;
+    const gcpProjectId = upstream['firebase_project_id']?.trim() || upstream['gcp_project_id']?.trim() || '';
+    const androidAppId = upstream['firebase_android_app_id']?.trim() || '';
+    const iosAppId = upstream['firebase_ios_app_id']?.trim() || '';
+    if (!gcpProjectId) {
+      throw new AdapterError(
+        'Missing firebase_project_id/gcp_project_id in upstream resources. Run Firebase setup steps first.',
+        'eas',
+        'executeStep',
+      );
+    }
+    if (!androidAppId && !iosAppId) {
+      throw new AdapterError(
+        'Cannot derive Firebase API key: no firebase_android_app_id or firebase_ios_app_id found upstream.',
+        'eas',
+        'executeStep',
+      );
+    }
+    const accessToken = await this.readGcpAccessTokenFromServiceAccount(context);
+    if (androidAppId) {
+      const androidConfig = await downloadFirebaseAndroidAppConfig(accessToken, gcpProjectId, androidAppId);
+      const androidKey = extractFirebaseApiKeyFromAndroidConfig(androidConfig)?.trim() ?? '';
+      if (androidKey) return androidKey;
+    }
+    if (iosAppId) {
+      const iosConfig = await downloadFirebaseIosAppConfig(accessToken, gcpProjectId, iosAppId);
+      const iosKey = extractFirebaseApiKeyFromIosConfig(iosConfig)?.trim() ?? '';
+      if (iosKey) return iosKey;
+    }
+    throw new AdapterError(
+      `Unable to extract Firebase API key from Firebase app configs on project "${gcpProjectId}".`,
+      'eas',
+      'executeStep',
+    );
   }
 
   async provision(config: EasManifestConfig): Promise<ProviderState> {
@@ -106,11 +496,14 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
       state.resource_ids['project_id'] = projectId;
       state.completed_steps.push('create_project');
 
-      // Step 2: Initialize env var slots for each environment
+      // Step 2: Mark each Studio environment on the Expo app (EAS env-var slots).
       for (const env of config.environments) {
         try {
-          // Upload empty env file initially; credentials will be added via secret management
-          await this.apiClient.uploadEnvFile(projectId, env, {});
+          if (this.apiClient instanceof ExpoGraphqlEasApiClient) {
+            await this.apiClient.ensureStudioEasEnvironmentMarkerOnApp(projectId, env);
+          } else {
+            await this.apiClient.uploadEnvFile(projectId, env, {});
+          }
           state.resource_ids[`env_${env}`] = 'initialized';
           state.completed_steps.push(`init_env_${env}`);
           this.log.info('EAS environment initialized', { env, projectId });
@@ -146,23 +539,551 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
       case 'eas:create-project': {
         const existing = await this.apiClient.getProject(config.project_name, config.organization);
         const projectId = existing ?? await this.apiClient.createProject(config.project_name, config.organization);
+        return {
+          status: 'completed',
+          resourcesProduced: {
+            eas_project_id: projectId,
+            eas_project_slug: config.project_name,
+            ...(config.organization ? { expo_account: config.organization } : {}),
+          },
+        };
+      }
+      case 'eas:configure-build-profiles': {
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          throw new AdapterError(
+            'Configure build profiles requires the real Expo GraphQL client (Expo token).',
+            'eas',
+            'executeStep',
+          );
+        }
+        const env = (context.environment ?? config.environments[0] ?? 'development') as Environment;
+        const appId = context.upstreamResources['eas_project_id'] ?? '';
+        if (!appId) {
+          throw new AdapterError('Create the EAS project first (missing eas_project_id).', 'eas', 'executeStep');
+        }
+        await expo.ensureStudioEasEnvironmentMarkerOnApp(appId, env);
+        return {
+          status: 'completed',
+          resourcesProduced: {},
+          userPrompt:
+            'Studio recorded which EAS environment slot matches this Studio environment. You must still maintain `eas.json` build profiles (development / preview / production) in your app repository — Expo builds read that file, not Studio.',
+        };
+      }
+      case 'eas:sync-runtime-env': {
+        const appId = context.upstreamResources['eas_project_id']?.trim() ?? '';
+        if (!appId) {
+          throw new AdapterError('Create the EAS project first (missing eas_project_id).', 'eas', 'executeStep');
+        }
+        const env = (context.environment ?? config.environments[0] ?? 'development') as Environment;
+        const firebaseApiKey =
+          context.upstreamResources['firebase_api_key']?.trim() || (await this.deriveFirebaseApiKey(context));
+        const runtime = resolveProjectRuntimeEnvValues({
+          projectId: context.projectId,
+          upstream: context.upstreamResources,
+          readVault: () => undefined,
+          firebaseApiKeyOverride: firebaseApiKey,
+          includesIos: Boolean(context.upstreamResources['firebase_ios_app_id']?.trim()),
+          includesAndroid: Boolean(context.upstreamResources['firebase_android_app_id']?.trim()),
+        });
+        if (runtime.missingRequiredKeys.length > 0) {
+          throw new AdapterError(
+            `Missing required runtime env keys for EAS sync: ${runtime.missingRequiredKeys.join(', ')}.`,
+            'eas',
+            'executeStep',
+          );
+        }
+        const visibilityByName: Record<string, 'PUBLIC' | 'SENSITIVE' | 'SECRET'> = {};
+        for (const key of Object.keys(runtime.values)) {
+          visibilityByName[key] =
+            PROJECT_RUNTIME_ENV_SECRET_TYPES[key as keyof typeof PROJECT_RUNTIME_ENV_SECRET_TYPES] ??
+            'PUBLIC';
+        }
+        await this.apiClient.uploadEnvFile(appId, env, runtime.values, {
+          visibilityByName,
+          targetEnvironments: config.environments,
+        });
+        const setCount = Object.values(runtime.values).filter((v) => v.trim().length > 0).length;
+        const removeCount = Object.keys(runtime.values).length - setCount;
+        return {
+          status: 'completed',
+          resourcesProduced: buildRuntimeEnvResourcesProduced(runtime.values, firebaseApiKey),
+          userPrompt:
+            `Synced runtime env vars for "${env}": ` +
+            `${setCount} upserted, ${removeCount} removed (when absent from current endpoint config).`,
+        };
+      }
+      case 'eas:store-token-in-github': {
+        if (!this.githubClient) {
+          throw new AdapterError(
+            'Storing the Expo token in GitHub requires a GitHub PAT (organization settings).',
+            'eas',
+            'executeStep',
+          );
+        }
+        const repoUrl = context.upstreamResources['github_repo_url'] ?? '';
+        if (!repoUrl) {
+          throw new AdapterError('Missing github_repo_url — create the GitHub repository first.', 'eas', 'executeStep');
+        }
+        const { owner, repo } = parseGithubHttpsRepo(repoUrl);
+        // Always read the real token from the vault. The upstream
+        // `user:provide-expo-token` gate produces the literal sentinel string
+        // `[stored in vault]` for `expo_token` so the secret never travels
+        // through plan state — using upstreamResources here would upload that
+        // sentinel as the secret value (causing EAS "bearer token is invalid").
+        const token = (await context.vaultRead('eas/expo_token'))?.trim();
+        if (!token) {
+          throw new AdapterError(
+            'No Expo robot token available. Connect EAS under organization settings so the token is stored in the vault.',
+            'eas',
+            'executeStep',
+          );
+        }
+        await this.githubClient.setRepositorySecret(owner, repo, 'EXPO_TOKEN', token);
+        return {
+          status: 'completed',
+          resourcesProduced: {},
+          userPrompt:
+            'GitHub Actions can use secret EXPO_TOKEN. Reference it in workflow env (e.g. EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}).',
+        };
+      }
+      case 'eas:write-eas-json': {
+        if (!this.githubClient) {
+          throw new AdapterError(
+            'Writing eas.json requires a GitHub PAT (organization settings).',
+            'eas',
+            'executeStep',
+          );
+        }
+        const repoUrl = context.upstreamResources['github_repo_url'] ?? '';
+        if (!repoUrl) {
+          throw new AdapterError(
+            'Missing github_repo_url — create the GitHub repository first.',
+            'eas',
+            'executeStep',
+          );
+        }
+        const easProjectId = context.upstreamResources['eas_project_id']?.trim();
+        if (!easProjectId) {
+          throw new AdapterError(
+            'Missing eas_project_id — create the EAS project first.',
+            'eas',
+            'executeStep',
+          );
+        }
+        const { owner, repo } = parseGithubHttpsRepo(repoUrl);
+
+        const written: string[] = [];
+        const skipped: string[] = [];
+
+        const existingEasJson = await this.githubClient.getRepoFile(owner, repo, 'eas.json');
+        if (!existingEasJson) {
+          const submitInfo: EasJsonSubmitInfo = {
+            ascAppId: context.upstreamResources['asc_app_id']?.trim() || undefined,
+            appleTeamId: context.upstreamResources['apple_team_id']?.trim() || undefined,
+            appleId: context.upstreamResources['apple_id']?.trim() || undefined,
+          };
+          const content = buildDefaultEasJson(config.environments, submitInfo);
+          await this.githubClient.upsertRepoFile(
+            owner,
+            repo,
+            'eas.json',
+            content,
+            'chore: add eas.json (Studio bootstrap)',
+          );
+          written.push('eas.json');
+          this.log.info('Wrote default eas.json to repo', {
+            owner,
+            repo,
+            includedSubmit: Object.keys(submitInfo).filter((k) => submitInfo[k as keyof EasJsonSubmitInfo]),
+          });
+        } else {
+          skipped.push('eas.json (already present)');
+          this.log.info('eas.json already present in repo, leaving untouched', { owner, repo });
+        }
+
+        const appConfigTs = await this.githubClient.getRepoFile(owner, repo, 'app.config.ts');
+        const appConfigJs = await this.githubClient.getRepoFile(owner, repo, 'app.config.js');
+
+        let appJsonNote: string | undefined;
+        const appConfigSource = appConfigTs ?? appConfigJs;
+        const appConfigPath = appConfigTs ? 'app.config.ts' : appConfigJs ? 'app.config.js' : null;
+
+        if (appConfigSource && appConfigPath) {
+          let working = appConfigSource.content;
+          let mutated = false;
+          let configNote: string | undefined;
+
+          const withProjectId = patchAppConfigJsWithEasProjectId(working, easProjectId);
+          if (withProjectId === null) {
+            if (!new RegExp(`projectId\\s*:\\s*['"\`]${easProjectId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`).test(working)) {
+              configNote = `Detected ${appConfigPath} but couldn't safely auto-add \`extra.eas.projectId = "${easProjectId}"\` — add it yourself.`;
+            }
+          } else {
+            working = withProjectId;
+            mutated = true;
+          }
+
+          const withEncryption = patchAppConfigJsWithEncryptionDeclaration(working);
+          if (withEncryption !== null) {
+            working = withEncryption;
+            mutated = true;
+          }
+
+          if (mutated) {
+            await this.githubClient.upsertRepoFile(
+              owner,
+              repo,
+              appConfigPath,
+              working,
+              'chore: configure Expo app for EAS build (Studio)',
+            );
+            written.push(appConfigPath);
+            this.log.info('Patched app.config for EAS build', { owner, repo, easProjectId, file: appConfigPath });
+          } else {
+            skipped.push(`${appConfigPath} (already configured or unrecognized shape)`);
+          }
+          appJsonNote = configNote;
+        } else {
+          const appJson = await this.githubClient.getRepoFile(owner, repo, 'app.json');
+          if (!appJson) {
+            appJsonNote = `No app.json or app.config.{ts,js} found in the repo root — push your Expo project (or set \`extra.eas.projectId = "${easProjectId}"\` in your app config) before running EAS build.`;
+            skipped.push('app.json (missing)');
+          } else {
+            let working = appJson.content;
+            let mutated = false;
+
+            const withProjectId = patchAppJsonWithEasProjectId(working, easProjectId);
+            if (withProjectId !== null) {
+              working = withProjectId;
+              mutated = true;
+            }
+            const withEncryption = patchAppJsonWithEncryptionDeclaration(working);
+            if (withEncryption !== null) {
+              working = withEncryption;
+              mutated = true;
+            }
+
+            if (mutated) {
+              await this.githubClient.upsertRepoFile(
+                owner,
+                repo,
+                'app.json',
+                working,
+                'chore: configure Expo app for EAS build (Studio)',
+              );
+              written.push('app.json');
+              this.log.info('Patched app.json for EAS build', { owner, repo, easProjectId });
+            } else {
+              skipped.push('app.json (no changes needed)');
+            }
+          }
+        }
+
+        const summary = [
+          written.length > 0 ? `Committed: ${written.join(', ')}.` : 'No files committed.',
+          skipped.length > 0 ? `Skipped: ${skipped.join(', ')}.` : null,
+          appJsonNote,
+        ]
+          .filter(Boolean)
+          .join(' ');
+
+        return {
+          status: 'completed',
+          resourcesProduced: { eas_json_path: 'eas.json' },
+          userPrompt: summary,
+        };
+      }
+      case 'eas:configure-submit-apple': {
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          throw new AdapterError('Configure EAS Submit (Apple) requires the real Expo GraphQL client.', 'eas', 'executeStep');
+        }
+        const appId = context.upstreamResources['eas_project_id'] ?? '';
+        const bundleId = config.bundle_id?.trim();
+        if (!appId || !bundleId) {
+          throw new AdapterError(
+            'Missing eas_project_id or bundle_id. Ensure the Studio project has a bundle id and the EAS project exists.',
+            'eas',
+            'executeStep',
+          );
+        }
+        const issuer = await this.readAscIssuerId(context);
+        const keyId =
+          context.upstreamResources['asc_api_key_id']?.trim() ||
+          (await this.readVaultSecret(context, 'asc_api_key_id'));
+        let p8 =
+          context.upstreamResources['asc_api_key_p8'] === 'vaulted'
+            ? null
+            : context.upstreamResources['asc_api_key_p8']?.trim();
+        if (!p8) p8 = (await this.readVaultSecret(context, 'asc_api_key_p8')) ?? null;
+        if (!issuer || !keyId || !p8) {
+          throw new AdapterError(
+            'App Store Connect API key material is incomplete. Store shared credentials as apple/asc_issuer_id, ' +
+              'apple/asc_api_key_id, and apple/asc_api_key_p8 (recommended), or use <projectId>/asc_issuer_id, ' +
+              '<projectId>/asc_api_key_id, and <projectId>/asc_api_key_p8 to override for one project. ' +
+              'Generate the key in App Store Connect → Users and Access → Keys.',
+            'eas',
+            'executeStep',
+          );
+        }
+        await expo.configureIosEasSubmit({
+          expoAppId: appId,
+          organization: config.organization,
+          bundleId,
+          issuerIdentifier: issuer,
+          keyIdentifier: keyId,
+          keyP8: p8,
+        });
+        return {
+          status: 'completed',
+          resourcesProduced: {},
+          userPrompt:
+            'Expo is configured to use this ASC API key for iOS submissions. You still need valid `eas.json` submit profile(s) and matching credentials in the repo or EAS.',
+        };
+      }
+      case 'eas:configure-submit-android': {
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          throw new AdapterError(
+            'Configure EAS Submit (Android) requires the real Expo GraphQL client.',
+            'eas',
+            'executeStep',
+          );
+        }
+        const appId = context.upstreamResources['eas_project_id'] ?? '';
+        const pkg = (config.android_package ?? config.bundle_id)?.trim();
+        if (!appId || !pkg) {
+          throw new AdapterError(
+            'Missing eas_project_id or Android application id. Set the Studio project bundle / package id.',
+            'eas',
+            'executeStep',
+          );
+        }
+        const jsonRaw =
+          (await context.vaultRead(`${context.projectId}/google_play_service_account_json`)) ??
+          (await context.vaultRead(`${context.projectId}/play_service_account_json`));
+        if (!jsonRaw?.trim()) {
+          throw new AdapterError(
+            'Google Play service account JSON not found. Upload it to the vault as ' +
+              `${context.projectId}/google_play_service_account_json (JSON key with Play Console API access).`,
+            'eas',
+            'executeStep',
+          );
+        }
+        let jsonKey: Record<string, unknown>;
+        try {
+          jsonKey = JSON.parse(jsonRaw) as Record<string, unknown>;
+        } catch {
+          throw new AdapterError(
+            'google_play_service_account_json in the vault is not valid JSON.',
+            'eas',
+            'executeStep',
+          );
+        }
+        await expo.configureAndroidEasSubmit({
+          expoAppId: appId,
+          organization: config.organization,
+          androidApplicationId: pkg,
+          googleServiceAccountJson: jsonKey,
+        });
+        return {
+          status: 'completed',
+          resourcesProduced: {},
+          userPrompt:
+            'Expo stores a Google Play service account key for Android submissions. Confirm `eas.json` submit config and Play Console API access for that service account.',
+        };
+      }
+      default:
+        throw new AdapterError(`Unknown EAS step: ${stepKey}`, 'eas', 'executeStep');
+    }
+  }
+
+  async checkStep(
+    stepKey: string,
+    config: EasManifestConfig,
+    context: StepContext,
+  ): Promise<StepResult> {
+    switch (stepKey) {
+      case 'eas:create-project': {
+        const projectId = context.upstreamResources['eas_project_id']?.trim();
+        if (!projectId) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error:
+              'EAS project id is missing. Re-run "Create EAS Project" after connecting Expo / EAS credentials.',
+          };
+        }
         return { status: 'completed', resourcesProduced: { eas_project_id: projectId } };
       }
       case 'eas:configure-build-profiles': {
-        const env = (context.environment ?? config.environments[0] ?? 'dev') as Environment;
-        await this.apiClient.uploadEnvFile(context.upstreamResources['eas_project_id'] ?? '', env, {});
+        const projectId = context.upstreamResources['eas_project_id']?.trim();
+        if (!projectId) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'Cannot validate build profile setup without eas_project_id.',
+          };
+        }
         return { status: 'completed', resourcesProduced: {} };
       }
-      case 'eas:link-github':
+      case 'eas:sync-runtime-env': {
+        const projectId = context.upstreamResources['eas_project_id']?.trim();
+        if (!projectId) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'Cannot validate runtime env sync without eas_project_id.',
+          };
+        }
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'Runtime env sync validation requires the real Expo GraphQL client.',
+          };
+        }
+        const env = (context.environment ?? config.environments[0] ?? 'development') as Environment;
+        const firebaseApiKey =
+          context.upstreamResources['firebase_api_key']?.trim() || (await this.deriveFirebaseApiKey(context));
+        const runtime = resolveProjectRuntimeEnvValues({
+          projectId: context.projectId,
+          upstream: context.upstreamResources,
+          readVault: () => undefined,
+          firebaseApiKeyOverride: firebaseApiKey,
+          includesIos: Boolean(context.upstreamResources['firebase_ios_app_id']?.trim()),
+          includesAndroid: Boolean(context.upstreamResources['firebase_android_app_id']?.trim()),
+        });
+        if (runtime.missingRequiredKeys.length > 0) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: `Runtime env sync prerequisites missing: ${runtime.missingRequiredKeys.join(', ')}.`,
+          };
+        }
+        const expected = Object.entries(runtime.values);
+        const vars = await expo.listAppEnvironmentVariablesByNames(
+          projectId,
+          expected.map(([name]) => name),
+        );
+        const expoSlot = studioEnvToExpoSlot(env);
+        const mismatched = expected.filter(([name, value]) => {
+          const normalized = value.trim();
+          const slotVars = vars.filter(
+            (v) =>
+              v.name === name &&
+              (v.environments ?? []).includes(expoSlot),
+          );
+          if (!normalized) {
+            return slotVars.length > 0;
+          }
+          if (isNonPublicRuntimeEnvKey(name)) {
+            // EAS may mask/omit values for non-public variables during reads.
+            // For SENSITIVE/SECRET entries, presence in the target env slot is
+            // the durable validation contract.
+            return slotVars.length === 0;
+          }
+          const exact = slotVars.find((v) => (v.value?.trim() ?? '') === normalized);
+          return !exact;
+        });
+        if (mismatched.length > 0) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error:
+              `EAS runtime env is not reconciled for ${env}: ` +
+              `${mismatched.map(([k]) => k).join(', ')}.`,
+          };
+        }
+        return {
+          status: 'completed',
+          resourcesProduced: buildRuntimeEnvResourcesProduced(runtime.values, firebaseApiKey),
+        };
+      }
+      case 'eas:store-token-in-github': {
+        const repoUrl = context.upstreamResources['github_repo_url']?.trim();
+        if (!repoUrl) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'GitHub repository URL is missing. Re-run GitHub repository provisioning first.',
+          };
+        }
         return { status: 'completed', resourcesProduced: {} };
-      case 'eas:store-token-in-github':
+      }
+      case 'eas:write-eas-json': {
+        const repoUrl = context.upstreamResources['github_repo_url']?.trim();
+        const easProjectId = context.upstreamResources['eas_project_id']?.trim();
+        if (!repoUrl || !easProjectId) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error:
+              'Cannot validate eas.json bootstrap without github_repo_url and eas_project_id. Run the GitHub repo and EAS project steps first.',
+          };
+        }
+        if (!this.githubClient) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'No GitHub client configured — cannot inspect repository contents.',
+          };
+        }
+        const { owner, repo } = parseGithubHttpsRepo(repoUrl);
+        const easJson = await this.githubClient.getRepoFile(owner, repo, 'eas.json');
+        if (!easJson) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: `eas.json is missing from ${owner}/${repo}. Re-run "Commit eas.json to Repo".`,
+          };
+        }
+        return { status: 'completed', resourcesProduced: { eas_json_path: 'eas.json' } };
+      }
+      case 'eas:configure-submit-apple': {
+        const easProjectId = context.upstreamResources['eas_project_id']?.trim();
+        const ascKeyId =
+          context.upstreamResources['asc_api_key_id']?.trim() ||
+          (await this.readVaultSecret(context, 'asc_api_key_id'));
+        const ascP8 = await this.readVaultSecret(context, 'asc_api_key_p8');
+        const ascIssuer = await this.readAscIssuerId(context);
+        if (!easProjectId || !ascKeyId || !ascP8) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error:
+              'Apple submit prerequisites are incomplete. Expected eas_project_id plus ASC credentials in vault: issuer (asc_issuer_id or app_store_connect_issuer_id), key id (asc_api_key_id), and private key (asc_api_key_p8) at apple/* shared scope or <projectId>/* override scope.',
+          };
+        }
+        if (!ascIssuer) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error:
+              'ASC issuer id is missing. Store asc_issuer_id (or app_store_connect_issuer_id) in vault at apple/* shared scope or <projectId>/* override scope.',
+          };
+        }
         return { status: 'completed', resourcesProduced: {} };
-      case 'eas:configure-submit-apple':
+      }
+      case 'eas:configure-submit-android': {
+        const easProjectId = context.upstreamResources['eas_project_id']?.trim();
+        const playJson =
+          (await context.vaultRead(`${context.projectId}/google_play_service_account_json`))?.trim() ||
+          (await context.vaultRead(`${context.projectId}/play_service_account_json`))?.trim();
+        if (!easProjectId || !playJson) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error:
+              'Android submit prerequisites are incomplete. Expected eas_project_id and a vaulted Google Play service account JSON.',
+          };
+        }
         return { status: 'completed', resourcesProduced: {} };
-      case 'eas:configure-submit-android':
-        return { status: 'completed', resourcesProduced: {} };
+      }
       default:
-        throw new AdapterError(`Unknown EAS step: ${stepKey}`, 'eas', 'executeStep');
+        return { status: 'completed', resourcesProduced: {} };
     }
   }
 
@@ -239,7 +1160,11 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
         for (const diff of report.differences) {
           if (diff.conflict_type === 'missing_in_live' && diff.field.startsWith('environment.')) {
             const env = diff.field.replace('environment.', '') as Environment;
-            await this.apiClient.uploadEnvFile(projectId, env, {});
+            if (this.apiClient instanceof ExpoGraphqlEasApiClient) {
+              await this.apiClient.ensureStudioEasEnvironmentMarkerOnApp(projectId, env);
+            } else {
+              await this.apiClient.uploadEnvFile(projectId, env, {});
+            }
             report.live_state.resource_ids[`env_${env}`] = 'initialized';
           }
         }

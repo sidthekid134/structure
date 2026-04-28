@@ -35,8 +35,8 @@ export interface GitHubRateLimitError {
 }
 
 export interface GitHubApiClient {
-  createRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string }>;
-  getRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string } | null>;
+  createRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string; defaultBranch: string }>;
+  getRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string; defaultBranch: string } | null>;
   setBranchProtection(owner: string, repo: string, rule: BranchProtectionRule): Promise<void>;
   getBranchProtection(
     owner: string,
@@ -44,6 +44,8 @@ export interface GitHubApiClient {
     branch: string,
   ): Promise<BranchProtectionRule | null>;
   createEnvironment(owner: string, repo: string, env: string): Promise<{ id: number }>;
+  /** Remove a GitHub Actions environment entirely. No-op when absent. */
+  deleteEnvironment(owner: string, repo: string, env: string): Promise<void>;
   setEnvironmentSecret(
     owner: string,
     repo: string,
@@ -51,42 +53,77 @@ export interface GitHubApiClient {
     secretName: string,
     secretValue: string,
   ): Promise<void>;
+  deleteEnvironmentSecret(owner: string, repo: string, env: string, secretName: string): Promise<void>;
   listEnvironmentSecrets(owner: string, repo: string, env: string): Promise<string[]>;
   deployWorkflow(owner: string, repo: string, filename: string, content: string): Promise<void>;
+  /** Removes a workflow file from `.github/workflows/`. No-op when absent. */
+  deleteWorkflow(owner: string, repo: string, filename: string): Promise<void>;
   listWorkflows(owner: string, repo: string): Promise<string[]>;
-  createWebhook(owner: string, repo: string, url: string, secret: string): Promise<{ id: number }>;
+  /**
+   * Read a UTF-8 file from the repository's default branch. Returns null when the path
+   * does not exist. Throws on any other error (auth, rate limit, etc.).
+   */
+  getRepoFile(
+    owner: string,
+    repo: string,
+    path: string,
+  ): Promise<{ content: string; sha: string } | null>;
+  /**
+   * Create or update an arbitrary file in the repo (default branch). Used by provisioning
+   * steps that need to commit configuration files like `eas.json` alongside workflows.
+   */
+  upsertRepoFile(
+    owner: string,
+    repo: string,
+    path: string,
+    content: string,
+    message: string,
+  ): Promise<void>;
+  /** Repository-level Actions secret (not environment-scoped). */
+  setRepositorySecret(owner: string, repo: string, secretName: string, secretValue: string): Promise<void>;
+  /** Returns true if the named repository-level secret exists, false if absent. */
+  hasRepositorySecret(owner: string, repo: string, secretName: string): Promise<boolean>;
+  /** Deletes a repository-level Actions secret. Resolves without error if already absent. */
+  deleteRepositorySecret(owner: string, repo: string, secretName: string): Promise<void>;
 }
 
 export class StubGitHubApiClient implements GitHubApiClient {
   async createRepo(
-    owner: string,
-    name: string,
-  ): Promise<{ id: number; cloneUrl: string }> {
-    return {
-      id: Math.floor(Math.random() * 1_000_000),
-      cloneUrl: `https://github.com/${owner}/${name}.git`,
-    };
+    _owner: string,
+    _name: string,
+  ): Promise<{ id: number; cloneUrl: string; defaultBranch: string }> {
+    throw new Error(
+      'StubGitHubApiClient cannot create repositories. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
   }
 
   async getRepo(
     _owner: string,
     _name: string,
-  ): Promise<{ id: number; cloneUrl: string } | null> {
-    return null;
+  ): Promise<{ id: number; cloneUrl: string; defaultBranch: string } | null> {
+    throw new Error(
+      'StubGitHubApiClient cannot query repositories. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
   }
 
   async setBranchProtection(
     _owner: string,
     _repo: string,
     _rule: BranchProtectionRule,
-  ): Promise<void> {}
+  ): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot set branch protection. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
 
   async getBranchProtection(
     _owner: string,
     _repo: string,
     _branch: string,
   ): Promise<BranchProtectionRule | null> {
-    return null;
+    throw new Error(
+      'StubGitHubApiClient cannot read branch protection. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
   }
 
   async createEnvironment(
@@ -94,7 +131,15 @@ export class StubGitHubApiClient implements GitHubApiClient {
     repo: string,
     env: string,
   ): Promise<{ id: number }> {
-    return { id: Math.floor(Math.random() * 1_000_000) };
+    throw new Error(
+      'StubGitHubApiClient cannot create environments. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
+
+  async deleteEnvironment(_owner: string, _repo: string, _env: string): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot delete environments. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
   }
 
   async setEnvironmentSecret(
@@ -103,14 +148,31 @@ export class StubGitHubApiClient implements GitHubApiClient {
     _env: string,
     _secretName: string,
     _secretValue: string,
-  ): Promise<void> {}
+  ): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot set environment secrets. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
+
+  async deleteEnvironmentSecret(
+    _owner: string,
+    _repo: string,
+    _env: string,
+    _secretName: string,
+  ): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot delete environment secrets. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
 
   async listEnvironmentSecrets(
     _owner: string,
     _repo: string,
     _env: string,
   ): Promise<string[]> {
-    return [];
+    throw new Error(
+      'StubGitHubApiClient cannot list environment secrets. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
   }
 
   async deployWorkflow(
@@ -118,19 +180,79 @@ export class StubGitHubApiClient implements GitHubApiClient {
     _repo: string,
     _filename: string,
     _content: string,
-  ): Promise<void> {}
-
-  async listWorkflows(_owner: string, _repo: string): Promise<string[]> {
-    return [];
+  ): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot deploy workflows. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
   }
 
-  async createWebhook(
+  async deleteWorkflow(
     _owner: string,
     _repo: string,
-    _url: string,
-    _secret: string,
-  ): Promise<{ id: number }> {
-    return { id: Math.floor(Math.random() * 1_000_000) };
+    _filename: string,
+  ): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot delete workflows. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
+
+  async listWorkflows(_owner: string, _repo: string): Promise<string[]> {
+    throw new Error(
+      'StubGitHubApiClient cannot list workflows. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
+
+  async getRepoFile(
+    _owner: string,
+    _repo: string,
+    _path: string,
+  ): Promise<{ content: string; sha: string } | null> {
+    throw new Error(
+      'StubGitHubApiClient cannot read repository files. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
+
+  async upsertRepoFile(
+    _owner: string,
+    _repo: string,
+    _path: string,
+    _content: string,
+    _message: string,
+  ): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot write repository files. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
+
+  async setRepositorySecret(
+    _owner: string,
+    _repo: string,
+    _secretName: string,
+    _secretValue: string,
+  ): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot set repository secrets. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
+
+  async hasRepositorySecret(
+    _owner: string,
+    _repo: string,
+    _secretName: string,
+  ): Promise<boolean> {
+    throw new Error(
+      'StubGitHubApiClient cannot check repository secrets. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
+  }
+
+  async deleteRepositorySecret(
+    _owner: string,
+    _repo: string,
+    _secretName: string,
+  ): Promise<void> {
+    throw new Error(
+      'StubGitHubApiClient cannot delete repository secrets. Configure GitHubAdapter with HttpGitHubApiClient.',
+    );
   }
 }
 
@@ -155,7 +277,7 @@ export class HttpGitHubApiClient implements GitHubApiClient {
     return data.id;
   }
 
-  async createRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string }> {
+  async createRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string; defaultBranch: string }> {
     const existing = await this.getRepo(owner, name);
     if (existing) return existing;
 
@@ -165,13 +287,21 @@ export class HttpGitHubApiClient implements GitHubApiClient {
     } catch {
       response = await this.octokit.repos.createForAuthenticatedUser({ name, auto_init: true, private: true });
     }
-    return { id: response.data.id, cloneUrl: response.data.clone_url };
+    return {
+      id: response.data.id,
+      cloneUrl: response.data.clone_url,
+      defaultBranch: response.data.default_branch ?? 'main',
+    };
   }
 
-  async getRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string } | null> {
+  async getRepo(owner: string, name: string): Promise<{ id: number; cloneUrl: string; defaultBranch: string } | null> {
     try {
       const { data } = await this.octokit.repos.get({ owner, repo: name });
-      return { id: data.id, cloneUrl: data.clone_url };
+      return {
+        id: data.id,
+        cloneUrl: data.clone_url,
+        defaultBranch: data.default_branch ?? 'main',
+      };
     } catch {
       return null;
     }
@@ -234,6 +364,19 @@ export class HttpGitHubApiClient implements GitHubApiClient {
     return { id: data.id ?? 0 };
   }
 
+  async deleteEnvironment(owner: string, repo: string, env: string): Promise<void> {
+    try {
+      await this.octokit.repos.deleteAnEnvironment({
+        owner,
+        repo,
+        environment_name: env,
+      });
+    } catch (err) {
+      if ((err as { status?: number })?.status === 404) return;
+      throw err;
+    }
+  }
+
   async setEnvironmentSecret(
     owner: string,
     repo: string,
@@ -260,40 +403,90 @@ export class HttpGitHubApiClient implements GitHubApiClient {
   }
 
   async listEnvironmentSecrets(owner: string, repo: string, env: string): Promise<string[]> {
+    const repositoryId = await this.getRepoId(owner, repo);
+    const { data } = await this.octokit.actions.listEnvironmentSecrets({
+      repository_id: repositoryId,
+      environment_name: env,
+    });
+    return data.secrets.map((s: { name: string }) => s.name);
+  }
+
+  async deleteEnvironmentSecret(owner: string, repo: string, env: string, secretName: string): Promise<void> {
     try {
       const repositoryId = await this.getRepoId(owner, repo);
-      const { data } = await this.octokit.actions.listEnvironmentSecrets({
+      await this.octokit.actions.deleteEnvironmentSecret({
         repository_id: repositoryId,
         environment_name: env,
+        secret_name: secretName,
       });
-      return data.secrets.map((s: { name: string }) => s.name);
-    } catch {
-      return [];
+    } catch (err) {
+      if ((err as { status?: number })?.status === 404) return;
+      throw err;
     }
   }
 
   async deployWorkflow(owner: string, repo: string, filename: string, content: string): Promise<void> {
     const filePath = `.github/workflows/${filename}`;
-    const contentBase64 = Buffer.from(content, 'utf8').toString('base64');
+    const existing = await this.getRepoFile(owner, repo, filePath);
+    await this.upsertRepoFile(
+      owner,
+      repo,
+      filePath,
+      content,
+      existing ? `chore: update ${filename}` : `chore: add ${filename}`,
+    );
+  }
 
-    // Get existing SHA for update
-    let sha: string | undefined;
-    try {
-      const { data } = await this.octokit.repos.getContent({ owner, repo, path: filePath });
-      if (!Array.isArray(data) && data.type === 'file') {
-        sha = data.sha;
-      }
-    } catch {
-      // File does not exist yet — create it
-    }
-
-    await this.octokit.repos.createOrUpdateFileContents({
+  async deleteWorkflow(owner: string, repo: string, filename: string): Promise<void> {
+    const filePath = `.github/workflows/${filename}`;
+    const existing = await this.getRepoFile(owner, repo, filePath);
+    if (!existing) return;
+    await this.octokit.repos.deleteFile({
       owner,
       repo,
       path: filePath,
-      message: sha ? `chore: update ${filename}` : `chore: add ${filename}`,
+      message: `chore: remove ${filename} (no longer managed by Studio)`,
+      sha: existing.sha,
+    });
+  }
+
+  async getRepoFile(
+    owner: string,
+    repo: string,
+    path: string,
+  ): Promise<{ content: string; sha: string } | null> {
+    try {
+      const { data } = await this.octokit.repos.getContent({ owner, repo, path });
+      if (Array.isArray(data) || data.type !== 'file') return null;
+      const encoding = (data as { encoding?: string }).encoding;
+      const raw = (data as { content?: string }).content ?? '';
+      const decoded =
+        encoding === 'base64'
+          ? Buffer.from(raw, 'base64').toString('utf8')
+          : raw;
+      return { content: decoded, sha: data.sha };
+    } catch (err) {
+      if ((err as { status?: number })?.status === 404) return null;
+      throw err;
+    }
+  }
+
+  async upsertRepoFile(
+    owner: string,
+    repo: string,
+    path: string,
+    content: string,
+    message: string,
+  ): Promise<void> {
+    const existing = await this.getRepoFile(owner, repo, path);
+    const contentBase64 = Buffer.from(content, 'utf8').toString('base64');
+    await this.octokit.repos.createOrUpdateFileContents({
+      owner,
+      repo,
+      path,
+      message,
       content: contentBase64,
-      ...(sha ? { sha } : {}),
+      ...(existing ? { sha: existing.sha } : {}),
     });
   }
 
@@ -313,15 +506,43 @@ export class HttpGitHubApiClient implements GitHubApiClient {
     return [];
   }
 
-  async createWebhook(owner: string, repo: string, url: string, secret: string): Promise<{ id: number }> {
-    const { data } = await this.octokit.repos.createWebhook({
+  async setRepositorySecret(
+    owner: string,
+    repo: string,
+    secretName: string,
+    secretValue: string,
+  ): Promise<void> {
+    const { data: keyData } = await this.octokit.actions.getRepoPublicKey({
       owner,
       repo,
-      config: { url, content_type: 'json', secret },
-      events: ['push', 'pull_request', 'workflow_run'],
-      active: true,
     });
-    return { id: data.id };
+    const encryptedValue = await this.encryptSecret(keyData.key, secretValue);
+    await this.octokit.actions.createOrUpdateRepoSecret({
+      owner,
+      repo,
+      secret_name: secretName,
+      encrypted_value: encryptedValue,
+      key_id: keyData.key_id,
+    });
+  }
+
+  async hasRepositorySecret(owner: string, repo: string, secretName: string): Promise<boolean> {
+    try {
+      await this.octokit.actions.getRepoSecret({ owner, repo, secret_name: secretName });
+      return true;
+    } catch (err) {
+      if ((err as { status?: number })?.status === 404) return false;
+      throw err;
+    }
+  }
+
+  async deleteRepositorySecret(owner: string, repo: string, secretName: string): Promise<void> {
+    try {
+      await this.octokit.actions.deleteRepoSecret({ owner, repo, secret_name: secretName });
+    } catch (err) {
+      if ((err as { status?: number })?.status === 404) return;
+      throw err;
+    }
   }
 
   /**
@@ -343,8 +564,52 @@ export class HttpGitHubApiClient implements GitHubApiClient {
 // Workflow templates
 // ---------------------------------------------------------------------------
 
+/**
+ * Every workflow filename Studio has ever written. Used by `stepDeployWorkflows`
+ * to scrub obsolete files from `.github/workflows/` when the desired set
+ * shrinks (e.g. an EAS project no longer needs `build.yml` because
+ * `expo-testflight.yml` runs the EAS build directly).
+ *
+ * Add new template filenames here whenever `buildWorkflowTemplate` learns a
+ * new case — otherwise switching a project off that template will leave the
+ * stale file running on every push.
+ */
+const MANAGED_WORKFLOW_FILENAMES: readonly string[] = [
+  'build.yml',
+  'deploy.yml',
+  'expo-testflight.yml',
+];
+
+/**
+ * The set of GitHub Actions environments this project owns. Always derived
+ * from `config.environments` (project-declared envs like `preview` /
+ * `production`), never from `context.environment` — the orchestrator passes
+ * the literal string `'global'` for steps with `environmentScope: 'global'`,
+ * and we don't want to materialize a phantom `global` env on GitHub.
+ */
+function resolveProjectEnvironments(config: GitHubManifestConfig): Environment[] {
+  const envs = (config.environments ?? []).filter((e): e is Environment => Boolean(e));
+  if (envs.length === 0) {
+    throw new AdapterError(
+      'No environments declared on the GitHub manifest. Set `environments` on the project (e.g. ["preview","production"]) before running env-scoped GitHub steps.',
+      'github',
+      'resolveProjectEnvironments',
+    );
+  }
+  return envs;
+}
+
 function buildWorkflowTemplate(template: string, environments: Environment[]): string {
   const envList = environments.join(', ');
+  // Pick the env names this workflow targets from the project's actual envs.
+  // `production` is always used for `main`; the non-main env is the first
+  // non-production env declared on the project (typically `preview`/`staging`).
+  // Falls back to the first declared env if `production` is absent.
+  const productionEnv =
+    environments.find((e) => e === 'production') ?? environments[0] ?? 'production';
+  const nonProdEnv =
+    environments.find((e) => e !== 'production') ?? productionEnv;
+  const envExpression = `\${{ github.ref == 'refs/heads/main' && '${productionEnv}' || '${nonProdEnv}' }}`;
   switch (template) {
     case 'build':
       return `name: Build
@@ -352,7 +617,7 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment: \${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+    environment: ${envExpression}
     # Environments: ${envList}
     steps:
       - uses: actions/checkout@v4
@@ -368,7 +633,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: \${{ github.ref == 'refs/heads/main' && 'prod' || 'preview' }}
+    environment: ${envExpression}
     # Environments: ${envList}
     steps:
       - uses: actions/checkout@v4
@@ -377,7 +642,80 @@ jobs:
       - run: npm run deploy
     env:
       FIREBASE_SERVICE_ACCOUNT: \${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-      EAS_TOKEN: \${{ secrets.EAS_TOKEN }}
+      EXPO_TOKEN: \${{ secrets.EXPO_TOKEN }}
+`;
+    case 'expo-testflight':
+      return `name: Deploy to TestFlight
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+jobs:
+  build:
+    name: Build iOS App
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - name: Setup repo
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          packager: npm
+          token: \${{ secrets.EXPO_TOKEN }}
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify encryption compliance
+        run: |
+          echo "Verifying encryption settings..."
+          files=()
+          for f in app.config.ts app.config.js app.json; do
+            [ -f "$f" ] && files+=("$f")
+          done
+          if [ "\${#files[@]}" -eq 0 ]; then
+            echo "::warning::No app config file found (looked for app.config.ts, app.config.js, app.json). Skipping encryption-compliance check."
+          elif grep -q "ITSAppUsesNonExemptEncryption" "\${files[@]}"; then
+            echo "Export compliance declared in: \${files[*]}"
+          else
+            echo "::warning::ITSAppUsesNonExemptEncryption is not declared in any of [\${files[*]}]. App Store Connect will require you to answer the encryption questionnaire manually before TestFlight access."
+          fi
+      - name: Build app for TestFlight
+        run: eas build --platform ios --profile production --non-interactive
+        env:
+          EXPO_TOKEN: \${{ secrets.EXPO_TOKEN }}
+  submit:
+    name: Submit to TestFlight
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - name: Setup repo
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          packager: npm
+          token: \${{ secrets.EXPO_TOKEN }}
+      - name: Install dependencies
+        run: npm ci
+      - name: Submit to TestFlight
+        run: eas submit --platform ios --profile production --non-interactive --latest
+        env:
+          EXPO_TOKEN: \${{ secrets.EXPO_TOKEN }}
 `;
     default:
       return `name: ${template}\non: [push]\njobs:\n  run:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n`;
@@ -391,6 +729,7 @@ jobs:
 export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
   private readonly log: ReturnType<typeof createOperationLogger>;
   private static readonly MAX_RETRIES = 4;
+  private static readonly API_CALL_TIMEOUT_MS = 60_000;
 
   constructor(
     private readonly apiClient: GitHubApiClient,
@@ -468,6 +807,9 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
       }
 
       // Step 3: Deploy workflows
+      const desiredWorkflowFiles = new Set(
+        config.workflow_templates.map((t) => `${t}.yml`),
+      );
       for (const template of config.workflow_templates) {
         try {
           const content = buildWorkflowTemplate(template, config.environments);
@@ -486,6 +828,22 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
           state.partially_complete = true;
           this.log.error('Failed to deploy workflow', {
             template,
+            error: (err as Error).message,
+          });
+        }
+      }
+
+      // Scrub obsolete managed workflow files (see stepDeployWorkflows for
+      // rationale). Tolerates failure — the new files were already deployed.
+      for (const obsolete of MANAGED_WORKFLOW_FILENAMES) {
+        if (desiredWorkflowFiles.has(obsolete)) continue;
+        try {
+          await this.withRateLimit(() =>
+            this.apiClient.deleteWorkflow(config.owner, config.repo_name, obsolete),
+          );
+        } catch (err) {
+          this.log.warn('Failed to remove obsolete workflow file', {
+            filename: obsolete,
             error: (err as Error).message,
           });
         }
@@ -526,8 +884,6 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
         return this.stepInjectSecrets(config, context);
       case 'github:deploy-workflows':
         return this.stepDeployWorkflows(config, context);
-      case 'github:configure-webhook':
-        return this.stepConfigureWebhook(config, context);
       default:
         throw new AdapterError(`Unknown GitHub step: ${stepKey}`, 'github', 'executeStep');
     }
@@ -541,19 +897,23 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
       ? await this.apiClient.getRepo(config.owner, config.repo_name)
       : null;
     let cloneUrl: string;
+    let repoId: number;
     if (existing) {
       cloneUrl = existing.cloneUrl;
+      repoId = existing.id;
     } else {
       const repo = await this.withRateLimit(() =>
         this.apiClient.createRepo(config.owner, config.repo_name),
       );
       cloneUrl = repo.cloneUrl;
+      repoId = repo.id;
     }
     const github_repo_url = cloneUrl.replace(/\.git$/i, '');
     return {
       status: 'completed',
       resourcesProduced: {
         github_repo_url,
+        github_repo_id: String(repoId),
       },
     };
   }
@@ -562,55 +922,110 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
     config: GitHubManifestConfig,
     context: StepContext,
   ): Promise<StepResult> {
-    const env = context.environment ?? config.environments[0] ?? 'dev';
-    const result = await this.withRateLimit(() =>
-      this.apiClient.createEnvironment(config.owner, config.repo_name, env),
-    );
-    return {
-      status: 'completed',
-      resourcesProduced: { github_environment_id: String(result.id) },
-    };
+    // ALWAYS iterate over the project's declared envs (e.g. preview,
+    // production). Do NOT fall back to `context.environment` — the
+    // orchestrator passes the literal string `'global'` for steps with
+    // `environmentScope: 'global'`, and we'd end up creating a phantom
+    // GitHub environment named `global` with no real meaning.
+    const targetEnvs = resolveProjectEnvironments(config);
+    const created: Record<string, string> = {};
+    for (const env of targetEnvs) {
+      const result = await this.withRateLimit(() =>
+        this.apiClient.createEnvironment(config.owner, config.repo_name, env),
+      );
+      created[`github_environment_id_${env}`] = String(result.id);
+    }
+    // Best-effort cleanup of the legacy `global` GitHub env from any project
+    // provisioned before this fix landed. Safe even if it never existed
+    // (deleteEnvironment 404s gracefully). `global` isn't in the
+    // `Environment` union, so it can't appear in targetEnvs — the check
+    // above already guarantees we never touch a real project env.
+    try {
+      await this.withRateLimit(() =>
+        this.apiClient.deleteEnvironment(config.owner, config.repo_name, 'global'),
+      );
+    } catch (err) {
+      this.log.warn('Failed to remove legacy `global` environment', {
+        error: (err as Error).message,
+      });
+    }
+    return { status: 'completed', resourcesProduced: created };
   }
 
   private async stepInjectSecrets(
     config: GitHubManifestConfig,
     context: StepContext,
   ): Promise<StepResult> {
-    const env = context.environment ?? config.environments[0] ?? 'dev';
+    // Iterate the project's declared envs (preview, production, …). The
+    // orchestrator passes `context.environment = 'global'` for this step,
+    // so reading that value directly would create + write secrets to a
+    // phantom `global` env that no workflow job ever runs in.
+    const targetEnvs = resolveProjectEnvironments(config);
     const injected: string[] = [];
+    this.log.info('Injecting GitHub environment secrets', {
+      owner: config.owner,
+      repo: config.repo_name,
+      environments: targetEnvs,
+    });
 
-    // Firebase service account key → FIREBASE_SERVICE_ACCOUNT
+    // ENV-LEVEL ONLY. Repo-level secrets (EXPO_TOKEN) are owned by
+    // `eas:store-token-in-github` and not written here — GitHub falls back
+    // from env to repo level automatically, so duplicating EXPO_TOKEN per
+    // env just lets the values drift after rotations.
+
+    // Firebase service account key → FIREBASE_SERVICE_ACCOUNT (env-scoped
+    // because preview/production typically point at different Firebase
+    // projects). Today the same SA goes to every env; per-env Firebase
+    // projects can plug in here later.
     const saJson = await context.vaultRead(`${context.projectId}/service_account_json`);
-    if (saJson) {
+    for (const env of targetEnvs) {
+      // Make sure each env exists before writing to it (createOrUpdateEnvironment
+      // is idempotent).
       await this.withRateLimit(() =>
-        this.apiClient.setEnvironmentSecret(
-          config.owner,
-          config.repo_name,
-          env,
-          'FIREBASE_SERVICE_ACCOUNT',
-          saJson,
-        ),
+        this.apiClient.createEnvironment(config.owner, config.repo_name, env),
       );
-      injected.push('FIREBASE_SERVICE_ACCOUNT');
+      if (saJson) {
+        this.log.info('Writing FIREBASE_SERVICE_ACCOUNT secret', { environment: env });
+        await this.withRateLimit(() =>
+          this.apiClient.setEnvironmentSecret(
+            config.owner,
+            config.repo_name,
+            env,
+            'FIREBASE_SERVICE_ACCOUNT',
+            saJson,
+          ),
+        );
+        injected.push(`${env}/FIREBASE_SERVICE_ACCOUNT`);
+      }
+
+      // Scrub legacy env-level token names — see github-step-handlers.ts for
+      // the rationale (stale env-level value shadows the repo-level
+      // EXPO_TOKEN after a rotation and breaks `eas-cli` with "bearer token
+      // is invalid").
+      for (const legacy of ['EXPO_TOKEN', 'EAS_TOKEN']) {
+        await this.withRateLimit(() =>
+          this.apiClient.deleteEnvironmentSecret(config.owner, config.repo_name, env, legacy),
+        );
+      }
     }
 
-    // Expo/EAS token → EAS_TOKEN (from upstream resources or vault)
-    const easToken =
-      context.upstreamResources['expo_token'] ??
-      (await context.vaultRead('eas/expo_token'));
-    if (easToken) {
+    // Best-effort: remove the legacy `global` environment from any project
+    // that was provisioned before we switched to per-project-env writes.
+    // `global` is not part of the `Environment` union so it can never appear
+    // in targetEnvs.
+    try {
       await this.withRateLimit(() =>
-        this.apiClient.setEnvironmentSecret(
-          config.owner,
-          config.repo_name,
-          env,
-          'EAS_TOKEN',
-          easToken,
-        ),
+        this.apiClient.deleteEnvironment(config.owner, config.repo_name, 'global'),
       );
-      injected.push('EAS_TOKEN');
+    } catch (err) {
+      this.log.warn('Failed to remove legacy `global` environment', {
+        error: (err as Error).message,
+      });
     }
 
+    this.log.info('GitHub environment secret injection complete', {
+      injectedSecrets: injected,
+    });
     return { status: 'completed', resourcesProduced: { injected_secrets: injected.join(',') } };
   }
 
@@ -618,36 +1033,34 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
     config: GitHubManifestConfig,
     context: StepContext,
   ): Promise<StepResult> {
+    const desired = new Set(config.workflow_templates.map((t) => `${t}.yml`));
     for (const template of config.workflow_templates) {
       const content = buildWorkflowTemplate(template, config.environments);
       await this.withRateLimit(() =>
         this.apiClient.deployWorkflow(config.owner, config.repo_name, `${template}.yml`, content),
       );
     }
-    return { status: 'completed', resourcesProduced: {} };
-  }
 
-  private async stepConfigureWebhook(
-    config: GitHubManifestConfig,
-    context: StepContext,
-  ): Promise<StepResult> {
-    const webhookUrl = process.env['STUDIO_WEBHOOK_URL']?.trim();
-    if (!webhookUrl) {
-      // No real webhook endpoint configured — skip rather than registering a
-      // dead placeholder URL that would produce noisy failed deliveries.
-      return {
-        status: 'completed',
-        resourcesProduced: { github_webhook_id: 'skipped-no-url' },
-      };
+    // Scrub any previously-managed workflow files that are no longer part of
+    // the desired set so old templates (e.g. a generic build.yml from before
+    // we relied on expo-testflight to do the EAS build) don't keep running on
+    // every push. Only the names Studio has ever written are eligible —
+    // we never touch user-authored workflows.
+    for (const obsolete of MANAGED_WORKFLOW_FILENAMES) {
+      if (desired.has(obsolete)) continue;
+      try {
+        await this.withRateLimit(() =>
+          this.apiClient.deleteWorkflow(config.owner, config.repo_name, obsolete),
+        );
+      } catch (err) {
+        this.log.warn('Failed to remove obsolete workflow file', {
+          filename: obsolete,
+          error: (err as Error).message,
+        });
+      }
     }
-    const secret = crypto.randomBytes(32).toString('hex');
-    const result = await this.withRateLimit(() =>
-      this.apiClient.createWebhook(config.owner, config.repo_name, webhookUrl, secret),
-    );
-    return {
-      status: 'completed',
-      resourcesProduced: { github_webhook_id: String(result.id) },
-    };
+
+    return { status: 'completed', resourcesProduced: {} };
   }
 
   // ---------------------------------------------------------------------------
@@ -665,33 +1078,66 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
         const existing = await this.apiClient.getRepo(config.owner, config.repo_name);
         if (existing) {
           const github_repo_url = existing.cloneUrl.replace(/\.git$/i, '');
-          return { status: 'completed', resourcesProduced: { github_repo_url } };
+          return {
+            status: 'completed',
+            resourcesProduced: { github_repo_url, github_repo_id: String(existing.id) },
+          };
         }
         return { status: 'failed', resourcesProduced: {}, error: 'Repository not found' };
       }
       case 'github:create-environments': {
-        const env = context.environment ?? config.environments[0] ?? 'dev';
+        const targetEnvs = resolveProjectEnvironments(config);
+        const created: Record<string, string> = {};
         try {
-          const result = await this.withRateLimit(() =>
-            this.apiClient.createEnvironment(config.owner, config.repo_name, env),
-          );
-          return { status: 'completed', resourcesProduced: { github_environment_id: String(result.id) } };
-        } catch {
-          return { status: 'failed', resourcesProduced: {}, error: `Environment "${env}" check failed` };
+          for (const env of targetEnvs) {
+            const result = await this.withRateLimit(() =>
+              this.apiClient.createEnvironment(config.owner, config.repo_name, env),
+            );
+            created[`github_environment_id_${env}`] = String(result.id);
+          }
+          return { status: 'completed', resourcesProduced: created };
+        } catch (err) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: `Environment check failed: ${(err as Error).message}`,
+          };
         }
       }
       case 'github:inject-secrets': {
-        const env = context.environment ?? config.environments[0] ?? 'dev';
+        const targetEnvs = resolveProjectEnvironments(config);
         try {
-          const secrets = await this.withRateLimit(() =>
-            this.apiClient.listEnvironmentSecrets(config.owner, config.repo_name, env),
-          );
-          if (secrets.length > 0) {
-            return { status: 'completed', resourcesProduced: { injected_secrets: secrets.join(',') } };
+          // Env-level inject-secrets owns FIREBASE_SERVICE_ACCOUNT in EVERY
+          // project env. EXPO_TOKEN lives at repo level (see stepInjectSecrets).
+          const missing: string[] = [];
+          const found: string[] = [];
+          for (const env of targetEnvs) {
+            const secrets = await this.withRateLimit(() =>
+              this.apiClient.listEnvironmentSecrets(config.owner, config.repo_name, env),
+            );
+            if (secrets.includes('FIREBASE_SERVICE_ACCOUNT')) {
+              found.push(`${env}/FIREBASE_SERVICE_ACCOUNT`);
+            } else {
+              missing.push(env);
+            }
           }
-          return { status: 'failed', resourcesProduced: {}, error: `No secrets found in environment "${env}"` };
-        } catch {
-          return { status: 'failed', resourcesProduced: {}, error: `Failed to list secrets for environment "${env}"` };
+          if (missing.length === 0) {
+            return {
+              status: 'completed',
+              resourcesProduced: { injected_secrets: found.join(',') },
+            };
+          }
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: `FIREBASE_SERVICE_ACCOUNT missing in env(s): ${missing.join(', ')}`,
+          };
+        } catch (err) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: `Failed to list secrets: ${(err as Error).message}`,
+          };
         }
       }
       case 'github:deploy-workflows': {
@@ -706,9 +1152,6 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
         } catch {
           return { status: 'failed', resourcesProduced: {}, error: 'Failed to list workflows' };
         }
-      }
-      case 'github:configure-webhook': {
-        return { status: 'completed', resourcesProduced: { github_webhook_id: 'check-skipped' } };
       }
       default:
         return { status: 'failed', resourcesProduced: {}, error: `Unknown step: ${stepKey}` };
@@ -870,7 +1313,7 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
     let lastError: unknown;
     for (let attempt = 0; attempt < GitHubAdapter.MAX_RETRIES; attempt++) {
       try {
-        return await fn();
+        return await this.withApiCallTimeout(fn);
       } catch (err) {
         lastError = err;
         const rateLimitErr = err as Partial<GitHubRateLimitError>;
@@ -892,6 +1335,28 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
       'withRateLimit',
       lastError,
     );
+  }
+
+  private async withApiCallTimeout<T>(fn: () => Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race<T>([
+        fn(),
+        new Promise<T>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new AdapterError(
+                `GitHub API call timed out after ${GitHubAdapter.API_CALL_TIMEOUT_MS}ms.`,
+                'github',
+                'apiCallTimeout',
+              ),
+            );
+          }, GitHubAdapter.API_CALL_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private hashConfig(config: GitHubManifestConfig): string {

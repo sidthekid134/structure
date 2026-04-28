@@ -7,7 +7,7 @@
  * UserActionNode that requires human intervention.
  */
 
-import type { ProviderType } from '../providers/types.js';
+import type { ProviderType, StepExecutionIntent } from '../providers/types.js';
 
 // ---------------------------------------------------------------------------
 // Environment as a primary concept
@@ -16,6 +16,19 @@ import type { ProviderType } from '../providers/types.js';
 export type EnvironmentScope = 'global' | 'per-environment';
 
 export type StepDirection = 'provision' | 'teardown';
+
+// ---------------------------------------------------------------------------
+// Mobile platform tagging
+// ---------------------------------------------------------------------------
+
+/**
+ * The set of mobile platforms a project can target. Steps, modules, and
+ * user-action nodes may opt into a subset; an absent `platforms` mask means
+ * the node applies to all platforms (i.e. it has no iOS/Android coupling).
+ */
+export type MobilePlatform = 'ios' | 'android';
+
+export const ALL_MOBILE_PLATFORMS: MobilePlatform[] = ['ios', 'android'];
 
 // ---------------------------------------------------------------------------
 // Automation level
@@ -73,6 +86,12 @@ export interface CompletionRelatedLink {
 export interface ResourceOutputPresentation {
   /** Credential-like — never surface raw value in UI. */
   sensitive?: boolean;
+  /** Human-readable storage destination (e.g. "Expo EAS environment variable"). */
+  destinationType?: string;
+  /** Provider visibility/classification (e.g. PUBLIC, SENSITIVE, SECRET). */
+  secretType?: string;
+  /** How this write behaves (e.g. create-only vs upsert/overwrite). */
+  writeBehavior?: string;
   /** When true and the stored value is http(s), treat it as the primary outbound link. */
   primaryLinkFromValue?: boolean;
   /** Primary console link pattern, e.g. `https://console.firebase.google.com/project/{upstream.firebase_project_id}` */
@@ -85,6 +104,31 @@ export interface ResourceOutput {
   label: string;
   description: string;
   presentation?: ResourceOutputPresentation;
+}
+
+// ---------------------------------------------------------------------------
+// Step input fields — user-configurable parameters for a step
+// ---------------------------------------------------------------------------
+
+export type StepInputFieldType = 'text' | 'select' | 'p8';
+
+export interface StepInputField {
+  key: string;
+  label: string;
+  description?: string;
+  type: StepInputFieldType;
+  placeholder?: string;
+  /**
+   * Default value shown in the UI. Supports project tokens that are resolved
+   * server-side before sending to the frontend:
+   *   {slug}     — project slug / resource name
+   *   {bundleId} — app bundle ID (e.g. com.example.myapp)
+   *   {domain}   — app domain (e.g. myapp.example.com)
+   *   {name}     — project display name
+   */
+  defaultValue?: string;
+  options?: string[];
+  required?: boolean;
 }
 
 /** Shown when a node is complete — docs, consoles (static or templated). */
@@ -115,6 +159,12 @@ export interface UserActionNode {
   completionPortalLinks?: CompletionPortalLink[];
   /** Optional tie-break within the same topological layer (lower runs first). */
   orderHint?: number;
+  /**
+   * Which mobile platforms this action applies to. Omitted = all platforms.
+   * The plan builder drops user actions whose platform mask doesn't intersect
+   * the project's `platforms` selection.
+   */
+  platforms?: MobilePlatform[];
 }
 
 export interface ProvisioningStepNode {
@@ -137,6 +187,26 @@ export interface ProvisioningStepNode {
   interactiveAction?: InteractiveAction;
   /** Optional tie-break within the same topological layer (lower runs first). */
   orderHint?: number;
+  /** Configurable input fields — user-provided parameters for this step. */
+  inputFields?: StepInputField[];
+  /**
+   * When any listed node key completes successfully, this step is considered
+   * stale and should be reset to not-started before the next execution.
+   */
+  refreshTriggers?: string[];
+  /**
+   * Which mobile platforms this step applies to. Omitted = all platforms.
+   * The plan builder drops steps whose platform mask doesn't intersect the
+   * project's `platforms` selection. Required dependencies on filtered-out
+   * upstream nodes are silently relaxed so that platform-specific cousins
+   * don't block their cross-platform peers.
+   */
+  platforms?: MobilePlatform[];
+  /**
+   * Env var keys this step writes/updates in a downstream build system.
+   * Used by UI to preview exact key names before execution.
+   */
+  managedEnvKeys?: string[];
 }
 
 export type ProvisioningNode = UserActionNode | ProvisioningStepNode;
@@ -163,7 +233,14 @@ export interface NodeState {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+  /** Operator guidance when a step pauses in waiting-on-user status. */
+  userPrompt?: string;
   resourcesProduced?: Record<string, string>;
+  /** User-provided input values for steps with inputFields. */
+  userInputs?: Record<string, string>;
+  /** Step key that invalidated this state and forced re-run. */
+  invalidatedBy?: string;
+  invalidatedAt?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +253,7 @@ export interface StepContext {
   upstreamResources: Record<string, string>; // all resources produced by completed deps
   vaultRead: (key: string) => Promise<string | null>;
   vaultWrite: (key: string, value: string) => Promise<void>;
+  executionIntent?: StepExecutionIntent;
 }
 
 export interface StepResult {
@@ -218,6 +296,12 @@ export interface ProvisioningPlan {
   projectId: string;
   environments: string[];
   selectedModules: SelectedModules;
+  /**
+   * Mobile platforms this plan targets. Used by the plan builder to drop
+   * platform-irrelevant nodes and relax dependencies that point at them.
+   * Empty array means "platform filtering disabled" (treat as all platforms).
+   */
+  platforms: MobilePlatform[];
   nodes: ProvisioningNode[];
   nodeStates: Map<string, NodeState>; // keyed by nodeKey (or nodeKey:env for per-env)
 }
@@ -230,6 +314,7 @@ export interface ProvisioningPlanSnapshot {
   projectId: string;
   environments: string[];
   selectedModules: SelectedModules;
+  platforms: MobilePlatform[];
   nodes: ProvisioningNode[];
   nodeStates: Record<string, NodeState>; // Map serialized as plain object
 }

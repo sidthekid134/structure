@@ -13,6 +13,7 @@ import type {
   NodeStatus,
   ExecutionGroup,
   ExecutionGroupItem,
+  MobilePlatform,
   ProvisioningPlan,
   ProvisioningStepNode,
   UserActionNode,
@@ -290,6 +291,7 @@ export class StepResolver {
     projectId: string;
     environments: string[];
     selectedModules: string[];
+    platforms: MobilePlatform[];
     nodes: ProvisioningNode[];
     nodeStates: Record<string, NodeState>;
   } {
@@ -297,6 +299,7 @@ export class StepResolver {
       projectId: plan.projectId,
       environments: plan.environments,
       selectedModules: plan.selectedModules,
+      platforms: plan.platforms ?? [],
       nodes: plan.nodes,
       nodeStates: Object.fromEntries(plan.nodeStates),
     };
@@ -348,6 +351,7 @@ export class StepResolver {
     projectId: string;
     environments: string[];
     selectedModules?: string[];
+    platforms?: MobilePlatform[];
     nodes: ProvisioningNode[];
     nodeStates: Record<string, NodeState>;
   }): ProvisioningPlan {
@@ -355,6 +359,7 @@ export class StepResolver {
       projectId: snapshot.projectId,
       environments: snapshot.environments,
       selectedModules: snapshot.selectedModules ?? [],
+      platforms: snapshot.platforms ?? [],
       nodes: snapshot.nodes,
       nodeStates: new Map(Object.entries(snapshot.nodeStates)),
     };

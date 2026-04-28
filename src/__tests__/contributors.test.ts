@@ -4,7 +4,7 @@ import { mergeContributorNodes, type ProvisioningContributorContext } from '../p
 const ctx: ProvisioningContributorContext = {
   projectId: 'p1',
   selectedProviders: ['firebase'],
-  environments: ['dev'],
+  environments: ['development'],
 };
 
 describe('contributors', () => {

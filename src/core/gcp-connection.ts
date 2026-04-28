@@ -483,7 +483,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
         const gcpProjectId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
         const saEmail = getStoredSaEmail(this.vaultManager, passphrase, studioProjectId);
         if (!gcpProjectId || !saEmail) return { valid: false, message: 'No service account email stored.' };
-        const saPath = `/v1/projects/${gcpProjectId}/serviceAccounts/${encodeURIComponent(saEmail)}`;
+        const saPath = `/v1/projects/-/serviceAccounts/${encodeURIComponent(saEmail)}`;
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
             const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:service_account');

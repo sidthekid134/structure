@@ -26,7 +26,7 @@ import type {
 } from './types';
 
 /** @deprecated Import DEFAULT_ENVIRONMENTS from CreateProjectModal instead */
-export const DEFAULT_ENVIRONMENTS = ['qa', 'production'];
+export const DEFAULT_ENVIRONMENTS = ['preview', 'production'];
 export const SLUG_MAX = 25;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -141,12 +141,47 @@ export const INTEGRATION_CONFIGS: IntegrationConfig[] = [
       },
     ],
   },
+  {
+    id: 'apple',
+    scope: 'organization',
+    name: 'Apple Developer',
+    logo: ShieldCheck,
+    logoColor: 'text-zinc-700 dark:text-zinc-300',
+    description:
+      'Connect Apple Developer at the organization level. Studio walks you through capturing the Team ID and creating an App Store Connect Team API key (Issuer ID, Key ID, and .p8) so every project can run automated signing, provisioning, APNs, and TestFlight workflows.',
+    docsUrl: 'https://developer.apple.com/account',
+    customFlow: 'apple',
+    fields: [],
+  },
+  {
+    id: 'cloudflare',
+    scope: 'organization',
+    name: 'Cloudflare',
+    logo: Globe,
+    logoColor: 'text-orange-500',
+    description:
+      'Connect a Cloudflare API token at organization scope as the default. Projects can optionally provide their own stricter zone-scoped token overrides during setup.',
+    docsUrl: 'https://developers.cloudflare.com/fundamentals/api/get-started/create-token/',
+    fields: [
+      {
+        key: 'cloudflareApiToken',
+        label: 'Cloudflare API Token',
+        placeholder: 'cf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        hint:
+          'Grant Zone:Read, Zone:Edit, and DNS:Edit for required apex zones. Project-level override tokens can be added later for tighter scope.',
+        type: 'password',
+      },
+    ],
+    customFlow: 'cloudflare',
+  },
 ];
 
 export const PROVIDER_PLUGIN_MAP: Record<ProviderId, string[]> = {
   firebase: ['firebase-auth', 'firestore', 'fcm', 'app-check', 'vertex-ai'],
   expo: ['eas-build', 'eas-submit'],
   github: ['github-actions'],
+  apple: ['apns'],
+  cloudflare: ['cloudflare-domain'],
 };
 
 export const ALL_REGISTRY_PLUGINS: RegistryPlugin[] = [
@@ -162,7 +197,7 @@ export const ALL_REGISTRY_PLUGINS: RegistryPlugin[] = [
   { id: 'github-actions', name: 'GitHub Actions', provider: 'GitHub', providerId: 'github', description: 'CI/CD workflow automation triggered on push, PR, or manual dispatch.', categories: ['build-pipeline'], version: '1.8.0' },
   { id: 'eas-submit', name: 'EAS Submit', provider: 'Expo', providerId: 'expo', description: 'Automated binary submission to App Store Connect and Google Play.', categories: ['build-pipeline'], version: '2.1.0' },
   { id: 'fcm', name: 'Firebase Cloud Messaging', provider: 'Google Firebase', providerId: 'firebase', description: 'Cross-platform push notifications with topic subscriptions and data payloads.', categories: ['notifications'], version: '2.0.0' },
-  { id: 'apns', name: 'Apple APNs', provider: 'Apple', providerId: 'other', description: 'Native iOS push notification delivery with p8 key authentication.', categories: ['notifications', 'security'], version: '1.5.0' },
+  { id: 'apns', name: 'Apple APNs', provider: 'Apple', providerId: 'apple', description: 'Native iOS push notification delivery with p8 key authentication.', categories: ['notifications', 'security'], version: '1.5.0' },
   { id: 'onesignal', name: 'OneSignal', provider: 'OneSignal', providerId: 'other', description: 'Multi-platform notification orchestration with A/B testing and analytics.', categories: ['notifications'], version: '0.8.0', future: true },
   { id: 'app-check', name: 'Firebase App Check', provider: 'Google Firebase', providerId: 'firebase', description: 'Attestation service that protects backend resources from abuse.', categories: ['security'], version: '1.2.0' },
   { id: 'keychain', name: 'Secure Keychain', provider: 'Studio Core', providerId: 'studio', description: 'iOS Keychain and Android Keystore abstraction for sensitive credential storage.', categories: ['security'], version: '2.0.0' },
@@ -281,13 +316,13 @@ export const INFRA_CATEGORIES: InfraPluginCategory[] = [
         provider: 'Expo',
         description: 'Managed cloud builds for iOS and Android with environment profiles and build caching.',
         configFields: [
-          { key: 'defaultProfile', label: 'Default Build Profile', placeholder: 'development', type: 'select', options: ['development', 'staging', 'production'] },
+          { key: 'defaultProfile', label: 'Default Build Profile', placeholder: 'development', type: 'select', options: ['development', 'preview', 'production'] },
           { key: 'node', label: 'Node Version', placeholder: '20', type: 'select', options: ['18', '20', '22'] },
         ],
         setupTasks: [
           { id: 'eas-1', title: 'Authenticate with Expo', description: 'Validate robot token and resolve account slug', duration: 1000 },
           { id: 'eas-2', title: 'Create EAS project', description: 'Initialize EAS project linked to bundle ID', duration: 1500 },
-          { id: 'eas-3', title: 'Generate eas.json', description: 'Create build profiles: development, staging, production', duration: 700 },
+          { id: 'eas-3', title: 'Generate eas.json', description: 'Create build profiles: development, preview, production', duration: 700 },
           { id: 'eas-4', title: 'Configure environment secrets', description: 'Upload API keys and secrets to EAS secret store', duration: 900 },
         ],
       },
@@ -438,6 +473,26 @@ export const PROJECT_SETUP_CONFIGS: Record<ProviderId, ProjectSetupConfig> = {
     ],
     pluginIds: ['eas-build', 'eas-submit'],
     docsUrl: 'https://docs.expo.dev/eas/',
+    disconnectSupported: false,
+  },
+  apple: {
+    providerId: 'apple',
+    name: 'Apple Developer',
+    icon: ShieldCheck,
+    iconColorClass: 'text-zinc-700 dark:text-zinc-300',
+    iconBgClass: 'bg-zinc-500/10',
+    introDescription:
+      'Apple integration captures the Team ID and an App Store Connect Team API key (Issuer ID + Key ID + .p8) at the organization scope. Studio only supports the fully-automated flow, so all four credentials are required up front; once stored every project can run signing, provisioning, APNs, and TestFlight steps without further prompts.',
+    setupMethod: 'trigger',
+    triggerLabel: 'Open Apple setup steps',
+    triggerDescription:
+      'Run the Apple setup steps in the project Setup graph, starting with Register App ID.',
+    steps: [
+      { id: 'register_app_id', label: 'Register App ID', description: 'Create or verify the bundle identifier in Apple Developer/App Store Connect using org-scoped ASC credentials.' },
+      { id: 'create_listing', label: 'Create ASC app listing', description: 'Create or verify the App Store Connect app record for this bundle.' },
+    ],
+    pluginIds: ['apns'],
+    docsUrl: 'https://developer.apple.com/account',
     disconnectSupported: false,
   },
 };

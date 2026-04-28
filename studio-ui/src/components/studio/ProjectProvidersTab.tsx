@@ -10,11 +10,13 @@ import {
   Link2,
   Loader2,
   Settings2,
+  ShieldCheck,
   Unlink,
   Zap,
 } from 'lucide-react';
 import { ALL_REGISTRY_PLUGINS, INTEGRATION_CONFIGS, PROJECT_SETUP_CONFIGS } from './constants';
 import { providerToBackendKey } from './helpers';
+import { AppleIntegrationFlow } from './AppleIntegrationFlow';
 import { IntegrationModal } from './IntegrationModal';
 import { StepTimeline } from './StepTimeline';
 import { mapGcpStepToSetupStatus } from './types';
@@ -35,6 +37,7 @@ export function ProjectProvidersTab({
   firebaseConnectionDetails,
   githubOrgConnected,
   expoOrgConnected,
+  appleOrgConnected,
   githubProjectInitialized,
   expoProjectInitialized,
   integrationDependencyStatus,
@@ -50,6 +53,7 @@ export function ProjectProvidersTab({
   firebaseConnectionDetails: FirebaseConnectionDetails | null;
   githubOrgConnected: boolean;
   expoOrgConnected: boolean;
+  appleOrgConnected: boolean;
   githubProjectInitialized: boolean;
   expoProjectInitialized: boolean;
   integrationDependencyStatus: Record<string, IntegrationDependencyProviderStatus>;
@@ -60,7 +64,7 @@ export function ProjectProvidersTab({
   onRefresh: () => void | Promise<void>;
 }) {
   const [activeProviderTab, setActiveProviderTab] = useState<ProviderId>('firebase');
-  const [openModal, setOpenModal] = useState<'github' | 'expo' | null>(null);
+  const [openModal, setOpenModal] = useState<'github' | 'expo' | 'apple' | null>(null);
 
   const [gcpPath, setGcpPath] = useState<'oauth' | 'manual'>('oauth');
   const [saJson, setSaJson] = useState('');
@@ -85,6 +89,7 @@ export function ProjectProvidersTab({
   const gcpCfg = PROJECT_SETUP_CONFIGS.firebase;
   const ghCfg = PROJECT_SETUP_CONFIGS.github;
   const expoCfg = PROJECT_SETUP_CONFIGS.expo;
+  const appleCfg = PROJECT_SETUP_CONFIGS.apple;
 
   const oauthStepById = useMemo(() => {
     return Object.fromEntries((gcpOauthProgress?.steps ?? []).map((s) => [s.id, s])) as Partial<
@@ -247,10 +252,26 @@ export function ProjectProvidersTab({
             ? 'text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20'
             : 'text-muted-foreground bg-muted border-border',
     },
+    {
+      id: 'apple',
+      label: 'Apple',
+      icon: ShieldCheck,
+      iconColor: 'text-zinc-700 dark:text-zinc-300',
+      statusLabel: appleOrgConnected ? 'Connected' : 'Not connected',
+      statusColor: appleOrgConnected
+        ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+        : 'text-muted-foreground bg-muted border-border',
+    },
   ];
 
   const modalConfig = openModal ? (INTEGRATION_CONFIGS.find((c) => c.id === openModal) ?? null) : null;
-  const modalIsConnected = openModal === 'github' ? githubOrgConnected : openModal === 'expo' ? expoOrgConnected : false;
+  const modalIsConnected = openModal === 'github'
+    ? githubOrgConnected
+    : openModal === 'expo'
+      ? expoOrgConnected
+      : openModal === 'apple'
+        ? appleOrgConnected
+        : false;
 
   return (
     <div className="space-y-0 max-w-5xl">
@@ -629,11 +650,98 @@ export function ProjectProvidersTab({
             </div>
           </motion.div>
         )}
+
+        {/* ── Apple tab ── */}
+        {activeProviderTab === 'apple' && (
+          <motion.div
+            key="apple"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.18 }}
+            className="space-y-6"
+          >
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+              <div className="lg:col-span-2 rounded-2xl border border-border bg-muted/20 p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-zinc-500/10">
+                    <ShieldCheck size={20} className="text-zinc-700 dark:text-zinc-300" />
+                  </div>
+                  <div>
+                    <p className="font-semibold">Apple Developer</p>
+                    <p className="text-[11px] text-muted-foreground">Organization-level defaults</p>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">{appleCfg.introDescription}</p>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2">Plugins unlocked</p>
+                  <div className="grid gap-2">{pluginCards(appleCfg.pluginIds)}</div>
+                </div>
+                <div className="rounded-lg border border-dashed border-border bg-muted/20 p-3">
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1.5">Org connect request</p>
+                  <pre className="text-[10px] font-mono text-foreground/90 whitespace-pre-wrap leading-relaxed">
+                    {'POST /api/organization/integrations/apple/connect\n{\n  "teamId":      "<APPLE_TEAM_ID>",\n  "ascIssuerId": "<ASC_ISSUER_UUID>",\n  "ascApiKeyId": "<ASC_KEY_ID>",\n  "ascApiKeyP8": "<.p8 file contents>"\n}'}
+                  </pre>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setOpenModal('apple')}
+                  className={`w-full flex items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-bold transition-colors ${
+                    appleOrgConnected
+                      ? 'border border-border hover:bg-accent text-foreground'
+                      : 'bg-primary text-primary-foreground hover:opacity-90'
+                  }`}
+                >
+                  {appleOrgConnected ? <><Settings2 size={14} />Manage connection</> : <><Link2 size={14} />Connect Apple</>}
+                </button>
+              </div>
+
+              <div className="lg:col-span-3 rounded-2xl border border-border bg-card p-5 md:p-6 space-y-5 shadow-sm">
+                <div>
+                  <p className="font-semibold text-sm mb-1">Project Apple setup steps</p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{appleCfg.triggerDescription}</p>
+                </div>
+                {!appleOrgConnected && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-800 dark:text-amber-200 flex gap-2">
+                    <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                    <span>Connect Apple defaults first so project setup can resolve Apple team context automatically.</span>
+                  </div>
+                )}
+                <StepTimeline
+                  steps={appleCfg.steps}
+                  stepStatuses={Object.fromEntries(
+                    appleCfg.steps.map((s) => [s.id, appleOrgConnected ? 'completed' : 'idle' as SetupPlanStepStatus]),
+                  )}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Continue in the project <span className="font-semibold">Setup</span> tab to run Apple provisioning steps
+                  like <span className="font-mono">Register App ID</span> and <span className="font-mono">Create ASC App Listing</span>.
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       {/* IntegrationModal overlay for org-level connections */}
       <AnimatePresence>
-        {openModal && modalConfig && (
+        {openModal === 'apple' && (
+          <AppleIntegrationFlow
+            key="apple-flow"
+            isConnected={modalIsConnected}
+            connectionDetails={null}
+            onClose={() => setOpenModal(null)}
+            onConnect={async (fields) => {
+              await onConnect('apple', fields);
+            }}
+            onDisconnect={async () => {
+              await onDisconnect('apple');
+              setOpenModal(null);
+              await onRefresh();
+            }}
+          />
+        )}
+        {openModal && openModal !== 'apple' && modalConfig && (
           <IntegrationModal
             key={openModal}
             config={modalConfig}

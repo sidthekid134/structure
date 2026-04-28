@@ -25,8 +25,9 @@ const DEFAULT_SENSITIVE_KEYS = new Set([
   'gcp_credentials',
   'github_token',
   'expo_token',
-  'apns_key_p8',
   'asc_api_key_p8',
+  'apple_auth_key_p8_apns',
+  'apple_auth_key_p8_sign_in_with_apple',
 ]);
 
 /** Default presentation keyed by `ResourceOutput.key`. Extend as new resources are produced. */
@@ -62,6 +63,17 @@ const RESOURCE_DISPLAY_BY_KEY: Record<string, ResourceOutputPresentation> = {
       },
     ],
   },
+  firestore_database_id: {
+    primaryHrefTemplate:
+      'https://console.firebase.google.com/project/{upstream.firebase_project_id}/firestore',
+    relatedLinks: [
+      {
+        label: 'Firestore in Cloud Console',
+        hrefTemplate: 'https://console.cloud.google.com/firestore?project={upstream.gcp_project_id}',
+      },
+    ],
+  },
+  firestore_location: {},
   github_repo_url: {
     primaryLinkFromValue: true,
     relatedLinks: [
@@ -72,11 +84,6 @@ const RESOURCE_DISPLAY_BY_KEY: Record<string, ResourceOutputPresentation> = {
   github_environment_id: {
     relatedLinks: [
       { label: 'GitHub Environments', hrefTemplate: '{upstream.github_repo_url}/settings/environments' },
-    ],
-  },
-  github_webhook_id: {
-    relatedLinks: [
-      { label: 'Webhooks', hrefTemplate: '{upstream.github_repo_url}/settings/hooks' },
     ],
   },
   eas_project_id: {
@@ -91,10 +98,45 @@ const RESOURCE_DISPLAY_BY_KEY: Record<string, ResourceOutputPresentation> = {
     relatedLinks: [{ label: 'Play Console', href: 'https://play.google.com/console' }],
   },
   cloudflare_zone_id: {
-    primaryHrefTemplate: 'https://dash.cloudflare.com/?zoneId={value}',
+    primaryHrefTemplate:
+      'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
     relatedLinks: [
-      { label: 'Cloudflare dashboard', href: 'https://dash.cloudflare.com/' },
-      { label: 'DNS docs', href: 'https://developers.cloudflare.com/dns/' },
+      {
+        label: 'Zone overview',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      {
+        label: 'Zone DNS',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/dns/records',
+      },
+      {
+        label: 'Zone SSL/TLS',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}/ssl-tls/overview',
+      },
+      { label: 'Zone dashboard fallback', hrefTemplate: 'https://dash.cloudflare.com/?zoneId={value}' },
+    ],
+  },
+  cloudflare_zone_status: {
+    relatedLinks: [
+      {
+        label: 'Zone overview',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      { label: 'Zone dashboard fallback', hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}' },
+    ],
+  },
+  cloudflare_zone_nameservers: {
+    relatedLinks: [
+      {
+        label: 'Zone overview',
+        hrefTemplate:
+          'https://dash.cloudflare.com/{upstream.cloudflare_account_id}/{upstream.cloudflare_zone_domain}',
+      },
+      { label: 'Zone dashboard fallback', hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}' },
     ],
   },
   domain_name: {
@@ -145,6 +187,12 @@ const NODE_PORTAL_LINKS_BY_NODE_KEY: Record<string, CompletionPortalLink[]> = {
       hrefTemplate: 'https://console.firebase.google.com/project/{upstream.firebase_project_id}',
     },
   ],
+  'firebase:create-firestore-db': [
+    {
+      label: 'Open Firestore',
+      hrefTemplate: 'https://console.firebase.google.com/project/{upstream.firebase_project_id}/firestore',
+    },
+  ],
   'github:create-repository': [
     { label: 'Open repository', hrefTemplate: '{upstream.github_repo_url}' },
     { label: 'Repository settings', hrefTemplate: '{upstream.github_repo_url}/settings' },
@@ -158,15 +206,16 @@ const NODE_PORTAL_LINKS_BY_NODE_KEY: Record<string, CompletionPortalLink[]> = {
   'github:deploy-workflows': [
     { label: 'Actions', hrefTemplate: '{upstream.github_repo_url}/actions' },
   ],
-  'github:configure-webhook': [
-    { label: 'Webhooks', hrefTemplate: '{upstream.github_repo_url}/settings/hooks' },
-  ],
   'user:provide-github-pat': [{ label: 'GitHub token settings', href: 'https://github.com/settings/tokens' }],
   'user:provide-expo-token': [{ label: 'Expo access tokens', href: 'https://expo.dev/settings/access-tokens' }],
+  'user:install-expo-github-app': [
+    { label: 'Expo GitHub integration docs', href: 'https://docs.expo.dev/eas-update/github-integration/' },
+    { label: 'GitHub repository', hrefTemplate: '{upstream.github_repo_url}' },
+    { label: 'Expo account settings', href: 'https://expo.dev/settings' },
+  ],
   'user:setup-gcp-billing': [{ label: 'Google Cloud billing', href: 'https://console.cloud.google.com/billing' }],
   'user:enroll-apple-developer': [{ label: 'Apple Developer Program', href: 'https://developer.apple.com/programs/enroll/' }],
   'user:enroll-google-play': [{ label: 'Play Console signup', href: 'https://play.google.com/console/signup' }],
-  'user:acquire-domain': [{ label: 'Cloudflare domains', href: 'https://dash.cloudflare.com/' }],
 };
 
 function deepMergePresentation(
@@ -176,14 +225,20 @@ function deepMergePresentation(
   if (!override) return base;
   return {
     sensitive: override.sensitive ?? base.sensitive,
+    destinationType: override.destinationType ?? base.destinationType,
+    secretType: override.secretType ?? base.secretType,
+    writeBehavior: override.writeBehavior ?? base.writeBehavior,
     primaryLinkFromValue: override.primaryLinkFromValue ?? base.primaryLinkFromValue,
     primaryHrefTemplate: override.primaryHrefTemplate ?? base.primaryHrefTemplate,
     relatedLinks: [...(base.relatedLinks ?? []), ...(override.relatedLinks ?? [])],
   };
 }
 
-export function mergeResourcePresentation(resource: ResourceOutput): ResourceOutputPresentation {
-  const reg = RESOURCE_DISPLAY_BY_KEY[resource.key] ?? {};
+export function mergeResourcePresentation(
+  resource: ResourceOutput,
+  dynamicDisplayByKey?: Record<string, ResourceOutputPresentation>,
+): ResourceOutputPresentation {
+  const reg = dynamicDisplayByKey?.[resource.key] ?? RESOURCE_DISPLAY_BY_KEY[resource.key] ?? {};
   const graph = resource.presentation ?? {};
   const merged = deepMergePresentation(reg, graph);
   const sensitiveDefault = DEFAULT_SENSITIVE_KEYS.has(resource.key);
@@ -231,10 +286,16 @@ export function collectUpstreamResources(nodeStates: Record<string, NodeState>):
   return out;
 }
 
-export function mergeNodePortalLinks(node: ProvisioningGraphNode): CompletionPortalLink[] {
+export function mergeNodePortalLinks(
+  node: ProvisioningGraphNode,
+  dynamicPortalLinks?: Record<string, CompletionPortalLink[]>,
+): CompletionPortalLink[] {
   const fromNode = node.type === 'step' || node.type === 'user-action' ? node.completionPortalLinks ?? [] : [];
+  const fromDynamic = dynamicPortalLinks?.[node.key] ?? [];
   const fromRegistry = NODE_PORTAL_LINKS_BY_NODE_KEY[node.key] ?? [];
-  return [...fromRegistry, ...fromNode];
+  // Dynamic overrides static; node overrides both
+  const combined = fromDynamic.length > 0 ? [...fromDynamic, ...fromNode] : [...fromRegistry, ...fromNode];
+  return combined;
 }
 
 function resolveRelatedLink(
@@ -282,8 +343,9 @@ export function getResolvedRelatedLinks(
 export function resolvedNodePortalLinks(
   node: ProvisioningGraphNode,
   upstream: Record<string, string>,
+  dynamicPortalLinks?: Record<string, CompletionPortalLink[]>,
 ): Array<{ label: string; href: string }> {
-  const merged = mergeNodePortalLinks(node);
+  const merged = mergeNodePortalLinks(node, dynamicPortalLinks);
   const out: Array<{ label: string; href: string }> = [];
   for (const link of merged) {
     const r = resolvePortalLink(link, upstream);

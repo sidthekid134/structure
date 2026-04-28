@@ -5,6 +5,11 @@ import {
   propagateJourneyPhases,
   validatePlanAcyclic,
 } from '../provisioning/journey-phases.js';
+import { registerBuiltinPlugins } from '../plugins/builtin/index.js';
+
+beforeAll(() => {
+  registerBuiltinPlugins();
+});
 
 function ua(
   key: string,
@@ -109,7 +114,7 @@ describe('journey-phases', () => {
 
   it('buildPlanViewModel includes canonical order and phases for environments', () => {
     const nodes: ProvisioningNode[] = [ua('a', 'account-enrollment')];
-    const vm = buildPlanViewModel(nodes, ['prod', 'dev']);
+    const vm = buildPlanViewModel(nodes, ['production', 'development']);
     expect(vm.canonicalNodeOrder).toEqual(['a']);
     expect(vm.journeyPhaseByNodeKey['a']).toBe('accounts');
     expect(vm.sequentialExecutionItems).toEqual([{ nodeKey: 'a' }]);

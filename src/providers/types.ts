@@ -13,16 +13,13 @@ export const PLATFORM_CORE_VERSION = '1.0';
 // Provider type literals
 // ---------------------------------------------------------------------------
 
-export type ProviderType =
-  | 'firebase'
-  | 'github'
-  | 'eas'
-  | 'apple'
-  | 'google-play'
-  | 'cloudflare'
-  | 'oauth';
+/**
+ * Open branded string — built-in providers plus any plugin-contributed ones.
+ * Use BuiltinProviderType for exhaustive checks against the built-in set.
+ */
+export type ProviderType = string & { readonly __brand?: 'ProviderType' };
 
-export const PROVIDER_TYPES: readonly ProviderType[] = [
+export const BUILTIN_PROVIDERS = [
   'firebase',
   'github',
   'eas',
@@ -32,8 +29,13 @@ export const PROVIDER_TYPES: readonly ProviderType[] = [
   'oauth',
 ] as const;
 
-// Dependency order for reconciliation
-export const PROVIDER_DEPENDENCY_ORDER: readonly ProviderType[] = [
+export type BuiltinProviderType = (typeof BUILTIN_PROVIDERS)[number];
+
+/** @deprecated Use globalPluginRegistry.getProviders() for the full set including plugin providers */
+export const PROVIDER_TYPES: readonly string[] = BUILTIN_PROVIDERS;
+
+/** @deprecated Use globalPluginRegistry.resolveProviderOrder() */
+export const PROVIDER_DEPENDENCY_ORDER: readonly string[] = [
   'firebase',
   'github',
   'eas',
@@ -47,7 +49,7 @@ export const PROVIDER_DEPENDENCY_ORDER: readonly ProviderType[] = [
 // Shared supporting types
 // ---------------------------------------------------------------------------
 
-export type Environment = 'dev' | 'preview' | 'prod';
+export type Environment = 'development' | 'preview' | 'production';
 
 export interface BranchProtectionRule {
   branch: string;
@@ -95,6 +97,10 @@ export interface EasManifestConfig {
   project_name: string;
   organization?: string;
   environments: Environment[];
+  /** iOS bundle id from the Studio project — used when wiring App Store Connect API key in Expo for EAS Submit. */
+  bundle_id?: string;
+  /** Android application id — defaults to bundle_id when not set separately. */
+  android_package?: string;
 }
 
 export interface AppleManifestConfig {
@@ -116,6 +122,9 @@ export interface GooglePlayManifestConfig {
 export interface CloudflareManifestConfig {
   readonly provider: 'cloudflare';
   domain: string;
+  zone_domain?: string;
+  domain_mode?: 'zone-root' | 'subdomain';
+  dns_record_name?: string;
   deep_link_routes: string[];
   ssl_mode: 'full' | 'flexible' | 'strict';
 }
@@ -128,6 +137,12 @@ export interface OAuthManifestConfig {
   firebase_project_id: string;
 }
 
+/** Catch-all config for plugin-contributed providers not in the built-in set. */
+export interface CustomProviderConfig {
+  readonly provider: string;
+  [key: string]: unknown;
+}
+
 export type ProviderConfig =
   | FirebaseManifestConfig
   | GitHubManifestConfig
@@ -135,7 +150,8 @@ export type ProviderConfig =
   | AppleManifestConfig
   | GooglePlayManifestConfig
   | CloudflareManifestConfig
-  | OAuthManifestConfig;
+  | OAuthManifestConfig
+  | CustomProviderConfig;
 
 // ---------------------------------------------------------------------------
 // Provider manifest (top-level document)
@@ -204,6 +220,13 @@ export interface DriftReport {
 
 export type ReconcileDirection = 'manifest→live' | 'live→manifest';
 
+/**
+ * How a step invocation should behave:
+ * - create: default idempotent provision path
+ * - refresh: force regeneration/rebinding for steps that support rotation
+ */
+export type StepExecutionIntent = 'create' | 'refresh';
+
 // ---------------------------------------------------------------------------
 // Provider adapter interface
 // ---------------------------------------------------------------------------
@@ -215,6 +238,7 @@ export interface StepContext {
   upstreamResources: Record<string, string>;
   vaultRead: (key: string) => Promise<string | null>;
   vaultWrite: (key: string, value: string) => Promise<void>;
+  executionIntent?: StepExecutionIntent;
 }
 
 export interface StepResult {

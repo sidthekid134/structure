@@ -8,12 +8,14 @@ import type {
   ProvisioningStepNode,
   UserActionNode,
 } from './graph.types.js';
+import { MODULE_CATALOG } from './module-catalog.js';
+import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 
 // ---------------------------------------------------------------------------
 // Phase ids (fixed journey order for UX + tie-breaking)
 // ---------------------------------------------------------------------------
 
-export const JOURNEY_PHASE_ORDER = [
+export const BUILTIN_JOURNEY_PHASES = [
   'accounts',
   'domain_dns',
   'credentials',
@@ -30,13 +32,21 @@ export const JOURNEY_PHASE_ORDER = [
   'teardown',
 ] as const;
 
-export type JourneyPhaseId = (typeof JOURNEY_PHASE_ORDER)[number];
+export type BuiltinJourneyPhaseId = (typeof BUILTIN_JOURNEY_PHASES)[number];
 
-const PHASE_RANK: Record<JourneyPhaseId, number> = Object.fromEntries(
-  JOURNEY_PHASE_ORDER.map((id, i) => [id, i]),
-) as Record<JourneyPhaseId, number>;
+/**
+ * Open string — built-in phases plus any plugin-contributed ones.
+ * Use BuiltinJourneyPhaseId for exhaustive checks against the built-in set.
+ */
+export type JourneyPhaseId = string & { readonly __brand?: 'JourneyPhaseId' };
 
-export const JOURNEY_PHASE_TITLE: Record<JourneyPhaseId, string> = {
+/**
+ * Mutable so the plugin registry can inject custom phases before the server starts.
+ * Always treat this as ordered — position determines rendering order in the sidebar.
+ */
+export const JOURNEY_PHASE_ORDER: string[] = [...BUILTIN_JOURNEY_PHASES];
+
+export const JOURNEY_PHASE_TITLE: Record<string, string> = {
   accounts: 'Accounts & billing',
   domain_dns: 'Domain & DNS',
   credentials: 'Credentials & access',
@@ -53,6 +63,12 @@ export const JOURNEY_PHASE_TITLE: Record<JourneyPhaseId, string> = {
   teardown: 'Teardown',
 };
 
+function getPhaseRank(): Map<string, number> {
+  const map = new Map<string, number>();
+  JOURNEY_PHASE_ORDER.forEach((id, i) => map.set(id, i));
+  return map;
+}
+
 function isStep(n: ProvisioningNode): n is ProvisioningStepNode {
   return n.type === 'step';
 }
@@ -63,11 +79,21 @@ function isUserAction(n: ProvisioningNode): n is UserActionNode {
 
 /**
  * Initial journey phase from node semantics only (before dependency propagation).
+ *
+ * When the plugin registry is bootstrapped, the per-step phase is looked up from
+ * the plugin's `defaultJourneyPhase` and `journeyPhaseOverrides`.
+ * The built-in provider/key heuristics remain as a fallback for unknown nodes.
  */
 export function semanticJourneyPhase(node: ProvisioningNode): JourneyPhaseId {
   if (isStep(node) && node.direction === 'teardown') return 'teardown';
 
   if (isUserAction(node)) {
+    // Try registry first for user actions
+    if (globalPluginRegistry.hasPlugin('firebase-core')) {
+      const phase = globalPluginRegistry.getJourneyPhase(node.key);
+      if (phase !== 'verification') return phase;
+    }
+    // Fallback to category heuristic
     switch (node.category) {
       case 'account-enrollment':
         return 'accounts';
@@ -85,6 +111,13 @@ export function semanticJourneyPhase(node: ProvisioningNode): JourneyPhaseId {
     }
   }
 
+  // For provisioning steps, consult the registry first
+  if (globalPluginRegistry.hasPlugin('firebase-core')) {
+    const phase = globalPluginRegistry.getJourneyPhase(node.key);
+    if (phase && JOURNEY_PHASE_ORDER.includes(phase)) return phase;
+  }
+
+  // Built-in provider/key heuristics (fallback when registry is not populated)
   const step = node as ProvisioningStepNode;
   const k = step.key;
 
@@ -94,7 +127,6 @@ export function semanticJourneyPhase(node: ProvisioningNode): JourneyPhaseId {
     if (
       k.includes('inject-secrets') ||
       k.includes('deploy-workflows') ||
-      k.includes('webhook') ||
       k.includes('workflow')
     ) {
       return 'cicd';
@@ -130,10 +162,11 @@ function nodeOrderHint(node: ProvisioningNode): number {
  * For each node, phase rank = max(semantic rank, max(dep phase ranks)).
  */
 export function propagateJourneyPhases(nodes: ProvisioningNode[]): Map<string, JourneyPhaseId> {
+  const phaseRank = getPhaseRank();
   const nodeMap = new Map(nodes.map((n) => [n.key, n]));
   const semanticRank = new Map<string, number>();
   for (const n of nodes) {
-    semanticRank.set(n.key, PHASE_RANK[semanticJourneyPhase(n)]);
+    semanticRank.set(n.key, phaseRank.get(semanticJourneyPhase(n)) ?? 0);
   }
 
   const topoKeys = topologicalSortKeys(nodes);
@@ -227,7 +260,8 @@ export function computeCanonicalNodeOrder(
     }
   }
 
-  const rankOf = (key: string) => PHASE_RANK[journeyPhaseByNodeKey.get(key) ?? 'verification']!;
+  const phaseRank = getPhaseRank();
+  const rankOf = (key: string) => phaseRank.get(journeyPhaseByNodeKey.get(key) ?? 'verification') ?? 0;
 
   const pickNext = (candidates: string[]): string => {
     return candidates.sort((a, b) => {
@@ -300,6 +334,30 @@ export interface PlanViewModel {
   journeyPhaseByNodeKey: Record<string, JourneyPhaseId>;
   journeyPhaseOrder: JourneyPhaseId[];
   sequentialExecutionItems: ExecutionPlanItem[];
+  /** Maps node key → module id for attribution in the UI. */
+  moduleByNodeKey: Record<string, string>;
+  /** Maps module id → human-readable label. */
+  moduleLabelById: Record<string, string>;
+}
+
+function buildModuleByNodeKey(): { moduleByNodeKey: Record<string, string>; moduleLabelById: Record<string, string> } {
+  const moduleByNodeKey: Record<string, string> = {};
+  const moduleLabelById: Record<string, string> = {};
+
+  for (const mod of Object.values(MODULE_CATALOG)) {
+    moduleLabelById[mod.id] = mod.label;
+    for (const key of mod.stepKeys) {
+      if (!(key in moduleByNodeKey)) moduleByNodeKey[key] = mod.id;
+    }
+    for (const key of mod.teardownStepKeys) {
+      if (!(key in moduleByNodeKey)) moduleByNodeKey[key] = mod.id;
+    }
+    for (const key of mod.userActionKeys ?? []) {
+      if (!(key in moduleByNodeKey)) moduleByNodeKey[key] = mod.id;
+    }
+  }
+
+  return { moduleByNodeKey, moduleLabelById };
 }
 
 export function buildPlanViewModel(
@@ -324,11 +382,15 @@ export function buildPlanViewModel(
     journeyPhaseOrder.push(phase);
   }
 
+  const { moduleByNodeKey, moduleLabelById } = buildModuleByNodeKey();
+
   return {
     canonicalNodeOrder,
     journeyPhaseByNodeKey,
     journeyPhaseOrder,
     sequentialExecutionItems,
+    moduleByNodeKey,
+    moduleLabelById,
   };
 }
 
