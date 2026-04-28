@@ -12,6 +12,7 @@ import {
   Smartphone,
   Sparkles,
 } from 'lucide-react';
+import { usePluginCatalog } from './usePluginCatalog';
 import type {
   ModuleDefinition,
   ModuleFunctionGroupId,
@@ -20,306 +21,107 @@ import type {
   ProjectTemplateId,
 } from './types';
 
-const MODULES: ModuleDefinition[] = [
-  {
-    id: 'firebase-core',
-    label: 'GCP Core',
-    description: 'Project + service account bootstrap.',
-    provider: 'firebase',
-    functionGroupId: 'cloud-foundation',
-    requiredModules: [],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'firebase-auth',
-    label: 'Firebase Auth',
-    description: 'Authentication provider setup.',
-    provider: 'oauth',
-    functionGroupId: 'auth-identity',
-    requiredModules: ['firebase-core'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'firebase-firestore',
-    label: 'Firestore',
-    description: 'Database rules and provisioning.',
-    provider: 'firebase',
-    functionGroupId: 'persistent-store',
-    requiredModules: ['firebase-core'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'firebase-storage',
-    label: 'Storage',
-    description: 'Cloud Storage and rules.',
-    provider: 'firebase',
-    functionGroupId: 'object-storage',
-    requiredModules: ['firebase-core'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'firebase-messaging',
-    label: 'Messaging',
-    description: 'Push notifications wiring.',
-    provider: 'firebase',
-    functionGroupId: 'messaging',
-    requiredModules: ['firebase-core'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'github-repo',
-    label: 'GitHub Repository',
-    description: 'Repository creation and hooks.',
-    provider: 'github',
-    functionGroupId: 'source-control',
-    requiredModules: [],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'github-ci',
-    label: 'GitHub CI/CD',
-    description: 'Workflow and environment automation.',
-    provider: 'github',
-    functionGroupId: 'ci-automation',
-    requiredModules: ['github-repo'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'eas-builds',
-    label: 'EAS Builds',
-    description: 'Build profile setup for Expo.',
-    provider: 'eas',
-    functionGroupId: 'mobile-release',
-    requiredModules: ['github-repo'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'eas-submit',
-    label: 'EAS Submit',
-    description: 'Store submission automation.',
-    provider: 'eas',
-    functionGroupId: 'mobile-release',
-    requiredModules: ['eas-builds', 'apple-signing', 'google-play-publishing'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'apple-signing',
-    label: 'Apple Signing',
-    description: 'Apple IDs, profiles, and keys.',
-    provider: 'apple',
-    functionGroupId: 'apple-distribution',
-    requiredModules: [],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'google-play-publishing',
-    label: 'Google Play',
-    description: 'Play app setup and service account.',
-    provider: 'google-play',
-    functionGroupId: 'google-play',
-    requiredModules: ['firebase-core'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'cloudflare-domain',
-    label: 'Cloudflare Domain',
-    description: 'DNS and deep-link domain setup.',
-    provider: 'cloudflare',
-    functionGroupId: 'domain-edge',
-    requiredModules: [],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-  {
-    id: 'oauth-social',
-    label: 'OAuth Social',
-    description: 'Google/Apple social auth wiring.',
-    provider: 'oauth',
-    functionGroupId: 'auth-identity',
-    requiredModules: ['firebase-auth', 'cloudflare-domain'],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: [],
-  },
-];
+// ---------------------------------------------------------------------------
+// Catalog conversion (live /api/plugin-catalog → wizard data shapes)
+// ---------------------------------------------------------------------------
 
-const TEMPLATES: ProjectTemplate[] = [
-  {
-    id: 'mobile-app',
-    label: 'Mobile App',
-    description: 'Stores, signing, EAS, push, and full CI — best for Expo / React Native shipping to iOS & Android.',
-    modules: [
-      'firebase-core',
-      'firebase-auth',
-      'firebase-firestore',
-      'firebase-storage',
-      'firebase-messaging',
-      'github-repo',
-      'github-ci',
-      'eas-builds',
-      'eas-submit',
-      'apple-signing',
-      'google-play-publishing',
-      'cloudflare-domain',
-      'oauth-social',
-    ],
-  },
-  {
-    id: 'web-app',
-    label: 'Web App',
-    description: 'Auth, data, GitHub automation, and domain — without mobile store or EAS modules.',
-    modules: [
-      'firebase-core',
-      'firebase-auth',
-      'firebase-firestore',
-      'firebase-storage',
-      'github-repo',
-      'github-ci',
-      'cloudflare-domain',
-      'oauth-social',
-    ],
-  },
-  {
-    id: 'custom',
-    label: 'Custom',
-    description: 'Start from scratch and toggle only the capabilities you need.',
-    modules: [],
-  },
-];
+/**
+ * Synthetic UI-only template that means "start with no modules and toggle
+ * each capability manually". Always appended to the catalog template list.
+ */
+const CUSTOM_TEMPLATE: ProjectTemplate = {
+  id: 'custom',
+  label: 'Custom',
+  description: 'Start from scratch and toggle only the capabilities you need.',
+  modules: [],
+};
 
-const FUNCTION_GROUP_ORDER: ModuleFunctionGroupId[] = [
-  'cloud-foundation',
-  'persistent-store',
-  'object-storage',
-  'messaging',
-  'auth-identity',
-  'domain-edge',
-  'source-control',
-  'ci-automation',
-  'mobile-release',
-  'apple-distribution',
-  'google-play',
-];
+interface FunctionGroupVisual {
+  title: string;
+  subtitle: string;
+  dot: string;
+  ring: string;
+  softBg: string;
+  accent: string;
+}
 
-const FUNCTION_GROUP_STYLE: Record<
-  ModuleFunctionGroupId,
-  { title: string; subtitle: string; dot: string; ring: string; softBg: string; accent: string }
-> = {
-  'cloud-foundation': {
-    title: 'Cloud & project foundation',
-    subtitle: 'GCP/Firebase project and service bootstrap',
+/**
+ * Per-backend-group visual styling. Keys must match `functionGroup.id` values
+ * declared on the backend plugins (see src/plugins/builtin/*.plugin.ts). New
+ * groups land in DEFAULT_GROUP_VISUAL automatically until styled below.
+ */
+const FUNCTION_GROUP_VISUALS: Record<string, FunctionGroupVisual> = {
+  firebase: {
+    title: 'Firebase & GCP',
+    subtitle: 'Firebase services and Google Cloud infrastructure',
     dot: 'bg-orange-500',
     ring: 'ring-orange-500/20',
     softBg: 'from-orange-500/[0.07] to-transparent',
     accent: 'hsl(25 95% 53%)',
   },
-  'persistent-store': {
-    title: 'Persistent store',
-    subtitle: 'Structured application data',
-    dot: 'bg-emerald-500',
-    ring: 'ring-emerald-500/20',
-    softBg: 'from-emerald-500/[0.07] to-transparent',
-    accent: 'hsl(160 84% 39%)',
-  },
-  'object-storage': {
-    title: 'Object & file storage',
-    subtitle: 'User files, media, and bucket rules',
-    dot: 'bg-cyan-500',
-    ring: 'ring-cyan-500/20',
-    softBg: 'from-cyan-500/[0.07] to-transparent',
-    accent: 'hsl(189 94% 43%)',
-  },
-  messaging: {
-    title: 'Messaging & push',
-    subtitle: 'FCM and notification wiring',
-    dot: 'bg-sky-500',
-    ring: 'ring-sky-500/20',
-    softBg: 'from-sky-500/[0.07] to-transparent',
-    accent: 'hsl(199 89% 48%)',
-  },
-  'auth-identity': {
-    title: 'Authentication & identity',
-    subtitle: 'Sign-in providers and social OAuth',
-    dot: 'bg-violet-500',
-    ring: 'ring-violet-500/20',
-    softBg: 'from-violet-500/[0.07] to-transparent',
-    accent: 'hsl(263 70% 50%)',
-  },
-  'domain-edge': {
-    title: 'Domain & edge',
-    subtitle: 'DNS, SSL, and deep-link hosting',
-    dot: 'bg-amber-500',
-    ring: 'ring-amber-500/20',
-    softBg: 'from-amber-500/[0.07] to-transparent',
-    accent: 'hsl(38 92% 50%)',
-  },
-  'source-control': {
-    title: 'Source control',
-    subtitle: 'Repository and remotes',
+  github: {
+    title: 'GitHub',
+    subtitle: 'Source repository and CI/CD automation',
     dot: 'bg-slate-500 dark:bg-slate-400',
     ring: 'ring-slate-500/20',
     softBg: 'from-slate-500/[0.07] to-transparent',
     accent: 'hsl(215 16% 47%)',
   },
-  'ci-automation': {
-    title: 'CI & automation',
-    subtitle: 'Workflows, environments, and secrets in GitHub',
-    dot: 'bg-blue-500',
-    ring: 'ring-blue-500/20',
-    softBg: 'from-blue-500/[0.07] to-transparent',
-    accent: 'hsl(221 83% 53%)',
+  mobile: {
+    title: 'Mobile & App Stores',
+    subtitle: 'Mobile build, signing, and store publishing',
+    dot: 'bg-pink-500',
+    ring: 'ring-pink-500/20',
+    softBg: 'from-pink-500/[0.07] to-transparent',
+    accent: 'hsl(330 81% 60%)',
   },
-  'mobile-release': {
-    title: 'Mobile builds & submit',
-    subtitle: 'EAS build profiles and store submission',
-    dot: 'bg-indigo-500',
-    ring: 'ring-indigo-500/20',
-    softBg: 'from-indigo-500/[0.07] to-transparent',
-    accent: 'hsl(239 84% 67%)',
+  infrastructure: {
+    title: 'Infrastructure',
+    subtitle: 'Domain, SSL, and edge network configuration',
+    dot: 'bg-amber-500',
+    ring: 'ring-amber-500/20',
+    softBg: 'from-amber-500/[0.07] to-transparent',
+    accent: 'hsl(38 92% 50%)',
   },
-  'apple-distribution': {
-    title: 'Apple signing & distribution',
-    subtitle: 'Certificates, profiles, and App Store Connect',
-    dot: 'bg-zinc-500',
-    ring: 'ring-zinc-500/20',
-    softBg: 'from-zinc-500/[0.07] to-transparent',
-    accent: 'hsl(240 5% 65%)',
+  auth: {
+    title: 'Authentication',
+    subtitle: 'Social sign-in and OAuth configuration',
+    dot: 'bg-violet-500',
+    ring: 'ring-violet-500/20',
+    softBg: 'from-violet-500/[0.07] to-transparent',
+    accent: 'hsl(263 70% 50%)',
   },
-  'google-play': {
-    title: 'Google Play',
-    subtitle: 'Console app, API access, and releases',
-    dot: 'bg-green-500',
-    ring: 'ring-green-500/20',
-    softBg: 'from-green-500/[0.07] to-transparent',
-    accent: 'hsl(142 71% 45%)',
+  ai: {
+    title: 'AI & LLMs',
+    subtitle: 'Model providers and inference endpoints',
+    dot: 'bg-emerald-500',
+    ring: 'ring-emerald-500/20',
+    softBg: 'from-emerald-500/[0.07] to-transparent',
+    accent: 'hsl(160 84% 39%)',
   },
 };
 
-function resolveDependencies(input: ModuleId[]): ModuleId[] {
-  const byId = new Map(MODULES.map((m) => [m.id, m]));
+const DEFAULT_GROUP_VISUAL: FunctionGroupVisual = {
+  title: 'Other',
+  subtitle: 'Modules without an assigned capability group',
+  dot: 'bg-muted-foreground/40',
+  ring: 'ring-muted-foreground/10',
+  softBg: 'from-muted/40 to-transparent',
+  accent: 'hsl(215 16% 47%)',
+};
+
+function getGroupVisual(groupId: string | undefined): FunctionGroupVisual {
+  if (!groupId) return DEFAULT_GROUP_VISUAL;
+  return FUNCTION_GROUP_VISUALS[groupId] ?? DEFAULT_GROUP_VISUAL;
+}
+
+/**
+ * Returns the requested module ids plus the transitive closure of their
+ * `requiredModules`, in dependency-respecting order. Operates against a
+ * caller-supplied module list (sourced from the live catalog).
+ */
+function resolveDependencies(input: ModuleId[], modules: ModuleDefinition[]): ModuleId[] {
+  const byId = new Map(modules.map((m) => [m.id, m]));
   const seen = new Set<ModuleId>();
   const visiting = new Set<ModuleId>();
 
@@ -338,12 +140,21 @@ function resolveDependencies(input: ModuleId[]): ModuleId[] {
   return Array.from(seen);
 }
 
-/** Match loaded plan modules to a template, or `custom` if the set does not match any preset. */
-export function inferTemplateIdFromModules(moduleIds: ModuleId[]): ProjectTemplateId {
-  const resolved = new Set(resolveDependencies(moduleIds));
-  for (const template of TEMPLATES) {
+/**
+ * Match the saved plan's module set against the available templates and
+ * return the matching template id, falling back to `'custom'` when nothing
+ * matches. Caller passes the live template + module lists from the catalog
+ * so this is decoupled from any hardcoded fixtures.
+ */
+export function inferTemplateIdFromModules(
+  moduleIds: ModuleId[],
+  templates: ProjectTemplate[],
+  modules: ModuleDefinition[],
+): ProjectTemplateId {
+  const resolved = new Set(resolveDependencies(moduleIds, modules));
+  for (const template of templates) {
     if (template.id === 'custom') continue;
-    const expected = new Set(resolveDependencies(template.modules));
+    const expected = new Set(resolveDependencies(template.modules, modules));
     if (expected.size !== resolved.size) continue;
     let ok = true;
     for (const id of expected) {
@@ -354,7 +165,7 @@ export function inferTemplateIdFromModules(moduleIds: ModuleId[]): ProjectTempla
     }
     if (ok) return template.id;
   }
-  return 'custom';
+  return 'custom' as ProjectTemplateId;
 }
 
 function templateIcon(templateId: ProjectTemplateId) {
@@ -363,11 +174,10 @@ function templateIcon(templateId: ProjectTemplateId) {
   return Layers;
 }
 
-function moduleLabel(id: ModuleId): string {
-  return MODULES.find((m) => m.id === id)?.label ?? id;
-}
-
-/** Compute the depth tier for each module in the DAG (0 = no deps, 1 = depends on tier-0, etc.). */
+/**
+ * Compute the depth tier for each module in the DAG (0 = no deps, 1 =
+ * depends on tier-0, etc.). Pure: takes the modules slice in.
+ */
 function computeModuleTiers(mods: ModuleDefinition[]): Map<ModuleId, number> {
   const byId = new Map(mods.map((m) => [m.id, m]));
   const cache = new Map<ModuleId, number>();
@@ -431,11 +241,51 @@ export function ModuleSelectionWizard({
   savedModuleCount?: number | null;
 }) {
   const isModal = variant === 'modal';
-  const moduleById = useMemo(() => new Map(MODULES.map((m) => [m.id, m])), []);
+  const { catalog: pluginCatalog, loading: catalogLoading, error: catalogError } = usePluginCatalog();
+
+  // Derive the wizard-shaped module/template lists from the live catalog.
+  // Until the catalog is loaded these are empty, which causes the wizard to
+  // render the loading state below.
+  const modules: ModuleDefinition[] = useMemo(() => {
+    if (!pluginCatalog) return [];
+    return Object.values(pluginCatalog.raw.modules).map((entry) => ({
+      id: entry.id as ModuleId,
+      label: entry.label,
+      description: entry.description,
+      provider: entry.provider,
+      functionGroupId: (entry.functionGroupId ?? '') as ModuleFunctionGroupId,
+      requiredModules: entry.requiredModules as ModuleId[],
+      optionalModules: entry.optionalModules as ModuleId[],
+      stepKeys: [],
+      teardownStepKeys: [],
+    }));
+  }, [pluginCatalog]);
+
+  const templates: ProjectTemplate[] = useMemo(() => {
+    if (!pluginCatalog) return [CUSTOM_TEMPLATE];
+    const fromCatalog: ProjectTemplate[] = Object.values(pluginCatalog.raw.templates).map((t) => ({
+      id: t.id as ProjectTemplateId,
+      label: t.label,
+      description: t.description,
+      modules: t.modules as ModuleId[],
+    }));
+    return [...fromCatalog, CUSTOM_TEMPLATE];
+  }, [pluginCatalog]);
+
+  const groupOrder: ModuleFunctionGroupId[] = useMemo(() => {
+    if (!pluginCatalog) return [];
+    return pluginCatalog.raw.functionGroups
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .map((g) => g.id as ModuleFunctionGroupId);
+  }, [pluginCatalog]);
+
+  const moduleById = useMemo(() => new Map(modules.map((m) => [m.id, m])), [modules]);
+  const moduleLabel = useCallback((id: ModuleId) => moduleById.get(id)?.label ?? id, [moduleById]);
 
   const selectedSet = useMemo(
-    () => new Set(resolveDependencies(selectedModuleIds)),
-    [selectedModuleIds],
+    () => new Set(resolveDependencies(selectedModuleIds, modules)),
+    [selectedModuleIds, modules],
   );
 
   const requiredBySelected = useMemo(() => {
@@ -453,8 +303,8 @@ export function ModuleSelectionWizard({
   }, [selectedSet, moduleById]);
 
   const selectedList = useMemo(
-    () => MODULES.filter((m) => selectedSet.has(m.id)),
-    [selectedSet],
+    () => modules.filter((m) => selectedSet.has(m.id)),
+    [modules, selectedSet],
   );
 
   // ── Graph layout ──────────────────────────────────────────────────────────
@@ -462,24 +312,25 @@ export function ModuleSelectionWizard({
   const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
   const [lines, setLines] = useState<LineData[]>([]);
 
-  const tiers = useMemo(() => computeModuleTiers(MODULES), []);
+  const tiers = useMemo(() => computeModuleTiers(modules), [modules]);
 
   const columns = useMemo(() => {
     const map = new Map<number, ModuleDefinition[]>();
-    for (const mod of MODULES) {
+    for (const mod of modules) {
       const t = tiers.get(mod.id) ?? 0;
       if (!map.has(t)) map.set(t, []);
       map.get(t)!.push(mod);
     }
+    const groupRank = (id: ModuleFunctionGroupId) => {
+      const idx = groupOrder.indexOf(id);
+      // Unknown groups land at the end, preserving insertion order otherwise.
+      return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+    };
     for (const mods of map.values()) {
-      mods.sort(
-        (a, b) =>
-          FUNCTION_GROUP_ORDER.indexOf(a.functionGroupId) -
-          FUNCTION_GROUP_ORDER.indexOf(b.functionGroupId),
-      );
+      mods.sort((a, b) => groupRank(a.functionGroupId) - groupRank(b.functionGroupId));
     }
     return Array.from(map.entries()).sort(([a], [b]) => a - b);
-  }, [tiers]);
+  }, [tiers, modules, groupOrder]);
 
   const recomputeLines = useCallback(() => {
     const container = containerRef.current;
@@ -487,7 +338,7 @@ export function ModuleSelectionWizard({
     const cr = container.getBoundingClientRect();
     const next: LineData[] = [];
 
-    for (const mod of MODULES) {
+    for (const mod of modules) {
       const toEl = cardRefs.current.get(mod.id);
       if (!toEl) continue;
       const toR = toEl.getBoundingClientRect();
@@ -496,8 +347,10 @@ export function ModuleSelectionWizard({
         const fromEl = cardRefs.current.get(reqId);
         if (!fromEl) continue;
         const fromR = fromEl.getBoundingClientRect();
-        const srcMod = MODULES.find((m) => m.id === reqId);
-        const color = srcMod ? FUNCTION_GROUP_STYLE[srcMod.functionGroupId].accent : 'hsl(var(--primary))';
+        const srcMod = moduleById.get(reqId);
+        const color = srcMod
+          ? getGroupVisual(srcMod.functionGroupId).accent
+          : 'hsl(var(--primary))';
 
         next.push({
           id: `${reqId}→${mod.id}`,
@@ -529,7 +382,7 @@ export function ModuleSelectionWizard({
       }
       return prev;
     });
-  }, [selectedSet]);
+  }, [modules, moduleById, selectedSet]);
 
   useLayoutEffect(() => {
     recomputeLines();
@@ -541,6 +394,22 @@ export function ModuleSelectionWizard({
     if (el) obs.observe(el);
     return () => obs.disconnect();
   }, [recomputeLines]);
+
+  if (catalogLoading && modules.length === 0) {
+    return (
+      <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
+        Loading module catalog…
+      </div>
+    );
+  }
+
+  if (catalogError && modules.length === 0) {
+    return (
+      <div className="rounded-2xl border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-700 dark:text-red-300">
+        Failed to load module catalog: {catalogError.message}
+      </div>
+    );
+  }
 
   return (
     <div className={isModal ? 'space-y-5' : 'space-y-8'}>
@@ -587,15 +456,15 @@ export function ModuleSelectionWizard({
           </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {TEMPLATES.map((template) => {
+          {templates.map((template) => {
             const Icon = templateIcon(template.id);
             const active = selectedTemplateId === template.id;
-            const count = template.id === 'custom' ? 0 : resolveDependencies(template.modules).length;
+            const count = template.id === 'custom' ? 0 : resolveDependencies(template.modules, modules).length;
             return (
               <button
                 key={template.id}
                 type="button"
-                onClick={() => onTemplateChange(template.id, resolveDependencies(template.modules))}
+                onClick={() => onTemplateChange(template.id, resolveDependencies(template.modules, modules))}
                 className={`group text-left rounded-2xl border p-4 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
                   active
                     ? 'border-primary bg-primary/[0.07] shadow-md shadow-primary/10 ring-1 ring-primary/25'
@@ -733,7 +602,7 @@ export function ModuleSelectionWizard({
                         const locked = (requiredBySelected.get(mod.id)?.length ?? 0) > 0 && selected;
                         const missingDeps = mod.requiredModules.filter((id) => !selectedSet.has(id));
                         const blocked = !selected && missingDeps.length > 0;
-                        const groupStyle = FUNCTION_GROUP_STYLE[mod.functionGroupId];
+                        const groupStyle = getGroupVisual(mod.functionGroupId);
 
                         return (
                           <div
@@ -751,7 +620,7 @@ export function ModuleSelectionWizard({
                                 const next = new Set(selectedSet);
                                 if (selected) next.delete(mod.id);
                                 else next.add(mod.id);
-                                onModulesChange(resolveDependencies(Array.from(next)));
+                                onModulesChange(resolveDependencies(Array.from(next), modules));
                               }}
                               title={
                                 locked

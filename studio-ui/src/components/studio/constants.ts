@@ -1,6 +1,5 @@
 import {
   Activity,
-  Bell as BellIcon,
   Cloud,
   Globe,
   Github,
@@ -8,7 +7,6 @@ import {
   KeyRound,
   Package,
   ShieldCheck,
-  Sparkles,
   Smartphone,
   TrendingUp,
   Wrench,
@@ -20,8 +18,6 @@ import type {
   LogEntry,
   ProjectSetupConfig,
   ProviderId,
-  RegistryCategory,
-  RegistryPlugin,
   ServiceHealth,
 } from './types';
 
@@ -176,58 +172,36 @@ export const INTEGRATION_CONFIGS: IntegrationConfig[] = [
   },
 ];
 
-export const PROVIDER_PLUGIN_MAP: Record<ProviderId, string[]> = {
-  firebase: ['firebase-auth', 'firestore', 'fcm', 'app-check', 'vertex-ai'],
-  expo: ['eas-build', 'eas-submit'],
-  github: ['github-actions'],
-  apple: ['apns'],
-  cloudflare: ['cloudflare-domain'],
-};
+// NOTE: ALL_REGISTRY_PLUGINS / PROVIDER_PLUGIN_MAP / REGISTRY_CATEGORIES used to
+// live here as a static design fixture. They have been removed in favor of
+// usePluginCatalog(), which fetches the live `/api/plugin-catalog` so the UI
+// always reflects the actual backend plugin registry (firebase, github, eas,
+// apple, cloudflare, oauth, llm, …).
 
-export const ALL_REGISTRY_PLUGINS: RegistryPlugin[] = [
-  { id: 'firebase-auth', name: 'Firebase Auth', provider: 'Google Firebase', providerId: 'firebase', description: 'Apple, Google, and Email/Password auth with built-in session management.', categories: ['auth', 'security'], version: '2.1.0' },
-  { id: 'clerk-auth', name: 'Clerk Auth', provider: 'Clerk', providerId: 'other', description: 'Next-gen user management with pre-built UI components and webhooks.', categories: ['auth', 'security'], version: '1.0.0', future: true },
-  { id: 'mock-auth', name: 'Mock Auth', provider: 'Studio Core', providerId: 'studio', description: 'Local development authentication mock with configurable user fixtures.', categories: ['auth'], version: '1.3.2' },
-  { id: 'firestore', name: 'Cloud Firestore', provider: 'Google Firebase', providerId: 'firebase', description: 'Real-time NoSQL document database with offline sync and security rules.', categories: ['persistence', 'security'], version: '3.0.1' },
-  { id: 'supabase-db', name: 'Supabase DB', provider: 'Supabase', providerId: 'other', description: 'PostgreSQL-backed relational database with Edge Functions and Row Level Security.', categories: ['persistence', 'security'], version: '1.1.0', future: true },
-  { id: 'mock-db', name: 'Mock DB', provider: 'Studio Core', providerId: 'studio', description: 'Local in-memory store for offline-first development and testing.', categories: ['persistence'], version: '1.2.0' },
-  { id: 'vertex-ai', name: 'Google Vertex AI', provider: 'Google Cloud', providerId: 'firebase', description: 'Gemini 1.5 Pro integration via Firebase Extensions with streaming support.', categories: ['intelligence'], version: '1.4.0' },
-  { id: 'openai-llm', name: 'OpenAI GPT-4', provider: 'OpenAI', providerId: 'other', description: 'Direct GPT-4o API integration with function calling and tool use.', categories: ['intelligence'], version: '0.9.0', future: true },
-  { id: 'eas-build', name: 'EAS Build', provider: 'Expo', providerId: 'expo', description: 'Managed cloud builds for iOS and Android with environment profiles.', categories: ['build-pipeline'], version: '2.5.3' },
-  { id: 'github-actions', name: 'GitHub Actions', provider: 'GitHub', providerId: 'github', description: 'CI/CD workflow automation triggered on push, PR, or manual dispatch.', categories: ['build-pipeline'], version: '1.8.0' },
-  { id: 'eas-submit', name: 'EAS Submit', provider: 'Expo', providerId: 'expo', description: 'Automated binary submission to App Store Connect and Google Play.', categories: ['build-pipeline'], version: '2.1.0' },
-  { id: 'fcm', name: 'Firebase Cloud Messaging', provider: 'Google Firebase', providerId: 'firebase', description: 'Cross-platform push notifications with topic subscriptions and data payloads.', categories: ['notifications'], version: '2.0.0' },
-  { id: 'apns', name: 'Apple APNs', provider: 'Apple', providerId: 'apple', description: 'Native iOS push notification delivery with p8 key authentication.', categories: ['notifications', 'security'], version: '1.5.0' },
-  { id: 'onesignal', name: 'OneSignal', provider: 'OneSignal', providerId: 'other', description: 'Multi-platform notification orchestration with A/B testing and analytics.', categories: ['notifications'], version: '0.8.0', future: true },
-  { id: 'app-check', name: 'Firebase App Check', provider: 'Google Firebase', providerId: 'firebase', description: 'Attestation service that protects backend resources from abuse.', categories: ['security'], version: '1.2.0' },
-  { id: 'keychain', name: 'Secure Keychain', provider: 'Studio Core', providerId: 'studio', description: 'iOS Keychain and Android Keystore abstraction for sensitive credential storage.', categories: ['security'], version: '2.0.0' },
-];
-
-export const REGISTRY_CATEGORIES: RegistryCategory[] = [
-  { id: 'auth', label: 'Authentication', icon: KeyRound, color: 'text-violet-500', pluginIds: ALL_REGISTRY_PLUGINS.filter((p) => p.categories.includes('auth')).map((p) => p.id) },
-  { id: 'persistence', label: 'Persistence Store', icon: HardDrive, color: 'text-blue-500', pluginIds: ALL_REGISTRY_PLUGINS.filter((p) => p.categories.includes('persistence')).map((p) => p.id) },
-  { id: 'security', label: 'Security', icon: ShieldCheck, color: 'text-emerald-500', pluginIds: ALL_REGISTRY_PLUGINS.filter((p) => p.categories.includes('security')).map((p) => p.id) },
-  { id: 'build-pipeline', label: 'Build Pipeline', icon: Wrench, color: 'text-orange-500', pluginIds: ALL_REGISTRY_PLUGINS.filter((p) => p.categories.includes('build-pipeline')).map((p) => p.id) },
-  { id: 'notifications', label: 'Notifications', icon: BellIcon, color: 'text-pink-500', pluginIds: ALL_REGISTRY_PLUGINS.filter((p) => p.categories.includes('notifications')).map((p) => p.id) },
-  { id: 'intelligence', label: 'Intelligence / AI', icon: Sparkles, color: 'text-amber-500', pluginIds: ALL_REGISTRY_PLUGINS.filter((p) => p.categories.includes('intelligence')).map((p) => p.id) },
-];
-
+/**
+ * Pill labels used by RegistryView when rendering the "Also: X" cross-category
+ * tags. Backend function-group ids are mapped to short display labels.
+ */
 export const CATEGORY_LABEL_MAP: Record<string, string> = {
+  firebase: 'Firebase',
+  github: 'GitHub',
+  mobile: 'Mobile',
+  infrastructure: 'Infra',
   auth: 'Auth',
-  persistence: 'Persistence',
-  security: 'Security',
-  'build-pipeline': 'Build',
-  notifications: 'Notifications',
-  intelligence: 'AI',
+  ai: 'AI',
 };
 
+/**
+ * Pill styling per backend function-group id. Groups not listed here fall
+ * back to the neutral muted style at the call site.
+ */
 export const CATEGORY_PILL_STYLE: Record<string, string> = {
+  firebase: 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/30',
+  github: 'bg-slate-500/10 text-slate-600 dark:text-slate-400 border-slate-500/30',
+  mobile: 'bg-pink-500/10 text-pink-600 dark:text-pink-400 border-pink-500/30',
+  infrastructure: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30',
   auth: 'bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/30',
-  persistence: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30',
-  security: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
-  'build-pipeline': 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/30',
-  notifications: 'bg-pink-500/10 text-pink-600 dark:text-pink-400 border-pink-500/30',
-  intelligence: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30',
+  ai: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
 };
 
 export const INFRA_CATEGORIES: InfraPluginCategory[] = [

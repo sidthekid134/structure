@@ -161,6 +161,47 @@ export function validateGooglePlayKey(fileBuffer: Buffer): ValidationResult {
 }
 
 // ---------------------------------------------------------------------------
+// LLM API keys (OpenAI / Anthropic / Gemini / custom OpenAI-compatible)
+// ---------------------------------------------------------------------------
+
+/**
+ * Format-only validation. Live verification (calling the provider's models
+ * endpoint with the key) happens in the LLM endpoint layer so that errors
+ * propagate back to the user with the upstream message intact.
+ */
+export function validateLlmApiKey(
+  kind: 'openai' | 'anthropic' | 'gemini' | 'custom',
+  key: string,
+): ValidationResult {
+  if (!key || typeof key !== 'string') {
+    throw new CredentialError(`LLM ${kind} API key must not be empty.`, 'validateLlmApiKey');
+  }
+  const trimmed = key.trim();
+  if (trimmed.length < 10) {
+    throw new CredentialError(
+      `LLM ${kind} API key appears too short. Paste the complete key.`,
+      'validateLlmApiKey',
+    );
+  }
+  if (trimmed.length > 4096) {
+    throw new CredentialError(
+      `LLM ${kind} API key is unusually long; ensure you pasted only the key.`,
+      'validateLlmApiKey',
+    );
+  }
+  // Lightweight prefix hints — soft validation only, since key formats can
+  // change. We don't reject on prefix mismatch to avoid blocking legitimate
+  // new key formats from these providers.
+  return {
+    valid: true,
+    metadata: {
+      key_length: trimmed.length,
+      kind,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Expo token
 // ---------------------------------------------------------------------------
 
@@ -223,6 +264,14 @@ export function validateByType(
       }
       return { valid: true, metadata: {} };
     }
+    case 'llm_openai_api_key':
+      return validateLlmApiKey('openai', value);
+    case 'llm_anthropic_api_key':
+      return validateLlmApiKey('anthropic', value);
+    case 'llm_gemini_api_key':
+      return validateLlmApiKey('gemini', value);
+    case 'llm_custom_api_key':
+      return validateLlmApiKey('custom', value);
     default:
       return { valid: true, metadata: {} };
   }

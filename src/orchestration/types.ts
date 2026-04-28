@@ -10,6 +10,7 @@
  */
 
 import type { ProviderType, StepExecutionIntent } from '../providers/types.js';
+import type { CredentialType } from '../services/credential-service.js';
 
 // ---------------------------------------------------------------------------
 // OperationError — structured error with recovery guidance
@@ -99,6 +100,10 @@ export interface OrchestrationOptions {
   stepExecutionIntent?: StepExecutionIntent;
   /** Merged into step `upstreamResources` before execution (e.g. app domain from project settings). */
   initialUpstreamResources?: Record<string, string>;
+  /**
+   * Resolves SQLite `project_credentials` (e.g. `llm_anthropic_api_key`) — used alongside vault for LLM→EAS sync.
+   */
+  retrieveProjectCredential?: (type: CredentialType) => string | null;
 }
 
 // ---------------------------------------------------------------------------

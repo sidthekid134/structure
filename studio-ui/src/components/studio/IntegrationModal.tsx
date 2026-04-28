@@ -23,7 +23,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { api } from './helpers';
-import { ALL_REGISTRY_PLUGINS, PROVIDER_PLUGIN_MAP } from './constants';
+import { usePluginCatalog } from './usePluginCatalog';
 import { mapGcpStepToSetupStatus } from './types';
 import type {
   GcpOAuthSessionStatus,
@@ -79,6 +79,7 @@ export function IntegrationModal({
   const [setupChecksComplete, setSetupChecksComplete] = useState(false);
   const [manualError, setManualError] = useState<string | null>(null);
   const [copiedValueKey, setCopiedValueKey] = useState<string | null>(null);
+  const { catalog: pluginCatalog } = usePluginCatalog();
   const LogoIcon = config.logo;
   const allFilled = config.fields.every(
     (f) => f.optional || (fieldValues[f.key] ?? '').trim().length > 0,
@@ -334,8 +335,14 @@ export function IntegrationModal({
     onClose();
   };
 
-  const affectedPluginIds = PROVIDER_PLUGIN_MAP[config.id] ?? [];
-  const affectedPlugins = ALL_REGISTRY_PLUGINS.filter((p) => affectedPluginIds.includes(p.id));
+  // Resolve the affected-plugins list from the live catalog so newly
+  // registered plugins (e.g. the LLM module) are reflected here too. While
+  // the catalog is loading we render an empty list rather than a stale
+  // snapshot — the section is informational and harmless when empty.
+  const affectedPluginIds = pluginCatalog?.providerPluginMap[config.id] ?? [];
+  const affectedPlugins = (pluginCatalog?.plugins ?? []).filter((p) =>
+    affectedPluginIds.includes(p.id),
+  );
 
   const renderField = (field: IntegrationField) => (
     <div key={field.key} className="space-y-1.5">

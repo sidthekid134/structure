@@ -711,6 +711,7 @@ export class PluginRegistry {
         label: string;
         description: string;
         provider: string;
+        version: string;
         functionGroupId?: string;
         requiredModules: string[];
         optionalModules: string[];
@@ -724,6 +725,7 @@ export class PluginRegistry {
         label: plugin.label,
         description: plugin.description,
         provider: plugin.provider,
+        version: plugin.version,
         functionGroupId: plugin.functionGroup?.id,
         requiredModules: plugin.requiredModules,
         optionalModules: plugin.optionalModules,

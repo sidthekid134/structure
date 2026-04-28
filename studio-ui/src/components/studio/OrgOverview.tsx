@@ -9,8 +9,9 @@ import {
   Smartphone,
   TrendingUp,
 } from 'lucide-react';
-import { INTEGRATION_CONFIGS, PROVIDER_PLUGIN_MAP } from './constants';
+import { INTEGRATION_CONFIGS } from './constants';
 import { formatDate } from './helpers';
+import { usePluginCatalog } from './usePluginCatalog';
 import type { ConnectedProviders, ProjectSummary, ProviderId } from './types';
 
 export function OrgOverview({
@@ -28,10 +29,11 @@ export function OrgOverview({
   wsStatus: string;
   totalModulesConfigured: number;
 }) {
+  const { catalog: pluginCatalog } = usePluginCatalog();
   const integrationSummary = INTEGRATION_CONFIGS.map((cfg) => ({
     ...cfg,
     connected: connectedProviders[cfg.id],
-    pluginCount: PROVIDER_PLUGIN_MAP[cfg.id]?.length ?? 0,
+    pluginCount: pluginCatalog?.providerPluginMap[cfg.id]?.length ?? 0,
   }));
   const totalModules = projects.reduce((acc, p) => acc + p.integration_progress.total, 0);
 

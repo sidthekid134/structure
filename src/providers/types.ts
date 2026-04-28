@@ -6,6 +6,7 @@
  */
 
 import { CredentialError } from '../types.js';
+import type { CredentialType } from '../services/credential-service.js';
 
 export const PLATFORM_CORE_VERSION = '1.0';
 
@@ -27,6 +28,7 @@ export const BUILTIN_PROVIDERS = [
   'google-play',
   'cloudflare',
   'oauth',
+  'llm',
 ] as const;
 
 export type BuiltinProviderType = (typeof BUILTIN_PROVIDERS)[number];
@@ -43,6 +45,7 @@ export const PROVIDER_DEPENDENCY_ORDER: readonly string[] = [
   'google-play',
   'cloudflare',
   'oauth',
+  'llm',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -137,6 +140,43 @@ export interface OAuthManifestConfig {
   firebase_project_id: string;
 }
 
+/**
+ * Supported LLM backend kinds. Each maps to a different REST API shape and
+ * authentication header convention.
+ *
+ * - openai:    https://api.openai.com/v1 — Bearer api_key, optional org id
+ * - anthropic: https://api.anthropic.com/v1 — x-api-key + anthropic-version
+ * - gemini:    https://generativelanguage.googleapis.com/v1beta — ?key=api_key
+ * - custom:    operator-supplied OpenAI-compatible base URL (Azure, vLLM, Ollama, etc.)
+ */
+export type LlmKind = 'openai' | 'anthropic' | 'gemini' | 'custom';
+
+export interface LlmManifestConfig {
+  readonly provider: 'llm';
+  /**
+   * Backend implementation to use. The same `provider: 'llm'` adapter handles
+   * all four; this discriminator selects the concrete client.
+   */
+  kind: LlmKind;
+  /**
+   * Operator-facing label (e.g. "OpenAI Production", "Anthropic Eval").
+   * Each LLM kind ships as its own plugin (`llm-openai`, `llm-anthropic`,
+   * `llm-gemini`, `llm-custom`) so multiple kinds can coexist per project.
+   */
+  display_name: string;
+  /** Default model id used when downstream callers don't specify one. */
+  default_model: string;
+  /**
+   * Required when `kind === 'custom'`. Must be a fully-qualified https URL
+   * pointing at an OpenAI-compatible /v1 root (no trailing /chat/completions).
+   */
+  base_url?: string;
+  /** Optional organization / workspace id (OpenAI orgs, etc.). */
+  organization_id?: string;
+  /** Per-call request timeout used by the adapter's verifyCredentials check. */
+  request_timeout_ms?: number;
+}
+
 /** Catch-all config for plugin-contributed providers not in the built-in set. */
 export interface CustomProviderConfig {
   readonly provider: string;
@@ -151,6 +191,7 @@ export type ProviderConfig =
   | GooglePlayManifestConfig
   | CloudflareManifestConfig
   | OAuthManifestConfig
+  | LlmManifestConfig
   | CustomProviderConfig;
 
 // ---------------------------------------------------------------------------
@@ -239,6 +280,16 @@ export interface StepContext {
   vaultRead: (key: string) => Promise<string | null>;
   vaultWrite: (key: string, value: string) => Promise<void>;
   executionIntent?: StepExecutionIntent;
+  /**
+   * Module ids for this project (from the persisted provisioning plan). Used
+   * by steps that should scope side effects (e.g. EAS LLM env sync only for
+   * selected `llm-*` modules).
+   */
+  selectedModuleIds?: string[];
+  /**
+   * Resolves SQLite `project_credentials` (e.g. `llm_anthropic_api_key`) for steps that combine vault + DB (LLM→EAS).
+   */
+  retrieveProjectCredential?: (type: CredentialType) => string | null;
 }
 
 export interface StepResult {

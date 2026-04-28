@@ -575,6 +575,7 @@ function ManualInstructionsPanel({
 export function SetupWizard({
   projectId,
   plan,
+  displaySelectedModules,
   onPlanChange,
   onUserActionComplete,
   onRefresh,
@@ -582,6 +583,11 @@ export function SetupWizard({
 }: {
   projectId: string;
   plan: ProvisioningPlanResponse | null;
+  /**
+   * Effective module ids for step copy (LLM EAS sync, etc.). When omitted, uses `plan.selectedModules`.
+   * Parent should pass pending picks from the Modules tab when they differ from the saved plan.
+   */
+  displaySelectedModules?: string[];
   onPlanChange: (plan: ProvisioningPlanResponse) => void;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => Promise<void>;
   onRefresh: () => Promise<void>;
@@ -645,6 +651,11 @@ export function SetupWizard({
     } catch { /* best-effort */ }
     await onRefresh();
   }, [projectId, onRefresh]);
+
+  const selectedModulesForCopy = useMemo(
+    () => displaySelectedModules ?? plan?.selectedModules ?? [],
+    [displaySelectedModules, plan?.selectedModules],
+  );
 
   const orderedNodes = useMemo(() => {
     if (!plan) return [];
@@ -1504,7 +1515,7 @@ export function SetupWizard({
               ) : null}
               <h3 className="text-lg font-semibold mt-1">{currentNode.label}</h3>
               <p className="text-sm text-muted-foreground mt-1">
-                {provisioningNodeDescription(currentNode, plan.environments)}
+                {provisioningNodeDescription(currentNode, plan.environments, selectedModulesForCopy)}
               </p>
               {currentInvalidation.isInvalidated ? (
                 <div className="mt-3 rounded-lg border border-orange-500/35 bg-orange-500/5 p-3">
@@ -2005,6 +2016,7 @@ export function SetupWizard({
               node={currentNode}
               plan={plan}
               stepStatus={currentStatus}
+              selectedModulesOverride={selectedModulesForCopy}
             />
           )}
 
@@ -2014,6 +2026,7 @@ export function SetupWizard({
               node={currentNode}
               plan={plan}
               stepStatus={currentStatus}
+              selectedModulesOverride={selectedModulesForCopy}
             />
           )}
 

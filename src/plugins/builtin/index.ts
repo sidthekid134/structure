@@ -22,6 +22,10 @@ import { easSubmitPlugin } from './eas-submit.plugin.js';
 import { cloudflareDomainPlugin } from './cloudflare-domain.plugin.js';
 import { firebaseMessagingPlugin } from './firebase-messaging.plugin.js';
 import { oauthSocialPlugin } from './oauth-social.plugin.js';
+import { llmOpenAIPlugin } from './llm-openai.plugin.js';
+import { llmAnthropicPlugin } from './llm-anthropic.plugin.js';
+import { llmGeminiPlugin } from './llm-gemini.plugin.js';
+import { llmCustomPlugin } from './llm-custom.plugin.js';
 
 let _registered = false;
 
@@ -35,6 +39,14 @@ export function registerBuiltinPlugins(): void {
   globalPluginRegistry.register(appleSigningPlugin);
   globalPluginRegistry.register(googlePlayPlugin);
   globalPluginRegistry.register(cloudflareDomainPlugin);
+  // LLM kinds — registered as four sibling plugins, all sharing the 'llm'
+  // provider and the LlmAdapter declared on `llm-openai`. Each one is a
+  // separately selectable module so the project plan only includes steps
+  // for the kinds the operator actually picks.
+  globalPluginRegistry.register(llmOpenAIPlugin);
+  globalPluginRegistry.register(llmAnthropicPlugin);
+  globalPluginRegistry.register(llmGeminiPlugin);
+  globalPluginRegistry.register(llmCustomPlugin);
 
   // Tier 1: depend on tier 0
   globalPluginRegistry.register(firebaseAuthPlugin);     // requires firebase-core
@@ -63,4 +75,8 @@ export {
   easSubmitPlugin,
   cloudflareDomainPlugin,
   oauthSocialPlugin,
+  llmOpenAIPlugin,
+  llmAnthropicPlugin,
+  llmGeminiPlugin,
+  llmCustomPlugin,
 };

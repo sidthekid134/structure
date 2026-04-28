@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
-import {
-  ALL_REGISTRY_PLUGINS,
-  INTEGRATION_CONFIGS,
-  PROVIDER_PLUGIN_MAP,
-  REGISTRY_CATEGORIES,
-} from './constants';
+import { INTEGRATION_CONFIGS } from './constants';
+import { usePluginCatalog } from './usePluginCatalog';
 import { api, bundleIdFromAppDomain, formatDate, isValidAppHostname, providerToBackendKey, slugify } from './helpers';
 import {
   CreateProjectModal,
@@ -40,7 +36,7 @@ import type {
 } from './types';
 
 const DEFAULT_PROJECT_SUBTAB: ProjectSubtab = 'modules';
-const PROJECT_SUBTABS: readonly ProjectSubtab[] = ['modules', 'setup', 'dashboard', 'settings'];
+const PROJECT_SUBTABS: readonly ProjectSubtab[] = ['modules', 'setup', 'dashboard', 'llm', 'settings'];
 const PROJECT_SCOPED_VIEWS: readonly StudioView[] = [
   'project',
   'project-setup',
@@ -124,6 +120,7 @@ export default function PlatformStudio() {
     cloudflare: false,
   });
   const [activeIntegration, setActiveIntegration] = useState<ProviderId | null>(null);
+  const { catalog: pluginCatalog } = usePluginCatalog();
   const [firebaseDetails, setFirebaseDetails] = useState<FirebaseConnectionDetails | null>(null);
   const [appleDetails, setAppleDetails] = useState<{
     team_id?: string;
@@ -717,7 +714,9 @@ export default function PlatformStudio() {
             title={view === 'registry' ? 'Plugin Registry' : view === 'overview' ? 'Organization' : projectDetail?.project.name || 'Studio Core'}
             subtitle={
               view === 'registry'
-                ? `${ALL_REGISTRY_PLUGINS.length} plugins across ${REGISTRY_CATEGORIES.length} categories`
+                ? pluginCatalog
+                  ? `${pluginCatalog.plugins.length} plugins across ${pluginCatalog.categories.length} categories`
+                  : 'Loading plugin catalog…'
                 : view === 'overview'
                   ? 'Manage projects and infrastructure across the organization'
                   : projectDetail
@@ -780,11 +779,13 @@ export default function PlatformStudio() {
                   const int = projectDetail.integrations || {};
                   const keys = Object.keys(int);
                   const pluginIds: string[] = [];
+                  // Resolve provider keys against the live catalog when it
+                  // has loaded; fall back to the literal key otherwise so
+                  // the UI never blocks on the catalog fetch.
+                  const providerMap = pluginCatalog?.providerPluginMap ?? {};
                   for (const k of keys) {
-                    if (k === 'firebase') pluginIds.push(...PROVIDER_PLUGIN_MAP.firebase);
-                    else if (k === 'expo') pluginIds.push(...PROVIDER_PLUGIN_MAP.expo);
-                    else if (k === 'github') pluginIds.push(...PROVIDER_PLUGIN_MAP.github);
-                    else if (k === 'apple') pluginIds.push(...(PROVIDER_PLUGIN_MAP.apple ?? []));
+                    const mapped = providerMap[k];
+                    if (mapped && mapped.length > 0) pluginIds.push(...mapped);
                     else pluginIds.push(k);
                   }
                   return pluginIds;
@@ -797,6 +798,21 @@ export default function PlatformStudio() {
                 connectedProviders={connectedProviders}
                 activeProjectId={activeProjectId}
                 onOpenIntegration={setActiveIntegration}
+                onOpenProjectPlugin={(pluginId) => {
+                  // Plugin id → matching project subtab. Any of the four LLM
+                  // sibling plugins (`llm-openai`, `llm-anthropic`,
+                  // `llm-gemini`, `llm-custom`) jumps to the shared "AI / LLM"
+                  // tab; future per-plugin panels can extend this map without
+                  // touching RegistryView.
+                  const subtab: ProjectSubtab | null = pluginId.startsWith('llm-') ? 'llm' : null;
+                  if (!subtab || !activeProjectId) return false;
+                  navigateStudio({
+                    view: 'project',
+                    activeProjectId,
+                    projectSubtab: subtab,
+                  });
+                  return true;
+                }}
               />
             )}
           </div>

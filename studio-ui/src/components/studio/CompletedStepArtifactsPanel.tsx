@@ -9,6 +9,7 @@ import {
   isVaultPlaceholder,
   mergeResourcePresentation,
 } from './provisioning-display-registry';
+import { easSyncLlmSecretsProduceDescription, llmEasEnvGroupsForUi } from './helpers';
 
 function provisioningStateKey(node: ProvisioningGraphNode, environment?: string): string {
   if (node.type === 'step' && node.environmentScope === 'per-environment' && environment) {
@@ -68,6 +69,7 @@ function ResourceRow({
   status,
   plannedName,
   resourceDisplayByKey,
+  llmEasEnvGroups,
 }: {
   resource: ResourceOutput;
   value: string | undefined;
@@ -75,6 +77,8 @@ function ResourceRow({
   status: ResourceStatus;
   plannedName?: string;
   resourceDisplayByKey?: Record<string, ResourceDisplayConfig>;
+  /** Full Expo env keys for planned LLM sync (styled list; no placeholders). */
+  llmEasEnvGroups?: { label: string; keys: readonly string[] }[];
 }) {
   const presentation = mergeResourcePresentation(resource, resourceDisplayByKey);
   const secured = presentation.sensitive || (value !== undefined && isVaultPlaceholder(value));
@@ -145,6 +149,28 @@ function ResourceRow({
             </AnimatePresence>
           </div>
           <p className="text-[11px] text-muted-foreground mt-0.5">{resource.description}</p>
+          {llmEasEnvGroups && llmEasEnvGroups.length > 0 ? (
+            <div className="mt-2 space-y-2">
+              <p className="text-[9px] font-bold uppercase tracking-wide text-muted-foreground">
+                Expo variable names upsert or clear
+              </p>
+              {llmEasEnvGroups.map((g) => (
+                <div key={g.label} className="space-y-1">
+                  <p className="text-[10px] font-semibold text-foreground">{g.label}</p>
+                  <ul className="rounded-md border border-border/70 bg-muted/30 px-2 py-1.5 space-y-1">
+                    {g.keys.map((envName) => (
+                      <li
+                        key={envName}
+                        className="font-mono text-[10px] text-foreground/95 leading-snug break-all border-l-2 border-sky-500/45 pl-2"
+                      >
+                        {envName}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
         {hasValue && !secured && status === 'complete' ? <CopyValueButton text={value!} /> : null}
       </div>
@@ -217,13 +243,34 @@ export function CompletedStepArtifactsPanel({
   node,
   plan,
   stepStatus,
+  selectedModulesOverride,
 }: {
   node: ProvisioningGraphNode;
   plan: ProvisioningPlanResponse;
   stepStatus: NodeStatus;
+  /** When set (e.g. pending Modules tab picks), overrides `plan.selectedModules` for display-only copy such as LLM EAS sync cards. */
+  selectedModulesOverride?: string[];
 }) {
   const upstream = useMemo(() => collectUpstreamResources(plan.nodeStates), [plan.nodeStates]);
   const previewsForNode = plan.plannedOutputPreviewByNodeKey?.[node.key];
+
+  const producesForDisplay = useMemo(() => {
+    const mods = selectedModulesOverride ?? plan.selectedModules;
+    if (node.key !== 'eas:sync-llm-secrets') return node.produces;
+    return node.produces.map((r) => {
+      if (r.key !== 'eas_llm_env_sync_snapshot') return r;
+      return {
+        ...r,
+        description: easSyncLlmSecretsProduceDescription(mods),
+      };
+    });
+  }, [node.key, node.produces, plan.selectedModules, selectedModulesOverride]);
+
+  const llmEasGroupsForCards = useMemo(() => {
+    if (node.key !== 'eas:sync-llm-secrets') return undefined;
+    const g = llmEasEnvGroupsForUi(selectedModulesOverride ?? plan.selectedModules);
+    return g.length > 0 ? g : undefined;
+  }, [node.key, selectedModulesOverride, plan.selectedModules]);
 
   const helpUrl = node.type === 'user-action' ? node.helpUrl : undefined;
 
@@ -287,7 +334,7 @@ export function CompletedStepArtifactsPanel({
         </a>
       ) : null}
 
-      {node.produces.length === 0 ? (
+      {producesForDisplay.length === 0 ? (
         <p className="text-xs text-muted-foreground">This step does not declare output fields.</p>
       ) : perEnv ? (
         <div className="space-y-4">
@@ -302,7 +349,7 @@ export function CompletedStepArtifactsPanel({
                   </span>
                 </div>
                 <div className="space-y-2">
-                  {node.produces.map((resource) => (
+                  {producesForDisplay.map((resource) => (
                     <ResourceRow
                       key={`${env}-${resource.key}`}
                       resource={resource}
@@ -311,6 +358,7 @@ export function CompletedStepArtifactsPanel({
                       status={deriveResourceStatus(produced[resource.key], envStatus)}
                       plannedName={previewsForNode?.[resource.key]}
                       resourceDisplayByKey={plan.resourceDisplayByKey}
+                      llmEasEnvGroups={resource.key === 'eas_llm_env_sync_snapshot' ? llmEasGroupsForCards : undefined}
                     />
                   ))}
                 </div>
@@ -320,7 +368,7 @@ export function CompletedStepArtifactsPanel({
         </div>
       ) : (
         <div className="space-y-2">
-          {node.produces.map((resource) => (
+          {producesForDisplay.map((resource) => (
             <ResourceRow
               key={resource.key}
               resource={resource}
@@ -329,12 +377,13 @@ export function CompletedStepArtifactsPanel({
               status={deriveResourceStatus(globalProduced[resource.key], stepStatus)}
               plannedName={previewsForNode?.[resource.key]}
               resourceDisplayByKey={plan.resourceDisplayByKey}
+              llmEasEnvGroups={resource.key === 'eas_llm_env_sync_snapshot' ? llmEasGroupsForCards : undefined}
             />
           ))}
         </div>
       )}
 
-      {isSkipped && node.produces.length > 0 && Object.keys(globalProduced).length === 0 && !perEnv && (
+      {isSkipped && producesForDisplay.length > 0 && Object.keys(globalProduced).length === 0 && !perEnv && (
         <p className="text-[11px] text-muted-foreground">No outputs were captured for this step.</p>
       )}
     </div>

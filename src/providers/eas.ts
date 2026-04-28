@@ -28,10 +28,39 @@ import {
 import {
   extractFirebaseApiKeyFromAndroidConfig,
   extractFirebaseApiKeyFromIosConfig,
+  LLM_KIND_MODULE_IDS,
+  PROJECT_LLM_RUNTIME_ENV_KEYS,
+  PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES,
   PROJECT_RUNTIME_ENV_KEYS,
   PROJECT_RUNTIME_ENV_SECRET_TYPES,
+  resolveProjectLlmRuntimeEnvValues,
   resolveProjectRuntimeEnvValues,
 } from '../provisioning/runtime-env.js';
+
+function selectedLlmModuleIdsFromAdapterContext(context: StepContext): string[] | undefined {
+  if (context.selectedModuleIds === undefined) return undefined;
+  return context.selectedModuleIds.filter((id) =>
+    (LLM_KIND_MODULE_IDS as readonly string[]).includes(id),
+  );
+}
+
+/** Keys read from `llm/{field}` vault paths — merged into `resolveProjectLlmRuntimeEnvValues` plus DB API keys. */
+const LLM_EAS_PREFETCH_KEYS = [
+  'openai_api_key',
+  'openai_organization_id',
+  'anthropic_api_key',
+  'gemini_api_key',
+  'custom_api_key',
+  'custom_base_url',
+] as const;
+
+async function prefetchLlmVaultFields(context: StepContext): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const key of LLM_EAS_PREFETCH_KEYS) {
+    out[key] = (await context.vaultRead(`llm/${key}`))?.trim() ?? '';
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // API client interface
@@ -149,11 +178,42 @@ function buildRuntimeEnvResourcesProduced(
   return out;
 }
 
+function buildLlmRuntimeEnvResourcesProduced(values: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  const mapping: Array<[sourceKey: string, producedKey: string]> = [
+    ['LLM_OPENAI_API_KEY', 'eas_env_llm_openai_api_key'],
+    ['LLM_OPENAI_ORGANIZATION_ID', 'eas_env_llm_openai_organization_id'],
+    ['LLM_OPENAI_DEFAULT_MODEL', 'eas_env_llm_openai_default_model'],
+    ['LLM_ANTHROPIC_API_KEY', 'eas_env_llm_anthropic_api_key'],
+    ['LLM_ANTHROPIC_DEFAULT_MODEL', 'eas_env_llm_anthropic_default_model'],
+    ['LLM_GEMINI_API_KEY', 'eas_env_llm_gemini_api_key'],
+    ['LLM_GEMINI_DEFAULT_MODEL', 'eas_env_llm_gemini_default_model'],
+    ['LLM_CUSTOM_API_KEY', 'eas_env_llm_custom_api_key'],
+    ['LLM_CUSTOM_BASE_URL', 'eas_env_llm_custom_base_url'],
+    ['LLM_CUSTOM_DEFAULT_MODEL', 'eas_env_llm_custom_default_model'],
+  ];
+  for (const [sourceKey, producedKey] of mapping) {
+    const value = values[sourceKey]?.trim() ?? '';
+    if (value) out[producedKey] = value;
+  }
+  return out;
+}
+
 function isNonPublicRuntimeEnvKey(name: string): boolean {
   if (!PROJECT_RUNTIME_ENV_KEYS.includes(name as (typeof PROJECT_RUNTIME_ENV_KEYS)[number])) {
     return false;
   }
   const visibility = PROJECT_RUNTIME_ENV_SECRET_TYPES[name as keyof typeof PROJECT_RUNTIME_ENV_SECRET_TYPES];
+  return visibility === 'SENSITIVE' || visibility === 'SECRET';
+}
+
+function isNonPublicLlmRuntimeEnvKey(name: string): boolean {
+  if (!PROJECT_LLM_RUNTIME_ENV_KEYS.includes(name as (typeof PROJECT_LLM_RUNTIME_ENV_KEYS)[number])) {
+    return false;
+  }
+  const visibility = PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES[
+    name as keyof typeof PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES
+  ];
   return visibility === 'SENSITIVE' || visibility === 'SECRET';
 }
 
@@ -647,6 +707,41 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
             'GitHub Actions can use secret EXPO_TOKEN. Reference it in workflow env (e.g. EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}).',
         };
       }
+      case 'eas:sync-llm-secrets': {
+        const appId = context.upstreamResources['eas_project_id']?.trim() ?? '';
+        if (!appId) {
+          throw new AdapterError('Create the EAS project first (missing eas_project_id).', 'eas', 'executeStep');
+        }
+        const env = (context.environment ?? config.environments[0] ?? 'development') as Environment;
+        const vaultLlm = await prefetchLlmVaultFields(context);
+        const llm = resolveProjectLlmRuntimeEnvValues({
+          upstream: context.upstreamResources,
+          selectedLlmModuleIds: selectedLlmModuleIdsFromAdapterContext(context),
+          readVault: (providerId, key) => {
+            if (providerId !== 'llm') return undefined;
+            const v = vaultLlm[key];
+            return v && v.length > 0 ? v : undefined;
+          },
+          retrieveProjectCredential: context.retrieveProjectCredential,
+        });
+        const visibilityByName: Record<string, 'PUBLIC' | 'SENSITIVE' | 'SECRET'> = {};
+        for (const key of Object.keys(llm.values)) {
+          visibilityByName[key] =
+            PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES[key as keyof typeof PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES] ??
+            'PUBLIC';
+        }
+        await this.apiClient.uploadEnvFile(appId, env, llm.values, {
+          visibilityByName,
+          targetEnvironments: config.environments,
+        });
+        const setCount = Object.values(llm.values).filter((v) => v.trim().length > 0).length;
+        const removeCount = Object.keys(llm.values).length - setCount;
+        return {
+          status: 'completed',
+          resourcesProduced: buildLlmRuntimeEnvResourcesProduced(llm.values),
+          userPrompt: `Synced LLM env vars: ${setCount} upserted, ${removeCount} removed.`,
+        };
+      }
       case 'eas:write-eas-json': {
         if (!this.githubClient) {
           throw new AdapterError(
@@ -1000,6 +1095,72 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
         return {
           status: 'completed',
           resourcesProduced: buildRuntimeEnvResourcesProduced(runtime.values, firebaseApiKey),
+        };
+      }
+      case 'eas:sync-llm-secrets': {
+        const projectId = context.upstreamResources['eas_project_id']?.trim();
+        if (!projectId) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'Cannot validate LLM env sync without eas_project_id.',
+          };
+        }
+        const expo = this.apiClient instanceof ExpoGraphqlEasApiClient ? this.apiClient : null;
+        if (!expo) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error: 'LLM env sync validation requires the real Expo GraphQL client.',
+          };
+        }
+        const vaultLlm = await prefetchLlmVaultFields(context);
+        const llm = resolveProjectLlmRuntimeEnvValues({
+          upstream: context.upstreamResources,
+          selectedLlmModuleIds: selectedLlmModuleIdsFromAdapterContext(context),
+          readVault: (providerId, key) => {
+            if (providerId !== 'llm') return undefined;
+            const v = vaultLlm[key];
+            return v && v.length > 0 ? v : undefined;
+          },
+          retrieveProjectCredential: context.retrieveProjectCredential,
+        });
+        const expected = Object.entries(llm.values).filter(([, value]) => value.trim().length > 0);
+        if (expected.length === 0) {
+          return { status: 'completed', resourcesProduced: {} };
+        }
+        const vars = await expo.listAppEnvironmentVariablesByNames(
+          projectId,
+          expected.map(([name]) => name),
+        );
+        const slots = config.environments.map((env) => studioEnvToExpoSlot(env));
+        const mismatched = expected.filter(([name, value]) => {
+          const normalized = value.trim();
+          const envVars = vars.filter((v) => v.name === name);
+          if (!normalized) return false;
+          if (isNonPublicLlmRuntimeEnvKey(name)) {
+            return slots.some((slot) => !envVars.some((v) => (v.environments ?? []).includes(slot)));
+          }
+          return slots.some((slot) =>
+            !envVars.some(
+              (v) =>
+                (v.environments ?? []).includes(slot) &&
+                (v.value?.trim() ?? '') === normalized,
+            ),
+          );
+        });
+        if (mismatched.length > 0) {
+          return {
+            status: 'failed',
+            resourcesProduced: {},
+            error:
+              `EAS LLM env is not reconciled: ` +
+              `${mismatched.map(([k]) => k).join(', ')}.`,
+          };
+        }
+        return {
+          status: 'completed',
+          resourcesProduced: buildLlmRuntimeEnvResourcesProduced(llm.values),
         };
       }
       case 'eas:store-token-in-github': {

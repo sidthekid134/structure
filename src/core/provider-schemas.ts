@@ -8,6 +8,7 @@ import {
   GOOGLE_PLAY_STEPS,
   CLOUDFLARE_STEPS,
   OAUTH_STEPS,
+  LLM_STEPS,
   USER_ACTIONS,
 } from '../provisioning/step-registry.js';
 import { globalPluginRegistry } from '../plugins/plugin-registry.js';
@@ -20,6 +21,17 @@ const STATIC_PROVIDER_SECRET_SCHEMAS: Readonly<Record<string, string[]>> = {
   'google-play': ['service_account_json', 'keystore_password'],
   cloudflare: ['api_token', 'zone_id'],
   oauth: ['client_id', 'client_secret'],
+  // LLM secrets are partitioned per kind so multiple LLM kinds can be
+  // configured on the same project without overwriting each other. Custom
+  // endpoints carry an extra `custom_base_url` slot for the HTTPS host.
+  llm: [
+    'openai_api_key',
+    'openai_organization_id',
+    'anthropic_api_key',
+    'gemini_api_key',
+    'custom_api_key',
+    'custom_base_url',
+  ],
 };
 
 /** @deprecated Use getEffectiveProviderSecretSchemas() for registry-aware version */
@@ -46,6 +58,7 @@ const STATIC_PROVIDER_DEPENDENCIES: Readonly<Record<string, string[]>> = {
   'google-play': ['github'],
   cloudflare: [],
   oauth: ['firebase'],
+  llm: [],
 };
 
 /** @deprecated Use getEffectiveProviderDependencies() for registry-aware version */
@@ -134,6 +147,12 @@ const STATIC_PROVIDER_BLUEPRINTS: Readonly<Record<string, ProviderBlueprint>> = 
     scope: 'project',
     steps: OAUTH_STEPS,
     userActions: [],
+  },
+  llm: {
+    provider: 'llm',
+    scope: 'project',
+    steps: LLM_STEPS,
+    userActions: USER_ACTIONS.filter((a) => a.provider === 'llm'),
   },
 };
 
@@ -364,6 +383,35 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
         required: true,
         source: 'project',
         description: 'Fallback naming where a hostname is not allowed.',
+      },
+    ],
+    plannedResources: [],
+  },
+  llm: {
+    provider: 'llm',
+    scope: 'project',
+    dependencies: [
+      {
+        key: 'llm_api_key',
+        label: 'LLM API Key',
+        required: true,
+        source: 'integration',
+        description:
+          'API key for the chosen LLM backend (OpenAI, Anthropic, Gemini, or a custom OpenAI-compatible endpoint). Encrypted at rest in the project vault.',
+      },
+      {
+        key: 'llm_default_model',
+        label: 'Default Model',
+        required: true,
+        source: 'integration',
+        description: 'Model id used when callers do not specify one explicitly.',
+      },
+      {
+        key: 'llm_base_url',
+        label: 'Custom Base URL',
+        required: false,
+        source: 'integration',
+        description: 'HTTPS base URL for a custom OpenAI-compatible endpoint (kind="custom" only).',
       },
     ],
     plannedResources: [],

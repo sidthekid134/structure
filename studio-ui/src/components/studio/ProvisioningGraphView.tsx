@@ -382,6 +382,8 @@ interface NodeCardProps {
   node: ProvisioningGraphNode;
   nodeStates: Record<string, NodeState>;
   environments: string[];
+  /** Selected plan modules — used for step copy (e.g. LLM EAS sync) scoped to configured providers. */
+  selectedModules?: string[];
   projectId: string;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
   onRunNode: (nodeKey: string, intent?: 'create' | 'refresh') => void;
@@ -400,7 +402,7 @@ const REFRESHABLE_STEP_FALLBACK_KEYS = new Set<string>([
   'oauth:prepare-app-integration-kit',
 ]);
 
-function NodeCard({ node, nodeStates, environments, projectId, onUserActionComplete, onRunNode, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: NodeCardProps) {
+function NodeCard({ node, nodeStates, environments, selectedModules, projectId, onUserActionComplete, onRunNode, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: NodeCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [credentialInput, setCredentialInput] = useState('');
   const [userActionBusy, setUserActionBusy] = useState(false);
@@ -581,7 +583,7 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
             {node.label}
           </span>
           <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug line-clamp-1">
-            {provisioningNodeDescription(node, environments)}
+            {provisioningNodeDescription(node, environments, selectedModules)}
           </p>
           {/* Inline resource chips — shown for step nodes before completion */}
           {node.type === 'step' && node.produces.length > 0 && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
@@ -716,7 +718,7 @@ function NodeCard({ node, nodeStates, environments, projectId, onUserActionCompl
           >
             <div className="border-t border-border px-3 pb-3 pt-2.5 space-y-3">
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                {provisioningNodeDescription(node, environments)}
+                {provisioningNodeDescription(node, environments, selectedModules)}
               </p>
               {invalidation.isInvalidated ? (
                 <div className="rounded-lg border border-orange-500/35 bg-orange-500/5 px-2.5 py-2">
@@ -1005,6 +1007,7 @@ interface PhaseGroupProps {
   phaseNumber: number;
   nodeStates: Record<string, NodeState>;
   environments: string[];
+  selectedModules?: string[];
   projectId: string;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => void | Promise<void>;
   onRunNodes: (nodeKeys: string[], intent?: 'create' | 'refresh') => void;
@@ -1016,7 +1019,7 @@ interface PhaseGroupProps {
   portalLinksByNodeKey?: Record<string, CompletionPortalLink[]>;
 }
 
-function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, onUserActionComplete, onRunNodes, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: PhaseGroupProps) {
+function PhaseGroup({ phase, phaseNumber, nodeStates, environments, selectedModules, projectId, onUserActionComplete, onRunNodes, onCancelNode, onSyncAndRefresh, isGloballyRunning, providerDisplayMeta, resourceDisplayByKey, portalLinksByNodeKey }: PhaseGroupProps) {
   const [expanded, setExpanded] = useState(true);
 
   const statuses = phase.nodes.map((n) => getEffectiveStatus(n, nodeStates, environments));
@@ -1138,6 +1141,7 @@ function PhaseGroup({ phase, phaseNumber, nodeStates, environments, projectId, o
                   node={node}
                   nodeStates={nodeStates}
                   environments={environments}
+                  selectedModules={selectedModules}
                   projectId={projectId}
                   onUserActionComplete={onUserActionComplete}
                   onRunNode={(key, intent) => onRunNodes([key], intent)}
@@ -1519,6 +1523,7 @@ export function ProvisioningGraphView({
             phaseNumber={idx + 1}
             nodeStates={plan.nodeStates}
             environments={plan.environments}
+            selectedModules={plan.selectedModules}
             projectId={projectId}
             onUserActionComplete={(nodeKey, resources) => void handleUserActionComplete(nodeKey, resources)}
             onRunNodes={(nodeKeys) => void handleRunNodes(nodeKeys)}

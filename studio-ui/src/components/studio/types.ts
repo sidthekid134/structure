@@ -288,6 +288,8 @@ export interface PluginCatalogEntry {
   label: string;
   description: string;
   provider: string;
+  /** Plugin version (semver-style string) returned by the backend. */
+  version: string;
   functionGroupId?: string;
   requiredModules: string[];
   optionalModules: string[];
@@ -380,19 +382,12 @@ export const BUILTIN_MODULE_IDS = [
 
 export type BuiltinModuleId = (typeof BUILTIN_MODULE_IDS)[number];
 
-/** Logical capability buckets for the Studio module picker (UI only). */
-export type ModuleFunctionGroupId =
-  | 'cloud-foundation'
-  | 'persistent-store'
-  | 'object-storage'
-  | 'messaging'
-  | 'auth-identity'
-  | 'domain-edge'
-  | 'source-control'
-  | 'ci-automation'
-  | 'mobile-release'
-  | 'apple-distribution'
-  | 'google-play';
+/**
+ * Backend-driven function group id (e.g. 'firebase', 'github', 'mobile',
+ * 'infrastructure', 'auth', 'ai'). Open string so plugins that introduce
+ * new groups don't require a UI release.
+ */
+export type ModuleFunctionGroupId = string & { readonly __brand?: 'ModuleFunctionGroupId' };
 
 export interface ModuleDefinition {
   id: ModuleId;
@@ -407,7 +402,12 @@ export interface ModuleDefinition {
   teardownStepKeys: string[];
 }
 
-export type ProjectTemplateId = 'mobile-app' | 'web-app' | 'api-backend' | 'custom';
+/**
+ * Backend templates plus the synthetic UI-only `'custom'` template (which
+ * means "start with no modules and toggle them manually"). Open string so
+ * the backend can introduce new templates without a UI release.
+ */
+export type ProjectTemplateId = string & { readonly __brand?: 'ProjectTemplateId' };
 
 export interface ProjectTemplate {
   id: ProjectTemplateId;

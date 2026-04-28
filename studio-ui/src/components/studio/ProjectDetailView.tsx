@@ -1,18 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertCircle, CheckCircle2, Settings } from 'lucide-react';
 import { api } from './helpers';
 import { inferTemplateIdFromModules, ModuleSelectionWizard } from './ModuleSelectionWizard';
+import { LlmProvidersPanel } from './LlmProvidersPanel';
 import { ProjectQuickLinks } from './ProjectQuickLinks';
 import { SetupWizard } from './SetupWizard';
 import { TeardownWizard } from './TeardownWizard';
+import { usePluginCatalog } from './usePluginCatalog';
 import type {
+  ModuleDefinition,
+  ModuleFunctionGroupId,
   ModuleId,
   ProjectDetail,
+  ProjectTemplate,
   ProjectTemplateId,
   ProvisioningPlanResponse,
 } from './types';
 
-export type ProjectSubtab = 'modules' | 'setup' | 'dashboard' | 'settings';
+export type ProjectSubtab = 'modules' | 'setup' | 'dashboard' | 'llm' | 'settings';
 
 export function ProjectDetailView({
   projectDetail,
@@ -42,8 +47,46 @@ export function ProjectDetailView({
   const [isSavingModules, setIsSavingModules] = useState(false);
   const [isTeardownRunning, setIsTeardownRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<ProjectTemplateId>('mobile-app');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<ProjectTemplateId>(
+    'mobile-app' as ProjectTemplateId,
+  );
   const [selectedModules, setSelectedModules] = useState<ModuleId[]>([]);
+
+  const { catalog: pluginCatalog } = usePluginCatalog();
+  // Wizard expects (moduleIds, templates, modules); both come from the live
+  // catalog. Until the catalog has loaded the matcher returns 'custom' which
+  // is harmless — the next render once the catalog arrives reclassifies.
+  const catalogTemplates: ProjectTemplate[] = useMemo(() => {
+    if (!pluginCatalog) return [];
+    return Object.values(pluginCatalog.raw.templates).map((t) => ({
+      id: t.id as ProjectTemplateId,
+      label: t.label,
+      description: t.description,
+      modules: t.modules as ModuleId[],
+    }));
+  }, [pluginCatalog]);
+  const catalogModules: ModuleDefinition[] = useMemo(() => {
+    if (!pluginCatalog) return [];
+    return Object.values(pluginCatalog.raw.modules).map((entry) => ({
+      id: entry.id as ModuleId,
+      label: entry.label,
+      description: entry.description,
+      provider: entry.provider,
+      functionGroupId: (entry.functionGroupId ?? '') as ModuleFunctionGroupId,
+      requiredModules: entry.requiredModules as ModuleId[],
+      optionalModules: entry.optionalModules as ModuleId[],
+      stepKeys: [],
+      teardownStepKeys: [],
+    }));
+  }, [pluginCatalog]);
+
+  // Refs let loadPlan read the latest templates/modules without changing
+  // identity when the catalog resolves — otherwise loadPlan would recreate
+  // and the useEffect would refetch the plan a second time.
+  const catalogTemplatesRef = useRef(catalogTemplates);
+  const catalogModulesRef = useRef(catalogModules);
+  catalogTemplatesRef.current = catalogTemplates;
+  catalogModulesRef.current = catalogModules;
 
   const projectId = projectDetail.project.id;
   const activeTab = projectTab ?? tab;
@@ -67,7 +110,9 @@ export function ProjectDetailView({
       setPlan(payload);
       const mods = (payload.selectedModules as ModuleId[]) ?? [];
       setSelectedModules(mods);
-      setSelectedTemplateId(inferTemplateIdFromModules(mods));
+      setSelectedTemplateId(
+        inferTemplateIdFromModules(mods, catalogTemplatesRef.current, catalogModulesRef.current),
+      );
       const allDone = Object.values(payload.nodeStates).every(
         (state) => state.status === 'completed' || state.status === 'skipped',
       );
@@ -84,6 +129,18 @@ export function ProjectDetailView({
   useEffect(() => {
     void loadPlan();
   }, [loadPlan]);
+
+  // Re-classify the active template once the catalog arrives — `loadPlan`
+  // may have raced ahead of `usePluginCatalog()` and stamped 'custom' due to
+  // the templates list being empty at that point.
+  useEffect(() => {
+    if (catalogTemplates.length === 0) return;
+    if (selectedModules.length === 0) return;
+    setSelectedTemplateId((current) => {
+      const next = inferTemplateIdFromModules(selectedModules, catalogTemplates, catalogModules);
+      return next === current ? current : next;
+    });
+  }, [catalogTemplates, catalogModules, selectedModules]);
 
   const setupCompleted = useMemo(() => {
     if (!plan) return false;
@@ -102,6 +159,12 @@ export function ProjectDetailView({
     }
     return false;
   }, [plan, selectedModules]);
+
+  /** Steps that describe module-scoped resources (e.g. LLM EAS sync) follow this list so copy matches the Modules tab even before Apply. */
+  const selectedModulesForStepCopy = useMemo((): string[] => {
+    if (!plan) return selectedModules as string[];
+    return modulesDirty ? (selectedModules as string[]) : ((plan.selectedModules as string[]) ?? []);
+  }, [plan, modulesDirty, selectedModules]);
 
   const runTeardown = useCallback(async () => {
     setIsTeardownRunning(true);
@@ -123,7 +186,7 @@ export function ProjectDetailView({
       <ProjectQuickLinks plan={plan} onDeleteProject={onDeleteProject} />
 
       <div className="flex items-center gap-1 border-b border-border flex-wrap">
-        {(['modules', 'setup', 'dashboard', 'settings'] as const).map((tabId) => (
+        {(['modules', 'setup', 'dashboard', 'llm', 'settings'] as const).map((tabId) => (
           <button
             key={tabId}
             type="button"
@@ -140,7 +203,9 @@ export function ProjectDetailView({
                 ? 'Setup'
                 : tabId === 'dashboard'
                   ? 'Dashboard'
-                  : 'Settings'}
+                  : tabId === 'llm'
+                    ? 'AI / LLM'
+                    : 'Settings'}
           </button>
         ))}
       </div>
@@ -162,7 +227,7 @@ export function ProjectDetailView({
           }}
           onModulesChange={(modules) => {
             setSelectedModules(modules);
-            setSelectedTemplateId(inferTemplateIdFromModules(modules));
+            setSelectedTemplateId(inferTemplateIdFromModules(modules, catalogTemplates, catalogModules));
           }}
           hasPendingChanges={modulesDirty}
           isApplying={isSavingModules}
@@ -194,6 +259,7 @@ export function ProjectDetailView({
         <SetupWizard
           projectId={projectId}
           plan={plan}
+          displaySelectedModules={selectedModulesForStepCopy}
           onPlanChange={setPlan}
           onUserActionComplete={async (nodeKey, resources) => {
             await api(
@@ -239,6 +305,15 @@ export function ProjectDetailView({
             </p>
           </div>
         </div>
+      )}
+
+      {activeTab === 'llm' && (
+        <LlmProvidersPanel
+          projectId={projectId}
+          effectiveSelectedModules={selectedModulesForStepCopy as ModuleId[]}
+          onJumpToSetup={() => updateTab('setup')}
+          onJumpToModules={() => updateTab('modules')}
+        />
       )}
 
       {activeTab === 'settings' && (

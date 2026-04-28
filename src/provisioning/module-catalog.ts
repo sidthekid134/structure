@@ -22,6 +22,10 @@ export const BUILTIN_MODULE_IDS = [
   'google-play-publishing',
   'cloudflare-domain',
   'oauth-social',
+  'llm-openai',
+  'llm-anthropic',
+  'llm-gemini',
+  'llm-custom',
 ] as const;
 
 export type BuiltinModuleId = (typeof BUILTIN_MODULE_IDS)[number];
@@ -174,6 +178,7 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
       'eas:create-project',
       'eas:configure-build-profiles',
       'eas:sync-runtime-env',
+      'eas:sync-llm-secrets',
       'eas:store-token-in-github',
       'eas:write-eas-json',
     ],
@@ -260,6 +265,50 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     teardownStepKeys: ['oauth:delete-oauth-clients'],
     userActionKeys: ['user:verify-auth-integration-kit'],
   },
+  'llm-openai': {
+    id: 'llm-openai',
+    label: 'OpenAI',
+    description: 'Connect OpenAI credentials and verify available models.',
+    provider: 'llm',
+    requiredModules: [],
+    optionalModules: [],
+    stepKeys: [],
+    teardownStepKeys: ['llm:revoke-openai-credentials'],
+    userActionKeys: ['user:provide-openai-api-key'],
+  },
+  'llm-anthropic': {
+    id: 'llm-anthropic',
+    label: 'Anthropic Claude',
+    description: 'Connect Anthropic credentials and verify available Claude models.',
+    provider: 'llm',
+    requiredModules: [],
+    optionalModules: [],
+    stepKeys: [],
+    teardownStepKeys: ['llm:revoke-anthropic-credentials'],
+    userActionKeys: ['user:provide-anthropic-api-key'],
+  },
+  'llm-gemini': {
+    id: 'llm-gemini',
+    label: 'Google Gemini',
+    description: 'Connect Google Gemini credentials and verify available models.',
+    provider: 'llm',
+    requiredModules: [],
+    optionalModules: [],
+    stepKeys: [],
+    teardownStepKeys: ['llm:revoke-gemini-credentials'],
+    userActionKeys: ['user:provide-gemini-api-key'],
+  },
+  'llm-custom': {
+    id: 'llm-custom',
+    label: 'Custom OpenAI-Compatible',
+    description: 'Connect custom endpoint credentials and verify available models.',
+    provider: 'llm',
+    requiredModules: [],
+    optionalModules: [],
+    stepKeys: [],
+    teardownStepKeys: ['llm:revoke-custom-credentials'],
+    userActionKeys: ['user:provide-custom-llm-credentials'],
+  },
 };
 
 export const PROJECT_TEMPLATES: Readonly<Record<string, ProjectTemplate>> = {
@@ -321,7 +370,7 @@ export const DEFAULT_MODULE_IDS: ModuleId[] = PROJECT_TEMPLATES['mobile-app'].mo
  */
 export function resolveModuleDependencies(
   moduleIds: ModuleId[],
-  catalog: Readonly<Record<string, ModuleDefinition>> = MODULE_CATALOG,
+  catalog: Readonly<Record<string, ModuleDefinition>> = getEffectiveModuleCatalog(),
 ): ModuleId[] {
   const seen = new Set<ModuleId>();
   const visiting = new Set<ModuleId>();
@@ -354,7 +403,7 @@ export function resolveModuleDependencies(
 
 export function getProvidersForModules(
   moduleIds: ModuleId[],
-  catalog: Readonly<Record<string, ModuleDefinition>> = MODULE_CATALOG,
+  catalog: Readonly<Record<string, ModuleDefinition>> = getEffectiveModuleCatalog(),
 ): ProviderType[] {
   const providers = new Set<ProviderType>();
   for (const moduleId of resolveModuleDependencies(moduleIds, catalog)) {
@@ -365,12 +414,16 @@ export function getProvidersForModules(
 
 export function getStepKeysForModules(
   moduleIds: ModuleId[],
-  catalog: Readonly<Record<string, ModuleDefinition>> = MODULE_CATALOG,
+  catalog: Readonly<Record<string, ModuleDefinition>> = getEffectiveModuleCatalog(),
 ): string[] {
   const stepKeys = new Set<string>();
   for (const moduleId of resolveModuleDependencies(moduleIds, catalog)) {
-    for (const stepKey of catalog[moduleId]!.stepKeys) {
+    const mod = catalog[moduleId]!;
+    for (const stepKey of mod.stepKeys) {
       stepKeys.add(stepKey);
+    }
+    for (const key of mod.userActionKeys ?? []) {
+      stepKeys.add(key);
     }
   }
   return Array.from(stepKeys);
@@ -378,7 +431,7 @@ export function getStepKeysForModules(
 
 export function getTeardownStepKeysForModules(
   moduleIds: ModuleId[],
-  catalog: Readonly<Record<string, ModuleDefinition>> = MODULE_CATALOG,
+  catalog: Readonly<Record<string, ModuleDefinition>> = getEffectiveModuleCatalog(),
 ): string[] {
   const stepKeys = new Set<string>();
   for (const moduleId of resolveModuleDependencies(moduleIds, catalog)) {

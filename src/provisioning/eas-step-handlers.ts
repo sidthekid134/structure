@@ -4,6 +4,7 @@
  */
 
 import type { StepHandler, StepHandlerContext, StepHandlerResult } from './step-handler-registry.js';
+import type { CredentialType } from '../services/credential-service.js';
 import { ExpoGraphqlEasApiClient } from '../providers/expo-graphql-eas-client.js';
 import { projectResourceSlug } from '../studio/project-identity.js';
 import {
@@ -13,10 +14,34 @@ import {
 import {
   extractFirebaseApiKeyFromAndroidConfig,
   extractFirebaseApiKeyFromIosConfig,
+  LLM_KIND_MODULE_IDS,
+  PROJECT_LLM_RUNTIME_ENV_KEYS,
+  PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES,
   PROJECT_RUNTIME_ENV_KEYS,
   PROJECT_RUNTIME_ENV_SECRET_TYPES,
+  resolveProjectLlmRuntimeEnvValues,
   resolveProjectRuntimeEnvValues,
+  type ProjectLlmRuntimeEnvResolveInput,
 } from './runtime-env.js';
+
+function selectedLlmModuleIdsFromPlan(context: StepHandlerContext): string[] | undefined {
+  const raw = context.projectManager.loadPlan(context.projectId)?.selectedModules;
+  if (raw === undefined) return undefined;
+  const llm = raw.filter((id) => (LLM_KIND_MODULE_IDS as readonly string[]).includes(id));
+  return llm;
+}
+
+function llmResolveCredentialOpts(
+  context: StepHandlerContext,
+): Pick<ProjectLlmRuntimeEnvResolveInput, 'readVault' | 'retrieveProjectCredential'> {
+  const cs = context.credentialService;
+  return {
+    readVault: (providerId, key) => context.vaultManager.getCredential(context.passphrase, providerId, key),
+    retrieveProjectCredential: cs
+      ? (type: CredentialType) => cs.retrieveCredential(context.projectId, type)
+      : undefined,
+  };
+}
 
 const STUDIO_EAS_ENV_MARKER = 'STUDIO_EAS_ENV';
 
@@ -186,6 +211,27 @@ function buildRuntimeEnvResourcesProduced(
   ];
   for (const [sourceKey, producedKey] of mapping) {
     const value = runtimeValues[sourceKey]?.trim() ?? '';
+    if (value) out[producedKey] = value;
+  }
+  return out;
+}
+
+function buildLlmRuntimeEnvResourcesProduced(llmValues: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  const mapping: Array<[sourceKey: string, producedKey: string]> = [
+    ['LLM_OPENAI_API_KEY', 'eas_env_llm_openai_api_key'],
+    ['LLM_OPENAI_ORGANIZATION_ID', 'eas_env_llm_openai_organization_id'],
+    ['LLM_OPENAI_DEFAULT_MODEL', 'eas_env_llm_openai_default_model'],
+    ['LLM_ANTHROPIC_API_KEY', 'eas_env_llm_anthropic_api_key'],
+    ['LLM_ANTHROPIC_DEFAULT_MODEL', 'eas_env_llm_anthropic_default_model'],
+    ['LLM_GEMINI_API_KEY', 'eas_env_llm_gemini_api_key'],
+    ['LLM_GEMINI_DEFAULT_MODEL', 'eas_env_llm_gemini_default_model'],
+    ['LLM_CUSTOM_API_KEY', 'eas_env_llm_custom_api_key'],
+    ['LLM_CUSTOM_BASE_URL', 'eas_env_llm_custom_base_url'],
+    ['LLM_CUSTOM_DEFAULT_MODEL', 'eas_env_llm_custom_default_model'],
+  ];
+  for (const [sourceKey, producedKey] of mapping) {
+    const value = llmValues[sourceKey]?.trim() ?? '';
     if (value) out[producedKey] = value;
   }
   return out;
@@ -453,8 +499,135 @@ const syncRuntimeEnvHandler: StepHandler = {
   },
 };
 
+const syncLlmSecretsHandler: StepHandler = {
+  stepKey: 'eas:sync-llm-secrets',
+
+  async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const token = readExpoToken(context);
+    if (!token) {
+      return {
+        reconciled: false,
+        message: 'No Expo token in the organization vault. Connect EAS under organization settings first.',
+      };
+    }
+    const client = new ExpoGraphqlEasApiClient(token);
+    const expoAppId = await resolveExpoAppId(context, client);
+    if (!expoAppId) {
+      return {
+        reconciled: false,
+        message: 'No Expo app found — run "Create EAS Project" first so eas_project_id is recorded.',
+      };
+    }
+    const llm = resolveProjectLlmRuntimeEnvValues({
+      ...llmResolveCredentialOpts(context),
+      upstream: context.upstreamArtifacts,
+      selectedLlmModuleIds: selectedLlmModuleIdsFromPlan(context),
+    });
+    const targetEnvironments = projectEnvironments(context);
+    const envTargets = targetEnvironments.length > 0 ? targetEnvironments : ['development'];
+    let upserted = 0;
+    let removed = 0;
+    for (const [name, value] of Object.entries(llm.values)) {
+      const visibility =
+        PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES[
+          name as keyof typeof PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES
+        ] ?? 'PUBLIC';
+      await client.reconcileAppEnvironmentVariableAcrossStudioEnvironments(
+        expoAppId,
+        name,
+        value,
+        visibility,
+        envTargets,
+      );
+      if (value.trim()) upserted += 1;
+      else removed += 1;
+    }
+    return {
+      reconciled: true,
+      resourcesProduced: buildLlmRuntimeEnvResourcesProduced(llm.values),
+      message: `Synced LLM env vars to EAS: ${upserted} upserted, ${removed} removed.`,
+    };
+  },
+
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const token = readExpoToken(context);
+    if (!token) {
+      return {
+        reconciled: false,
+        message: 'No Expo token in vault — cannot remove LLM env vars from the Expo app.',
+      };
+    }
+    const client = new ExpoGraphqlEasApiClient(token);
+    const expoAppId = await resolveExpoAppId(context, client);
+    if (!expoAppId) {
+      return { reconciled: true, message: 'No Expo app found — nothing to delete.' };
+    }
+    const envTargets = projectEnvironments(context);
+    const targets = envTargets.length > 0 ? envTargets : ['development'];
+    let removed = 0;
+    for (const env of targets) {
+      for (const key of PROJECT_LLM_RUNTIME_ENV_KEYS) {
+        removed += await client.removeAppEnvironmentVariableFromStudioEnvironment(expoAppId, env, key);
+      }
+    }
+    return {
+      reconciled: true,
+      message:
+        removed === 0
+          ? 'No LLM env vars were present on EAS.'
+          : `Removed ${removed} LLM env var(s) from EAS.`,
+    };
+  },
+
+  async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const token = readExpoToken(context);
+    if (!token) {
+      return { reconciled: false, message: 'No Expo token in vault.' };
+    }
+    const client = new ExpoGraphqlEasApiClient(token);
+    const expoAppId = await resolveExpoAppId(context, client);
+    if (!expoAppId) {
+      return { reconciled: false, message: 'No Expo app found for this project.' };
+    }
+    const llm = resolveProjectLlmRuntimeEnvValues({
+      ...llmResolveCredentialOpts(context),
+      upstream: context.upstreamArtifacts,
+      selectedLlmModuleIds: selectedLlmModuleIdsFromPlan(context),
+    });
+    const expected = Object.entries(llm.values).filter(([, value]) => value.trim().length > 0);
+    if (expected.length === 0) {
+      return { reconciled: true, resourcesProduced: {} };
+    }
+    const vars = await client.listAppEnvironmentVariablesByNames(
+      expoAppId,
+      expected.map(([name]) => name),
+    );
+    const projectSlots = projectEnvironments(context).map((e) => studioEnvToExpoSlot(e));
+    const mismatched = expected.filter(([name]) => {
+      const matching = vars.filter((v) => v.name === name);
+      // Secret values can be masked in readback, so existence in each target slot is enough.
+      return projectSlots.some((slot) => !matching.some((v) => (v.environments ?? []).includes(slot)));
+    });
+    if (mismatched.length > 0) {
+      return {
+        reconciled: false,
+        message: `EAS LLM env is not reconciled: ${mismatched.map(([k]) => k).join(', ')}.`,
+      };
+    }
+    return {
+      reconciled: true,
+      resourcesProduced: buildLlmRuntimeEnvResourcesProduced(llm.values),
+    };
+  },
+
+  async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
+    return syncLlmSecretsHandler.validate(context);
+  },
+};
+
 export const EAS_STEP_HANDLERS: StepHandler[] = [
   createEasProjectHandler,
   configureBuildProfilesHandler,
   syncRuntimeEnvHandler,
+  syncLlmSecretsHandler,
 ];

@@ -19,7 +19,11 @@ import {
   type ProvisioningContributor,
   type ProvisioningContributorContext,
 } from './contributors.js';
-import { PROJECT_RUNTIME_ENV_KEYS, PROJECT_RUNTIME_ENV_SECRET_TYPES } from './runtime-env.js';
+import {
+  PROJECT_RUNTIME_ENV_KEYS,
+  PROJECT_RUNTIME_ENV_SECRET_TYPES,
+  PROJECT_LLM_RUNTIME_ENV_KEYS,
+} from './runtime-env.js';
 import {
   DEFAULT_MODULE_IDS,
   type ModuleId,
@@ -221,6 +225,155 @@ export const USER_ACTIONS: UserActionNode[] = [
         key: 'auth_integration_verified',
         label: 'Auth Integration Verified',
         description: 'User confirmed app-level auth integration was applied and validated.',
+      },
+    ],
+  },
+  // -------------------------------------------------------------------------
+  // LLM credential gates — one per kind. Each writes to a kind-specific
+  // secret slot under provider 'llm' so multiple kinds can coexist on the
+  // same project without overwriting each other's API keys.
+  // -------------------------------------------------------------------------
+  {
+    type: 'user-action',
+    key: 'user:provide-openai-api-key',
+    label: 'OpenAI API Key',
+    description:
+      'Generate an OpenAI API key with model.read permission and paste it here. The key is encrypted at rest and used to verify model access for this project.',
+    category: 'credential-upload',
+    provider: 'llm',
+    verification: { type: 'credential-upload', secretKey: 'openai_api_key' },
+    helpUrl: 'https://platform.openai.com/api-keys',
+    dependencies: [],
+    produces: [
+      {
+        key: 'llm_openai_api_key',
+        label: 'OpenAI API Key',
+        description: 'Encrypted OpenAI API key scoped to this project.',
+      },
+      {
+        key: 'llm_openai_models_available',
+        label: 'OpenAI Models Available',
+        description: 'Comma-separated list of model ids returned during credential validation.',
+      },
+      {
+        key: 'llm_openai_default_model_found',
+        label: 'OpenAI Default Model Present',
+        description: '"true" / "false" / "unchecked" — whether the manifest default appears in the listing.',
+      },
+      {
+        key: 'llm_openai_default_model',
+        label: 'OpenAI Default Model',
+        description:
+          'Model id pinned at credential validation when the gate completes (manifest default or first available).',
+      },
+    ],
+  },
+  {
+    type: 'user-action',
+    key: 'user:provide-anthropic-api-key',
+    label: 'Anthropic API Key',
+    description:
+      'Create an Anthropic API key from the Anthropic Console and paste it here. The key is encrypted at rest and used to verify Claude model access.',
+    category: 'credential-upload',
+    provider: 'llm',
+    verification: { type: 'credential-upload', secretKey: 'anthropic_api_key' },
+    helpUrl: 'https://console.anthropic.com/settings/keys',
+    dependencies: [],
+    produces: [
+      {
+        key: 'llm_anthropic_api_key',
+        label: 'Anthropic API Key',
+        description: 'Encrypted Anthropic API key scoped to this project.',
+      },
+      {
+        key: 'llm_anthropic_models_available',
+        label: 'Anthropic Models Available',
+        description: 'Comma-separated list of model ids returned during credential validation.',
+      },
+      {
+        key: 'llm_anthropic_default_model_found',
+        label: 'Anthropic Default Model Present',
+        description: '"true" / "false" / "unchecked" — whether the manifest default appears in the listing.',
+      },
+      {
+        key: 'llm_anthropic_default_model',
+        label: 'Anthropic Default Model',
+        description:
+          'Model id pinned at credential validation when the gate completes (manifest default or first available).',
+      },
+    ],
+  },
+  {
+    type: 'user-action',
+    key: 'user:provide-gemini-api-key',
+    label: 'Google Gemini API Key',
+    description:
+      'Generate a Gemini API key from Google AI Studio and paste it here. The key is encrypted at rest and used to verify access to the Gemini API.',
+    category: 'credential-upload',
+    provider: 'llm',
+    verification: { type: 'credential-upload', secretKey: 'gemini_api_key' },
+    helpUrl: 'https://aistudio.google.com/app/apikey',
+    dependencies: [],
+    produces: [
+      {
+        key: 'llm_gemini_api_key',
+        label: 'Gemini API Key',
+        description: 'Encrypted Google Gemini API key scoped to this project.',
+      },
+      {
+        key: 'llm_gemini_models_available',
+        label: 'Gemini Models Available',
+        description: 'Comma-separated list of model ids returned during credential validation.',
+      },
+      {
+        key: 'llm_gemini_default_model_found',
+        label: 'Gemini Default Model Present',
+        description: '"true" / "false" / "unchecked" — whether the manifest default appears in the listing.',
+      },
+      {
+        key: 'llm_gemini_default_model',
+        label: 'Gemini Default Model',
+        description:
+          'Model id pinned at credential validation when the gate completes (manifest default or first available).',
+      },
+    ],
+  },
+  {
+    type: 'user-action',
+    key: 'user:provide-custom-llm-credentials',
+    label: 'Custom LLM Endpoint Credentials',
+    description:
+      'Provide the API key and HTTPS base URL for an OpenAI-compatible inference endpoint (Azure OpenAI, vLLM, Ollama with TLS, LM Studio, etc.).',
+    category: 'credential-upload',
+    provider: 'llm',
+    verification: { type: 'credential-upload', secretKey: 'custom_api_key' },
+    dependencies: [],
+    produces: [
+      {
+        key: 'llm_custom_api_key',
+        label: 'Custom LLM API Key',
+        description: 'Encrypted API key for the custom OpenAI-compatible endpoint.',
+      },
+      {
+        key: 'llm_custom_base_url',
+        label: 'Custom LLM Base URL',
+        description: 'HTTPS base URL of the custom inference endpoint (no trailing /chat/completions).',
+      },
+      {
+        key: 'llm_custom_models_available',
+        label: 'Custom Models Available',
+        description: 'Comma-separated list of model ids returned during credential validation.',
+      },
+      {
+        key: 'llm_custom_default_model_found',
+        label: 'Custom Default Model Present',
+        description: '"true" / "false" / "unchecked" — whether the manifest default appears in the listing.',
+      },
+      {
+        key: 'llm_custom_default_model',
+        label: 'Custom Default Model',
+        description:
+          'Model id pinned at credential validation when the gate completes (manifest default or first available).',
       },
     ],
   },
@@ -1247,6 +1400,31 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
   },
   {
     type: 'step',
+    key: 'eas:sync-llm-secrets',
+    label: 'Sync LLM Secrets to EAS',
+    description:
+      'Mirrors LLM_* environment variables to the linked Expo app (per EAS env slot for this Studio environment). Only modules you added under Modules (e.g. llm-openai, llm-gemini) are written; other providers’ LLM_* names are cleared so Expo does not keep stale keys. API keys, optional org/base URL, and default models come from the vault and credential gate.',
+    provider: 'eas',
+    environmentScope: 'per-environment',
+    automationLevel: 'full',
+    dependencies: [{ nodeKey: 'eas:create-project', required: true }],
+    produces: [
+      {
+        key: 'eas_llm_env_sync_snapshot',
+        label: 'LLM variables on Expo (selected modules)',
+        description:
+          'Upserts or clears each listed Expo environment variable by name for whichever llm-* modules are in your project plan.',
+        presentation: {
+          destinationType: 'Expo EAS environment variables',
+          writeBehavior: 'Upsert or clear per key (clear when module not selected)',
+        },
+      },
+    ],
+    managedEnvKeys: [...PROJECT_LLM_RUNTIME_ENV_KEYS],
+    estimatedDurationMs: 6000,
+  },
+  {
+    type: 'step',
     key: 'eas:store-token-in-github',
     label: 'Store Expo Token in GitHub',
     description:
@@ -1745,6 +1923,78 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// LLM Steps
+// ---------------------------------------------------------------------------
+
+/**
+ * The LLM module ships as 4 sibling plugins — one per kind (openai,
+ * anthropic, gemini, custom). There are no separate automation steps: the
+ * default model id is pinned when the credential upload gate submits (same
+ * list-models verification that encrypts and stores the key).
+ */
+
+type LlmKindMeta = {
+  kind: 'openai' | 'anthropic' | 'gemini' | 'custom';
+  label: string;
+  userActionKey: string;
+};
+
+const LLM_KIND_META: LlmKindMeta[] = [
+  {
+    kind: 'openai',
+    label: 'OpenAI',
+    userActionKey: 'user:provide-openai-api-key',
+  },
+  {
+    kind: 'anthropic',
+    label: 'Anthropic Claude',
+    userActionKey: 'user:provide-anthropic-api-key',
+  },
+  {
+    kind: 'gemini',
+    label: 'Google Gemini',
+    userActionKey: 'user:provide-gemini-api-key',
+  },
+  {
+    kind: 'custom',
+    label: 'Custom OpenAI-Compatible',
+    userActionKey: 'user:provide-custom-llm-credentials',
+  },
+];
+
+function makeLlmTeardownStepsForKind(meta: LlmKindMeta): ProvisioningStepNode[] {
+  return [
+    {
+      type: 'step',
+      key: `llm:revoke-${meta.kind}-credentials`,
+      label: `Revoke ${meta.label} Credentials`,
+      description: `Manually revoke the API key in the ${meta.label} console and remove the encrypted credential from the project vault. Studio cannot revoke remote keys on your behalf.`,
+      provider: 'llm',
+      environmentScope: 'global',
+      automationLevel: 'manual',
+      direction: 'teardown',
+      teardownOf: meta.userActionKey,
+      dependencies: [],
+      produces: [],
+    },
+  ];
+}
+
+/** Each LLM kind plugin exposes only user-action + teardown flows (no provisioning steps). */
+export const LLM_OPENAI_STEPS: ProvisioningStepNode[] = [];
+export const LLM_ANTHROPIC_STEPS: ProvisioningStepNode[] = [];
+export const LLM_GEMINI_STEPS: ProvisioningStepNode[] = [];
+export const LLM_CUSTOM_STEPS: ProvisioningStepNode[] = [];
+
+/** All LLM steps from every kind — empty; used for static catalog assembly. */
+export const LLM_STEPS: ProvisioningStepNode[] = [
+  ...LLM_OPENAI_STEPS,
+  ...LLM_ANTHROPIC_STEPS,
+  ...LLM_GEMINI_STEPS,
+  ...LLM_CUSTOM_STEPS,
+];
+
+// ---------------------------------------------------------------------------
 // Teardown Steps (reverse-order cleanup)
 // ---------------------------------------------------------------------------
 
@@ -1974,6 +2224,18 @@ export const OAUTH_TEARDOWN_STEPS: ProvisioningStepNode[] = [
   },
 ];
 
+export const LLM_OPENAI_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[0]);
+export const LLM_ANTHROPIC_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[1]);
+export const LLM_GEMINI_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[2]);
+export const LLM_CUSTOM_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[3]);
+
+export const LLM_TEARDOWN_STEPS: ProvisioningStepNode[] = [
+  ...LLM_OPENAI_TEARDOWN_STEPS,
+  ...LLM_ANTHROPIC_TEARDOWN_STEPS,
+  ...LLM_GEMINI_TEARDOWN_STEPS,
+  ...LLM_CUSTOM_TEARDOWN_STEPS,
+];
+
 // ---------------------------------------------------------------------------
 // Master catalog: all nodes by provider
 // ---------------------------------------------------------------------------
@@ -1990,6 +2252,7 @@ const STATIC_STEPS_BY_PROVIDER: Record<string, ProvisioningStepNode[]> = {
   'google-play': GOOGLE_PLAY_STEPS,
   cloudflare: CLOUDFLARE_STEPS,
   oauth: OAUTH_STEPS,
+  llm: LLM_STEPS,
 };
 
 /** @deprecated Use globalPluginRegistry.getStepsForProvider() after plugin bootstrap */
@@ -2024,6 +2287,7 @@ const STATIC_TEARDOWN_STEPS_BY_PROVIDER: Record<string, ProvisioningStepNode[]> 
   'google-play': GOOGLE_PLAY_TEARDOWN_STEPS,
   cloudflare: CLOUDFLARE_TEARDOWN_STEPS,
   oauth: OAUTH_TEARDOWN_STEPS,
+  llm: LLM_TEARDOWN_STEPS,
 };
 
 /** @deprecated Use globalPluginRegistry.getTeardownStepsForProvider() after plugin bootstrap */
@@ -2300,10 +2564,30 @@ export function buildProvisioningPlanForModules(
     resolvedModules,
     platforms,
   );
-  const filteredNodes = fullPlan.nodes.filter((node) => {
-    if (node.type === 'user-action') return true;
-    return stepKeySet.has(node.key);
-  });
+  // Keep only nodes owned by the selected modules, plus their explicit
+  // dependency closure (typically user-action gates). This prevents
+  // provider-wide user actions from leaking in when a provider has multiple
+  // sibling modules (e.g. llm-openai / llm-anthropic / llm-gemini / llm-custom).
+  const nodeByKey = new Map(fullPlan.nodes.map((node) => [node.key, node]));
+  const requiredNodeKeys = new Set<string>(stepKeySet);
+  const walkDeps = (nodeKey: string): void => {
+    const node = nodeByKey.get(nodeKey);
+    if (!node) return;
+    for (const dep of node.dependencies ?? []) {
+      // Optional edges are for ordering hints when both ends are in the graph
+      // (e.g. sync steps after selected LLM credential models). They must not
+      // pull in unrelated sibling modules.
+      if (!dep.required) continue;
+      if (requiredNodeKeys.has(dep.nodeKey)) continue;
+      requiredNodeKeys.add(dep.nodeKey);
+      walkDeps(dep.nodeKey);
+    }
+  };
+  for (const key of Array.from(requiredNodeKeys)) {
+    walkDeps(key);
+  }
+
+  const filteredNodes = fullPlan.nodes.filter((node) => requiredNodeKeys.has(node.key));
   const prunedNodes = pruneNodesWithUnresolvedDependencies(filteredNodes);
 
   const nodeStates = new Map<string, NodeState>();

@@ -16,6 +16,7 @@ import {
   GooglePlayManifestConfig,
   CloudflareManifestConfig,
   OAuthManifestConfig,
+  LlmManifestConfig,
   PLATFORM_CORE_VERSION,
 } from './types.js';
 import { ProviderManifest } from './types.js';
@@ -46,6 +47,7 @@ export class ProviderRegistry {
   getAdapter(provider: 'google-play'): ProviderAdapter<GooglePlayManifestConfig>;
   getAdapter(provider: 'cloudflare'): ProviderAdapter<CloudflareManifestConfig>;
   getAdapter(provider: 'oauth'): ProviderAdapter<OAuthManifestConfig>;
+  getAdapter(provider: 'llm'): ProviderAdapter<LlmManifestConfig>;
   getAdapter(provider: ProviderType): ProviderAdapter<ProviderConfig>;
   getAdapter(provider: ProviderType): ProviderAdapter<ProviderConfig> {
     const adapter = this.adapters.get(provider);

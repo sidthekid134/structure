@@ -100,6 +100,31 @@ const CREDENTIAL_INFO: Record<CredentialType, Omit<MissingCredentialInfo, 'type'
       'Your app hostname from project settings (or enter app.example.com) for deep links and universal links.',
     input_type: 'text',
   },
+  llm_openai_api_key: {
+    label: 'OpenAI API Key',
+    description:
+      'Required to call OpenAI models (GPT-4o, GPT-4o-mini, embeddings, etc.) from this project.',
+    input_type: 'password',
+    help_url: 'https://platform.openai.com/api-keys',
+  },
+  llm_anthropic_api_key: {
+    label: 'Anthropic API Key',
+    description: 'Required to call Anthropic Claude models from this project.',
+    input_type: 'password',
+    help_url: 'https://console.anthropic.com/settings/keys',
+  },
+  llm_gemini_api_key: {
+    label: 'Google Gemini API Key',
+    description: 'Required to call Gemini models via Google AI Studio from this project.',
+    input_type: 'password',
+    help_url: 'https://aistudio.google.com/app/apikey',
+  },
+  llm_custom_api_key: {
+    label: 'Custom LLM API Key',
+    description:
+      'Bearer token for an OpenAI-compatible inference endpoint hosted by you (vLLM, TGI, etc.).',
+    input_type: 'password',
+  },
 };
 
 // ---------------------------------------------------------------------------

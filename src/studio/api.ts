@@ -158,6 +158,8 @@ import { CredentialStore } from '../services/credential-store.js';
 import { CredentialService } from '../services/credential-service.js';
 import type { CredentialType } from '../services/credential-service.js';
 import { validateByType } from '../validators/credential-validators.js';
+import { createLlmClient } from '../providers/llm.js';
+import type { LlmKind, LlmManifestConfig } from '../providers/types.js';
 import { GuidedFlowService } from '../services/guided-flow-service.js';
 import { AppleSigningHandler } from '../handlers/apple-signing-flow-handler.js';
 import { GooglePlayHandler } from '../handlers/google-play-flow-handler.js';
@@ -3204,6 +3206,93 @@ export function createApiRouter(
           };
         }
 
+        // LLM credential-upload gates validate credentials immediately (live
+        // list-models call) so there is no standalone "verify credentials" step.
+        const llmUserActionToKind: Record<string, LlmKind> = {
+          'user:provide-openai-api-key': 'openai',
+          'user:provide-anthropic-api-key': 'anthropic',
+          'user:provide-gemini-api-key': 'gemini',
+          'user:provide-custom-llm-credentials': 'custom',
+        };
+        const llmKind = llmUserActionToKind[nodeKey];
+        if (llmKind) {
+          const apiKeyField = `${llmKind}_api_key`;
+          const apiKey = resourcesProduced?.[apiKeyField]?.trim();
+          if (!apiKey) {
+            res.status(400).json({ error: `Missing "${apiKeyField}" in resourcesProduced.` });
+            return;
+          }
+          try {
+            validateByType(llmKindCredentialType(llmKind), apiKey);
+          } catch (err) {
+            res.status(400).json({ error: (err as Error).message });
+            return;
+          }
+
+          const defaultModel = defaultModelForKind(llmKind);
+          const baseUrl =
+            llmKind === 'custom'
+              ? ((resourcesProduced?.['custom_base_url'] as string | undefined) ?? '').trim() || undefined
+              : undefined;
+          if (llmKind === 'custom' && !baseUrl) {
+            res.status(400).json({ error: 'Missing "custom_base_url" in resourcesProduced.' });
+            return;
+          }
+          const organizationId =
+            llmKind === 'openai'
+              ? ((resourcesProduced?.['openai_organization_id'] as string | undefined) ?? '').trim() || undefined
+              : undefined;
+
+          let verification;
+          try {
+            const client = createLlmClient(llmKind, apiKey, {
+              baseUrl,
+              organizationId,
+            });
+            verification = await client.verifyCredentials({ defaultModel });
+          } catch (err) {
+            res.status(400).json({ error: `LLM verification failed: ${(err as Error).message}` });
+            return;
+          }
+
+          // Pre-populate the downstream "Select Default Model" step input using
+          // the fresh verification result so operators don't have to copy/paste
+          // a model id after uploading credentials.
+          const suggestedDefaultModel =
+            verification.defaultModelFound === false && verification.modelsAvailable.length > 0
+              ? verification.modelsAvailable[0]!
+              : defaultModel;
+
+          const metadata: LlmCredentialMetadata = {
+            kind: llmKind,
+            display_name: llmKindDisplayLabel(llmKind),
+            default_model: suggestedDefaultModel,
+            ...(baseUrl ? { base_url: baseUrl } : {}),
+            ...(organizationId ? { organization_id: organizationId } : {}),
+            models_available: verification.modelsAvailable,
+            verified_at: new Date().toISOString(),
+          };
+          credentialService.storeCredential({
+            project_id: projectId,
+            credential_type: llmKindCredentialType(llmKind),
+            value: apiKey,
+            metadata: metadata as unknown as Record<string, unknown>,
+          });
+
+          normalizedResourcesProduced = {
+            ...(resourcesProduced ?? {}),
+            [apiKeyField]: '[stored in vault]',
+            ...(baseUrl ? { custom_base_url: baseUrl } : {}),
+            ...(organizationId ? { openai_organization_id: organizationId } : {}),
+            [`llm_${llmKind}_models_available`]: verification.modelsAvailable.slice(0, 50).join(','),
+            [`llm_${llmKind}_default_model`]: suggestedDefaultModel,
+            [`llm_${llmKind}_default_model_found`]:
+              verification.defaultModelFound === null
+                ? 'unchecked'
+                : String(verification.defaultModelFound),
+          };
+        }
+
         let verifiedGithubOwner: string | undefined;
         let verifiedGithubRepo: string | undefined;
         let verifiedCloudflareResources: Record<string, string> | undefined;
@@ -3585,6 +3674,7 @@ export function createApiRouter(
                 projectManager.getOrganization(),
               ),
               stepExecutionIntent: executionIntent,
+              retrieveProjectCredential: (type) => credentialService.retrieveCredential(projectId, type),
             },
             vaultRead,
             vaultWrite,
@@ -3923,6 +4013,7 @@ export function createApiRouter(
             vaultManager,
             passphrase: vaultPassphrase,
             projectManager,
+            credentialService,
           };
 
           console.log(
@@ -4103,6 +4194,7 @@ export function createApiRouter(
               {
                 initialUpstreamResources,
                 stepExecutionIntent: executionIntent,
+                retrieveProjectCredential: (type) => credentialService.retrieveCredential(projectId, type),
               },
               vaultRead,
               vaultWrite,
@@ -4292,6 +4384,7 @@ export function createApiRouter(
             vaultManager,
             passphrase: vaultPassphrase,
             projectManager,
+            credentialService,
           };
 
           try {
@@ -4836,6 +4929,7 @@ export function createApiRouter(
           upstreamResources: { ...upstream, ...(existing?.userInputs ?? {}) },
           vaultRead,
           vaultWrite: async () => { },
+          retrieveProjectCredential: (type) => credentialService.retrieveCredential(projectId, type),
         };
 
         const configForProvider = providerConfigsByProvider.get(node.provider) ?? ({} as ProviderConfig);
@@ -4861,6 +4955,7 @@ export function createApiRouter(
               vaultManager,
               passphrase: vaultPassphrase,
               projectManager,
+              credentialService,
             };
             let handlerResult = await stepHandler.sync(handlerContext);
             if (handlerResult === null) {
@@ -5299,6 +5394,7 @@ export function createApiRouter(
                   vaultManager,
                   passphrase: vaultPassphrase,
                   projectManager,
+                  credentialService,
                 };
 
                 try {
@@ -5588,6 +5684,8 @@ export function createApiRouter(
         const allowedTypes: CredentialType[] = [
           'github_pat', 'cloudflare_token', 'apple_p8', 'apple_team_id',
           'google_play_key', 'expo_token', 'domain_name',
+          'llm_openai_api_key', 'llm_anthropic_api_key',
+          'llm_gemini_api_key', 'llm_custom_api_key',
         ];
         if (!allowedTypes.includes(credentialType as CredentialType)) {
           res.status(400).json({
@@ -5781,6 +5879,309 @@ export function createApiRouter(
       }
     },
   );
+
+  // =========================================================================
+  // LLM provider management (per-project)
+  // =========================================================================
+  //
+  // Persists API keys + display config for OpenAI, Anthropic Claude, Google
+  // Gemini, and OpenAI-compatible custom endpoints. Each kind is unique per
+  // project; the credential value is encrypted by CredentialService and the
+  // display metadata (default model, base url, organization id, last verify
+  // result) lives in the credential's metadata JSON column.
+  //
+  // Lifecycle:
+  //   POST   /api/projects/:projectId/llm/:kind         configure + verify
+  //   GET    /api/projects/:projectId/llm                list configured kinds
+  //   POST   /api/projects/:projectId/llm/:kind/verify  re-verify existing key
+  //   DELETE /api/projects/:projectId/llm/:kind         remove credential
+  //
+  // The verification step performs a live request to the provider's models
+  // endpoint. Per project policy, errors propagate verbatim — no swallowing
+  // or fallback behavior — so the user sees the upstream message.
+  // -------------------------------------------------------------------------
+
+  const LLM_KINDS: readonly LlmKind[] = ['openai', 'anthropic', 'gemini', 'custom'] as const;
+
+  function llmKindCredentialType(kind: LlmKind): CredentialType {
+    switch (kind) {
+      case 'openai': return 'llm_openai_api_key';
+      case 'anthropic': return 'llm_anthropic_api_key';
+      case 'gemini': return 'llm_gemini_api_key';
+      case 'custom': return 'llm_custom_api_key';
+    }
+  }
+
+  function defaultModelForKind(kind: LlmKind): string {
+    switch (kind) {
+      case 'openai': return 'gpt-4o-mini';
+      case 'anthropic': return 'claude-3-5-haiku-latest';
+      case 'gemini': return 'gemini-1.5-flash';
+      case 'custom': return '';
+    }
+  }
+
+  function llmKindDisplayLabel(kind: LlmKind): string {
+    switch (kind) {
+      case 'openai': return 'OpenAI';
+      case 'anthropic': return 'Anthropic Claude';
+      case 'gemini': return 'Google Gemini';
+      case 'custom': return 'Custom OpenAI-compatible';
+    }
+  }
+
+  interface LlmCredentialMetadata {
+    kind: LlmKind;
+    display_name: string;
+    default_model: string;
+    base_url?: string;
+    organization_id?: string;
+    models_available: string[];
+    verified_at: string;
+    request_timeout_ms?: number;
+  }
+
+  function projectLlmSummary(projectId: string) {
+    const providers = LLM_KINDS.map((kind) => {
+      const summary = credentialService.getCredentialSummary(projectId, llmKindCredentialType(kind));
+      const meta = (summary?.metadata ?? {}) as Partial<LlmCredentialMetadata>;
+      return {
+        kind,
+        label: llmKindDisplayLabel(kind),
+        configured: Boolean(summary),
+        credential_id: summary?.id ?? null,
+        display_name: meta.display_name ?? null,
+        default_model: meta.default_model ?? null,
+        base_url: meta.base_url ?? null,
+        organization_id: meta.organization_id ?? null,
+        models_available: meta.models_available ?? [],
+        verified_at: meta.verified_at ?? null,
+        updated_at: summary ? new Date(summary.updated_at).toISOString() : null,
+      };
+    });
+    return { providers };
+  }
+
+  // GET /api/projects/:projectId/llm — list configured LLM providers
+  router.get('/projects/:projectId/llm', (req: Request, res: Response) => {
+    try {
+      res.json(projectLlmSummary(req.params.projectId));
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // POST /api/projects/:projectId/llm/:kind
+  // Body: { api_key, display_name?, default_model?, base_url?, organization_id?, request_timeout_ms? }
+  router.post('/projects/:projectId/llm/:kind', async (req: Request, res: Response) => {
+    const { projectId, kind } = req.params;
+    if (!LLM_KINDS.includes(kind as LlmKind)) {
+      res.status(400).json({
+        error: `Unsupported LLM kind "${kind}". Allowed: ${LLM_KINDS.join(', ')}`,
+      });
+      return;
+    }
+    const llmKind = kind as LlmKind;
+
+    const apiKey = (req.body?.api_key as string | undefined)?.trim();
+    if (!apiKey) {
+      res.status(400).json({ error: 'api_key is required.' });
+      return;
+    }
+
+    const displayName =
+      ((req.body?.display_name as string | undefined) ?? '').trim() ||
+      llmKindDisplayLabel(llmKind);
+    const defaultModel =
+      ((req.body?.default_model as string | undefined) ?? '').trim() ||
+      defaultModelForKind(llmKind);
+    const baseUrl = ((req.body?.base_url as string | undefined) ?? '').trim() || undefined;
+    const organizationId =
+      ((req.body?.organization_id as string | undefined) ?? '').trim() || undefined;
+    const requestTimeoutMs =
+      typeof req.body?.request_timeout_ms === 'number' ? req.body.request_timeout_ms : undefined;
+
+    if (llmKind === 'custom' && !baseUrl) {
+      res.status(400).json({ error: 'base_url is required for custom LLM kind.' });
+      return;
+    }
+
+    // Validate API key format (length / shape) before making any network call.
+    try {
+      validateByType(llmKindCredentialType(llmKind), apiKey);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+      return;
+    }
+
+    // Verify the key against the live provider endpoint. If verification
+    // fails, the credential is NOT stored — the user gets the upstream
+    // error verbatim.
+    const manifest: LlmManifestConfig = {
+      provider: 'llm',
+      kind: llmKind,
+      display_name: displayName,
+      default_model: defaultModel,
+      ...(baseUrl ? { base_url: baseUrl } : {}),
+      ...(organizationId ? { organization_id: organizationId } : {}),
+      ...(requestTimeoutMs ? { request_timeout_ms: requestTimeoutMs } : {}),
+    };
+
+    let verification;
+    try {
+      const client = createLlmClient(manifest.kind, apiKey, {
+        baseUrl,
+        organizationId,
+        timeoutMs: requestTimeoutMs,
+      });
+      verification = await client.verifyCredentials({ defaultModel });
+    } catch (err) {
+      res.status(400).json({ error: `LLM verification failed: ${(err as Error).message}` });
+      return;
+    }
+
+    // If the requested default model isn't returned by the provider's
+    // models endpoint, fall back to the first available model so the user
+    // ends up with a usable configuration on first attempt.
+    const resolvedDefaultModel =
+      verification.defaultModelFound === false && verification.modelsAvailable.length > 0
+        ? verification.modelsAvailable[0]
+        : defaultModel;
+
+    const metadata: LlmCredentialMetadata = {
+      kind: llmKind,
+      display_name: displayName,
+      default_model: resolvedDefaultModel,
+      ...(baseUrl ? { base_url: baseUrl } : {}),
+      ...(organizationId ? { organization_id: organizationId } : {}),
+      models_available: verification.modelsAvailable,
+      verified_at: new Date().toISOString(),
+      ...(requestTimeoutMs ? { request_timeout_ms: requestTimeoutMs } : {}),
+    };
+
+    try {
+      const stored = credentialService.storeCredential({
+        project_id: projectId,
+        credential_type: llmKindCredentialType(llmKind),
+        value: apiKey,
+        metadata: metadata as unknown as Record<string, unknown>,
+      });
+      res.status(201).json({
+        kind: llmKind,
+        credential_id: stored.id,
+        verified_at: metadata.verified_at,
+        models_available: metadata.models_available,
+        default_model: metadata.default_model,
+        default_model_found: verification.defaultModelFound,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // POST /api/projects/:projectId/llm/:kind/verify — re-verify an existing key
+  router.post('/projects/:projectId/llm/:kind/verify', async (req: Request, res: Response) => {
+    const { projectId, kind } = req.params;
+    if (!LLM_KINDS.includes(kind as LlmKind)) {
+      res.status(400).json({
+        error: `Unsupported LLM kind "${kind}". Allowed: ${LLM_KINDS.join(', ')}`,
+      });
+      return;
+    }
+    const llmKind = kind as LlmKind;
+    const credentialType = llmKindCredentialType(llmKind);
+
+    const summary = credentialService.getCredentialSummary(projectId, credentialType);
+    if (!summary) {
+      res.status(404).json({ error: `No ${llmKind} credential configured for this project.` });
+      return;
+    }
+
+    const apiKey = credentialService.retrieveCredential(projectId, credentialType);
+    if (!apiKey) {
+      res.status(404).json({ error: `Stored ${llmKind} credential is unreadable.` });
+      return;
+    }
+
+    const meta = summary.metadata as Partial<LlmCredentialMetadata>;
+    const manifest: LlmManifestConfig = {
+      provider: 'llm',
+      kind: llmKind,
+      display_name: meta.display_name ?? llmKindDisplayLabel(llmKind),
+      default_model: meta.default_model ?? defaultModelForKind(llmKind),
+      ...(meta.base_url ? { base_url: meta.base_url } : {}),
+      ...(meta.organization_id ? { organization_id: meta.organization_id } : {}),
+      ...(meta.request_timeout_ms ? { request_timeout_ms: meta.request_timeout_ms } : {}),
+    };
+
+    try {
+      const client = createLlmClient(manifest.kind, apiKey, {
+        baseUrl: meta.base_url,
+        organizationId: meta.organization_id,
+        timeoutMs: meta.request_timeout_ms,
+      });
+      const verification = await client.verifyCredentials({ defaultModel: manifest.default_model });
+
+      const resolvedDefaultModel =
+        verification.defaultModelFound === false && verification.modelsAvailable.length > 0
+          ? verification.modelsAvailable[0]
+          : manifest.default_model;
+
+      const updatedMetadata: LlmCredentialMetadata = {
+        kind: llmKind,
+        display_name: manifest.display_name,
+        default_model: resolvedDefaultModel,
+        ...(meta.base_url ? { base_url: meta.base_url } : {}),
+        ...(meta.organization_id ? { organization_id: meta.organization_id } : {}),
+        models_available: verification.modelsAvailable,
+        verified_at: new Date().toISOString(),
+        ...(meta.request_timeout_ms ? { request_timeout_ms: meta.request_timeout_ms } : {}),
+      };
+
+      credentialService.storeCredential({
+        project_id: projectId,
+        credential_type: credentialType,
+        value: apiKey,
+        metadata: updatedMetadata as unknown as Record<string, unknown>,
+      });
+
+      res.json({
+        kind: llmKind,
+        verified_at: updatedMetadata.verified_at,
+        models_available: updatedMetadata.models_available,
+        default_model: updatedMetadata.default_model,
+        default_model_found: verification.defaultModelFound,
+      });
+    } catch (err) {
+      res.status(400).json({ error: `LLM verification failed: ${(err as Error).message}` });
+    }
+  });
+
+  // DELETE /api/projects/:projectId/llm/:kind — remove an LLM credential
+  router.delete('/projects/:projectId/llm/:kind', (req: Request, res: Response) => {
+    const { projectId, kind } = req.params;
+    if (!LLM_KINDS.includes(kind as LlmKind)) {
+      res.status(400).json({
+        error: `Unsupported LLM kind "${kind}". Allowed: ${LLM_KINDS.join(', ')}`,
+      });
+      return;
+    }
+    const llmKind = kind as LlmKind;
+    const summary = credentialService.getCredentialSummary(
+      projectId,
+      llmKindCredentialType(llmKind),
+    );
+    if (!summary) {
+      res.status(404).json({ error: `No ${llmKind} credential configured for this project.` });
+      return;
+    }
+    try {
+      credentialService.deleteCredential(summary.id);
+      res.json({ kind: llmKind, deleted: true });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
 
   // =========================================================================
   // Guided Flows

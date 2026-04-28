@@ -29,7 +29,15 @@ export type CredentialType =
   | 'apple_team_id'
   | 'google_play_key'
   | 'expo_token'
-  | 'domain_name';
+  | 'domain_name'
+  // LLM provider API keys — one credential per (project, kind). Multi-instance
+  // support (multiple keys per kind) lives on the per-instance provider ID
+  // path in the SecretStore; this enum tracks the simple "one OpenAI per
+  // project, one Anthropic per project" UX.
+  | 'llm_openai_api_key'
+  | 'llm_anthropic_api_key'
+  | 'llm_gemini_api_key'
+  | 'llm_custom_api_key';
 
 // ---------------------------------------------------------------------------
 // Models
@@ -285,6 +293,28 @@ export class CredentialService {
       case 'apple_p8':
       case 'google_play_key':
         break;
+      case 'llm_openai_api_key':
+      case 'llm_anthropic_api_key':
+      case 'llm_gemini_api_key':
+      case 'llm_custom_api_key':
+        this.validateLlmApiKey(type, value);
+        break;
+    }
+  }
+
+  private validateLlmApiKey(type: CredentialType, value: string): void {
+    const trimmed = value.trim();
+    if (trimmed.length < 10) {
+      throw new CredentialError(
+        `${type} appears too short. Paste the complete API key without surrounding whitespace.`,
+        'validateLlmApiKey',
+      );
+    }
+    if (trimmed.length > 4096) {
+      throw new CredentialError(
+        `${type} exceeds the 4KB limit; double-check you pasted only the key, not a JSON document.`,
+        'validateLlmApiKey',
+      );
     }
   }
 

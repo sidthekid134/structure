@@ -24,6 +24,7 @@ export * from './providers/google-play.js';
 export * from './providers/eas.js';
 export * from './providers/cloudflare.js';
 export * from './providers/oauth.js';
+export * from './providers/llm.js';
 
 // Drift detection & reconciliation (Phase 5)
 export * from './drift/comparator.js';

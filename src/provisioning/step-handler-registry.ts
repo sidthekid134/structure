@@ -14,6 +14,7 @@
 import type { VaultManager } from '../vault.js';
 import type { ProjectManager } from '../studio/project-manager.js';
 import type { StepExecutionIntent } from '../providers/types.js';
+import type { CredentialService } from '../services/credential-service.js';
 
 // ---------------------------------------------------------------------------
 // Handler context
@@ -42,6 +43,8 @@ export interface StepHandlerContext {
   /** Direct vault access for credential reads/writes. */
   vaultManager: VaultManager;
   passphrase: string;
+  /** When set, LLM EAS handlers merge vault reads with SQLite-stored Studio API keys (`llm_*_api_key`). */
+  credentialService?: CredentialService;
   /** Project manager for integration metadata updates. */
   projectManager: ProjectManager;
 }

@@ -453,6 +453,8 @@ export class Orchestrator {
             upstreamResources: { ...upstreamResources },
             vaultRead: vaultRead ?? (async (_key: string) => null),
             vaultWrite: vaultWrite ?? (async (_key: string, _value: string) => {}),
+            selectedModuleIds: plan.selectedModules,
+            retrieveProjectCredential: options.retrieveProjectCredential,
           };
 
           try {
@@ -572,6 +574,8 @@ export class Orchestrator {
         vaultRead: vaultRead ?? (async (_key: string) => null),
         vaultWrite: vaultWrite ?? (async (_key: string, _value: string) => {}),
         executionIntent: options.stepExecutionIntent ?? 'create',
+        selectedModuleIds: plan.selectedModules,
+        retrieveProjectCredential: options.retrieveProjectCredential,
       };
 
       try {
@@ -841,6 +845,8 @@ export class Orchestrator {
           vaultRead: vaultRead ?? (async (_key: string) => null),
           vaultWrite: vaultWrite ?? (async (_key: string, _value: string) => {}),
           executionIntent: options.stepExecutionIntent ?? 'create',
+          selectedModuleIds: plan.selectedModules,
+          retrieveProjectCredential: options.retrieveProjectCredential,
         };
 
         try {

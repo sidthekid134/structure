@@ -1,12 +1,10 @@
 import { ArrowRight, CheckCircle2, Code2, Link2 } from 'lucide-react';
 import {
-  ALL_REGISTRY_PLUGINS,
   CATEGORY_LABEL_MAP,
   CATEGORY_PILL_STYLE,
   INTEGRATION_CONFIGS,
-  PROVIDER_PLUGIN_MAP,
-  REGISTRY_CATEGORIES,
 } from './constants';
+import { usePluginCatalog } from './usePluginCatalog';
 import type { ConnectedProviders, IntegrationConfig, ProviderId, RegistryPlugin } from './types';
 
 function isPluginConnected(plugin: RegistryPlugin, connectedProviders: ConnectedProviders): boolean {
@@ -36,18 +34,61 @@ export function RegistryView({
   connectedProviders,
   activeProjectId,
   onOpenIntegration,
+  onOpenProjectPlugin,
 }: {
   connectedProviders: ConnectedProviders;
   activeProjectId: string | null;
   onOpenIntegration: (id: ProviderId) => void;
+  /**
+   * Optional — when provided, plugin cards that have no top-level integration
+   * (e.g. the LLM module) will offer a navigation affordance to a relevant
+   * project subtab. Returning false from the callback (or not providing one)
+   * keeps the inert "View Plugin Contract" placeholder.
+   */
+  onOpenProjectPlugin?: (pluginId: string) => boolean;
 }) {
+  const { catalog, loading, error, reload } = usePluginCatalog();
+
+  if (loading) {
+    return (
+      <div className="animate-in fade-in duration-300 space-y-8">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Plugin Registry</h1>
+          <p className="text-muted-foreground mt-1">Loading plugins from the backend…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !catalog) {
+    return (
+      <div className="animate-in fade-in duration-300 space-y-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Plugin Registry</h1>
+          <p className="text-amber-600 dark:text-amber-400 mt-1">
+            Failed to load plugin catalog: {error?.message ?? 'unknown error'}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={reload}
+          className="px-3 py-1.5 text-xs font-bold border border-border rounded-lg hover:bg-accent transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const { plugins, categories, providerPluginMap } = catalog;
+
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Plugin Registry</h1>
           <p className="text-muted-foreground mt-1">
-            {ALL_REGISTRY_PLUGINS.length} plugins across {REGISTRY_CATEGORIES.length} categories. Plugins may appear in multiple sections.
+            {plugins.length} plugins across {categories.length} categories. Plugins may appear in multiple sections.
           </p>
         </div>
       </div>
@@ -58,7 +99,7 @@ export function RegistryView({
           const connected = connectedProviders[cfg.id];
           const available = cfg.scope === 'project' && !activeProjectId;
           const CfgIcon = cfg.logo;
-          const pluginCount = PROVIDER_PLUGIN_MAP[cfg.id]?.length ?? 0;
+          const pluginCount = providerPluginMap[cfg.id]?.length ?? 0;
           return (
             <button
               key={cfg.id}
@@ -100,9 +141,9 @@ export function RegistryView({
       </div>
 
       <div className="space-y-10">
-        {REGISTRY_CATEGORIES.map((category) => {
+        {categories.map((category) => {
           const CategoryIcon = category.icon;
-          const plugins = ALL_REGISTRY_PLUGINS.filter((p) => category.pluginIds.includes(p.id));
+          const categoryPlugins = plugins.filter((p) => category.pluginIds.includes(p.id));
           return (
             <section key={category.id}>
               <div className="flex items-center gap-3 mb-4">
@@ -110,12 +151,12 @@ export function RegistryView({
                   <CategoryIcon size={16} />
                 </div>
                 <h2 className="text-base font-bold tracking-tight">{category.label}</h2>
-                <span className="text-[10px] font-bold text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{plugins.length} plugins</span>
+                <span className="text-[10px] font-bold text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{categoryPlugins.length} plugins</span>
                 <div className="flex-grow h-px bg-border ml-2" />
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {plugins.map((plugin) => {
+                {categoryPlugins.map((plugin) => {
                   const connected = isPluginConnected(plugin, connectedProviders);
                   const providerConfig = getProviderConfig(plugin);
                   const projectScopedAvailable =
@@ -208,8 +249,34 @@ export function RegistryView({
                           <ArrowRight size={11} />
                         </button>
                       ) : (
-                        <button type="button" className="w-full py-2 text-xs font-bold border border-border rounded-lg hover:bg-accent transition-colors">
-                          View Plugin Contract
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Defer to the parent — it knows whether this
+                            // plugin maps to a dedicated project subtab and
+                            // whether there's an active project to navigate
+                            // into. If nothing is wired up the click is a
+                            // no-op (button stays inert as before).
+                            if (!onOpenProjectPlugin) return;
+                            onOpenProjectPlugin(plugin.id);
+                          }}
+                          className={`w-full py-2 text-xs font-bold border rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
+                            onOpenProjectPlugin && activeProjectId
+                              ? 'border-primary/30 text-primary hover:bg-primary/5'
+                              : 'border-border hover:bg-accent'
+                          }`}
+                        >
+                          {onOpenProjectPlugin && activeProjectId ? (
+                            <>
+                              <span>Open in Project</span>
+                              <ArrowRight size={11} />
+                            </>
+                          ) : (
+                            <>
+                              <Code2 size={12} />
+                              <span>View Plugin Contract</span>
+                            </>
+                          )}
                         </button>
                       )}
                     </div>

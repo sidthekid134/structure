@@ -14,7 +14,8 @@ import {
   Unlink,
   Zap,
 } from 'lucide-react';
-import { ALL_REGISTRY_PLUGINS, INTEGRATION_CONFIGS, PROJECT_SETUP_CONFIGS } from './constants';
+import { INTEGRATION_CONFIGS, PROJECT_SETUP_CONFIGS } from './constants';
+import { usePluginCatalog } from './usePluginCatalog';
 import { providerToBackendKey } from './helpers';
 import { AppleIntegrationFlow } from './AppleIntegrationFlow';
 import { IntegrationModal } from './IntegrationModal';
@@ -77,6 +78,8 @@ export function ProjectProvidersTab({
   const [ghInitSteps, setGhInitSteps] = useState<Record<string, SetupPlanStepStatus>>({});
   const [exInitRunning, setExInitRunning] = useState(false);
   const [exInitSteps, setExInitSteps] = useState<Record<string, SetupPlanStepStatus>>({});
+
+  const { catalog: pluginCatalog } = usePluginCatalog();
 
   useEffect(() => {
     if (connectedFirebase) {
@@ -199,12 +202,14 @@ export function ProjectProvidersTab({
   };
 
   const pluginCards = (ids: string[]) =>
-    ALL_REGISTRY_PLUGINS.filter((p) => ids.includes(p.id)).map((p) => (
-      <div key={p.id} className="rounded-lg border border-border/80 bg-background/80 px-3 py-2.5">
-        <p className="text-sm font-semibold leading-snug">{p.name}</p>
-        <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">{p.description}</p>
-      </div>
-    ));
+    (pluginCatalog?.plugins ?? [])
+      .filter((p) => ids.includes(p.id))
+      .map((p) => (
+        <div key={p.id} className="rounded-lg border border-border/80 bg-background/80 px-3 py-2.5">
+          <p className="text-sm font-semibold leading-snug">{p.name}</p>
+          <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">{p.description}</p>
+        </div>
+      ));
 
   const PROVIDER_TABS: Array<{
     id: ProviderId;
