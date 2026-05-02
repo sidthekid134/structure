@@ -1,5 +1,6 @@
-# Build pkg binaries for Studio Pro CLI and attach them to GitHub Releases (tags v*).
-# Homebrew tap formula lives in a separate repo; point artifact URLs at this release.
+# Build and distribute Studio Pro.
+# macOS → signed + notarized DMG (drag-to-Applications).
+# Linux  → .tar.gz (execute bit preserved).
 
 name: Release
 
@@ -66,18 +67,19 @@ jobs:
           STUDIO_PKG_NODE: node20
         run: node scripts/build-cli.js --target=${{ matrix.pkg_target }}
 
-      - name: Sign and notarize (macOS only)
+      # ── macOS: .app bundle → signed DMG → notarized → stapled ──────────────
+      - name: Build signed DMG (macOS only)
         if: runner.os == 'macOS'
         env:
           CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
-          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           NOTARIZATION_KEY_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ISSUER_ID }}
           NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
           BINARY: binaries/${{ matrix.artifact_name }}
+          VERSION: ${{ github.ref_name }}
         run: |
-          # Import certificate into a temporary keychain so it doesn't persist on the runner
+          # ── keychain ──────────────────────────────────────────────────────
           KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain
           KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -87,34 +89,95 @@ jobs:
           security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN_PATH" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-
-          # Sign with hardened runtime (required for notarization)
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | awk -F '"' '{print $2}')
-          echo "Signing with identity: $IDENTITY"
+          echo "Signing with: $IDENTITY"
+
+          # ── .app bundle ───────────────────────────────────────────────────
+          APP="$RUNNER_TEMP/Studio Pro.app"
+          mkdir -p "$APP/Contents/MacOS"
+          cp "$BINARY" "$APP/Contents/MacOS/studio-pro"
+          chmod +x "$APP/Contents/MacOS/studio-pro"
+
+          # Copy app icon if present
+          if [ -f "studio-ui/public/studio-pro-icon.png" ]; then
+            mkdir -p "$APP/Contents/Resources"
+            # Convert PNG → icns using sips + iconutil
+            ICONSET="$RUNNER_TEMP/icon.iconset"
+            mkdir -p "$ICONSET"
+            for size in 16 32 64 128 256 512; do
+              sips -z $size $size "studio-ui/public/studio-pro-icon.png" --out "$ICONSET/icon_${size}x${size}.png" > /dev/null
+              sips -z $((size*2)) $((size*2)) "studio-ui/public/studio-pro-icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" > /dev/null
+            done
+            iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+          fi
+
+          # Write Info.plist (LSUIElement=true → no Dock icon; app is a background server)
+          SHORT_VER="${VERSION#v}"
+          node -e "
+            const fs = require('fs');
+            const plist = \`<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+          <plist version=\"1.0\">
+          <dict>
+            <key>CFBundleName</key><string>Studio Pro</string>
+            <key>CFBundleDisplayName</key><string>Studio Pro</string>
+            <key>CFBundleIdentifier</key><string>com.sidmoparthi.studio-pro</string>
+            <key>CFBundleExecutable</key><string>studio-pro</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>${process.env.SHORT_VER}</string>
+            <key>CFBundleShortVersionString</key><string>${process.env.SHORT_VER}</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>LSMinimumSystemVersion</key><string>12.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSUIElement</key><true/>
+          </dict>
+          </plist>\`;
+            fs.writeFileSync(process.env.APP + '/Contents/Info.plist', plist);
+          "
+
+          # ── sign .app ─────────────────────────────────────────────────────
           codesign --sign "$IDENTITY" \
             --options runtime \
             --timestamp \
             --force \
-            "$BINARY"
+            --deep \
+            "$APP"
 
-          # Write notarization key to temp file (safer than passing on command line)
+          # ── create DMG ────────────────────────────────────────────────────
+          DMG_STAGING="$RUNNER_TEMP/dmg_staging"
+          mkdir -p "$DMG_STAGING"
+          cp -R "$APP" "$DMG_STAGING/"
+          ln -s /Applications "$DMG_STAGING/Applications"
+
+          DMG_PATH="binaries/Studio-Pro-${VERSION}.dmg"
+          hdiutil create \
+            -volname "Studio Pro" \
+            -srcfolder "$DMG_STAGING" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
+
+          # ── sign DMG ──────────────────────────────────────────────────────
+          codesign --sign "$IDENTITY" --timestamp "$DMG_PATH"
+
+          # ── notarize DMG ──────────────────────────────────────────────────
           echo "$NOTARIZATION_KEY_P8" > $RUNNER_TEMP/notary.p8
-
-          # Zip for submission (notarytool requires an archive for bare binaries)
-          zip -j $RUNNER_TEMP/notarize.zip "$BINARY"
-
-          # Submit and wait (typically 1-3 minutes)
-          xcrun notarytool submit $RUNNER_TEMP/notarize.zip \
+          xcrun notarytool submit "$DMG_PATH" \
             --key $RUNNER_TEMP/notary.p8 \
             --key-id "$NOTARIZATION_KEY_ID" \
             --issuer "$NOTARIZATION_KEY_ISSUER_ID" \
             --wait
 
-          # Clean up
-          rm -f $RUNNER_TEMP/cert.p12 $RUNNER_TEMP/notary.p8 $RUNNER_TEMP/notarize.zip
+          # ── staple (works on DMGs) ─────────────────────────────────────
+          xcrun stapler staple "$DMG_PATH"
+
+          # ── clean up ──────────────────────────────────────────────────────
+          rm -f $RUNNER_TEMP/cert.p12 $RUNNER_TEMP/notary.p8
           security delete-keychain "$KEYCHAIN_PATH"
 
-      - name: Package as tarball (preserves execute bit)
+      # ── Linux: tarball preserves execute bit ────────────────────────────
+      - name: Package as tarball (Linux only)
+        if: runner.os == 'Linux'
         run: |
           chmod +x binaries/${{ matrix.artifact_name }}
           tar -czf binaries/${{ matrix.artifact_name }}.tar.gz -C binaries ${{ matrix.artifact_name }}
@@ -123,7 +186,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: binaries/${{ matrix.artifact_name }}.tar.gz
+          path: |
+            binaries/Studio-Pro-*.dmg
+            binaries/${{ matrix.artifact_name }}.tar.gz
 
   publish:
     needs: build
@@ -134,10 +199,10 @@ jobs:
         with:
           path: release-assets
 
-      - name: Stage binaries for release
+      - name: Stage release files
         run: |
           mkdir -p upload
-          find release-assets -type f -name 'studio-pro-*.tar.gz' -exec cp {} upload/ \;
+          find release-assets -type f \( -name '*.dmg' -o -name '*.tar.gz' \) -exec cp {} upload/ \;
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

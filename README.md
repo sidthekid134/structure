@@ -21,18 +21,20 @@
 
 Download the latest release for your platform from the [GitHub Releases page](https://github.com/sidthekid134/structure/releases):
 
-| Platform | Binary |
+| Platform | Download |
 |---|---|
-| macOS (Apple Silicon) | `studio-pro-aarch64-apple-darwin` |
-| Linux x86_64 | `studio-pro-x86_64-unknown-linux-gnu` |
-| Linux arm64 | `studio-pro-aarch64-unknown-linux-gnu` |
+| macOS (Apple Silicon) | `Studio-Pro-v*.dmg` — open, drag to Applications, double-click |
+| Linux x86_64 | `studio-pro-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `studio-pro-aarch64-unknown-linux-gnu.tar.gz` |
 
-> **Intel Mac users:** Apple Silicon binaries run transparently under Rosetta 2 on Intel Macs, or build from source (see below).
+> **Intel Mac users:** Build from source (Node 20+) until an x86 DMG is available.
 
 ```bash
-# macOS / Linux — extract and run (execute bit is preserved in the tarball)
-tar xzf studio-pro-aarch64-apple-darwin.tar.gz
-./studio-pro-aarch64-apple-darwin
+# macOS — open the DMG, drag Studio Pro to Applications, then double-click it.
+
+# Linux — extract and run
+tar xzf studio-pro-*.tar.gz
+./studio-pro-*
 ```
 
 Studio opens in your browser at `http://localhost:3737`. On first run, register a passkey (Touch ID or security key) to seal the vault. All subsequent access requires the passkey — there are no recovery codes.
