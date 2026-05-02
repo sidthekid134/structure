@@ -31,7 +31,7 @@ export interface GcpProjectConnectionStatus {
 // Vault key helpers
 // ---------------------------------------------------------------------------
 
-function vaultKey(projectId: string, key: string): string {
+function vaultKeyPath(projectId: string, key: string): string {
   return `${projectId}/${key}`;
 }
 
@@ -68,105 +68,105 @@ export function buildGcpProjectIdWithEntropy(studioProjectId: string): string {
 
 export function getStoredGcpProjectId(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): string | null {
-  const id = vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'gcp_project_id'));
+  const id = vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'gcp_project_id'));
   return id?.trim() || null;
 }
 
 export function storeGcpProjectId(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
   gcpProjectId: string,
 ): void {
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'gcp_project_id'), gcpProjectId);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'gcp_project_id'), gcpProjectId);
 }
 
 export function getStoredSaEmail(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): string | null {
-  return vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_email'))?.trim() || null;
+  return vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_email'))?.trim() || null;
 }
 
 export function storeSaEmail(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
   email: string,
 ): void {
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_email'), email);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_email'), email);
 }
 
 export function getStoredSaKeyJson(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): string | null {
-  return vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_json'))?.trim() || null;
+  return vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_json'))?.trim() || null;
 }
 
 export function storeSaKeyJson(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
   json: string,
 ): void {
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_json'), json);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_json'), json);
 }
 
 export function getStoredConnectionDetails(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): GcpConnectionDetails | null {
-  const gcpProjectId = vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'gcp_project_id'));
-  const saEmail = vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_email'));
+  const gcpProjectId = vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'gcp_project_id'));
+  const saEmail = vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_email'));
   if (!gcpProjectId || !saEmail) return null;
   return {
     projectId: gcpProjectId,
     serviceAccountEmail: saEmail,
-    userEmail: vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'connected_by_email')) ?? 'unknown',
-    connectedAt: vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'connected_at')) ?? new Date(0).toISOString(),
+    userEmail: vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'connected_by_email')) ?? 'unknown',
+    connectedAt: vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'connected_at')) ?? new Date(0).toISOString(),
   };
 }
 
 export function storeConnectionDetails(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
   details: GcpConnectionDetails,
 ): void {
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'gcp_project_id'), details.projectId);
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_email'), details.serviceAccountEmail);
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'connected_by_email'), details.userEmail);
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'connected_at'), details.connectedAt);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'gcp_project_id'), details.projectId);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_email'), details.serviceAccountEmail);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'connected_by_email'), details.userEmail);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'connected_at'), details.connectedAt);
 }
 
 /** Delete only the SA key JSON from vault (leaves project ID and SA email for other handlers). */
 export function deleteSaKeyJson(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): void {
-  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_json'));
+  vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_json'));
 }
 
 /** Delete all GCP-related vault entries. Returns true if SA JSON was present. */
 export function deleteGcpCredentials(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): boolean {
-  const removed = vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_json'));
-  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'gcp_project_id'));
-  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'service_account_email'));
-  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'connected_by_email'));
-  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'connected_at'));
-  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'gcp_oauth_refresh_token'));
+  const removed = vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_json'));
+  vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'gcp_project_id'));
+  vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'service_account_email'));
+  vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'connected_by_email'));
+  vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'connected_at'));
+  vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'gcp_oauth_refresh_token'));
   return removed;
 }
 
@@ -177,10 +177,10 @@ export function deleteGcpCredentials(
 export function buildOAuthPreviewDetails(
   studioProjectId: string,
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   userEmail: string,
 ): GcpConnectionDetails {
-  const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, studioProjectId) ?? buildStudioGcpProjectId(studioProjectId);
+  const gcpProjectId = getStoredGcpProjectId(vaultManager, vaultKey, studioProjectId) ?? buildStudioGcpProjectId(studioProjectId);
   return {
     projectId: gcpProjectId,
     serviceAccountEmail: `${GCP_PROVISIONER_SA_ID}@${gcpProjectId}.iam.gserviceaccount.com`,
@@ -256,23 +256,23 @@ export function applyGcpProjectLinked(
 /** Store SA key in vault and update all connection metadata + Firebase integration. */
 export function recordProvisionerServiceAccountKey(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   projectManager: ProjectManager,
   studioProjectId: string,
   gcpProjectId: string,
   saEmail: string,
   saKeyJson: string,
 ): GcpProjectConnectionStatus {
-  storeSaKeyJson(vaultManager, passphrase, studioProjectId, saKeyJson);
+  storeSaKeyJson(vaultManager, vaultKey, studioProjectId, saKeyJson);
   const userEmail =
-    vaultManager.getCredential(passphrase, 'firebase', `${studioProjectId}/connected_by_email`) ?? 'unknown';
+    vaultManager.getCredential(vaultKey, 'firebase', `${studioProjectId}/connected_by_email`) ?? 'unknown';
   const details: GcpConnectionDetails = {
     projectId: gcpProjectId,
     serviceAccountEmail: saEmail,
     userEmail,
     connectedAt: new Date().toISOString(),
   };
-  storeConnectionDetails(vaultManager, passphrase, studioProjectId, details);
+  storeConnectionDetails(vaultManager, vaultKey, studioProjectId, details);
   return syncFirebaseIntegration(projectManager, studioProjectId, details);
 }
 
@@ -282,36 +282,36 @@ export function recordProvisionerServiceAccountKey(
 
 export function getStoredFirebaseIosAppId(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): string | null {
-  return vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firebase_ios_app_id'))?.trim() || null;
+  return vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firebase_ios_app_id'))?.trim() || null;
 }
 
 export function storeFirebaseIosAppId(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
   appId: string,
 ): void {
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firebase_ios_app_id'), appId);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firebase_ios_app_id'), appId);
 }
 
 export function getStoredFirebaseAndroidAppId(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): string | null {
-  return vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firebase_android_app_id'))?.trim() || null;
+  return vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firebase_android_app_id'))?.trim() || null;
 }
 
 export function storeFirebaseAndroidAppId(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
   appId: string,
 ): void {
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firebase_android_app_id'), appId);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firebase_android_app_id'), appId);
 }
 
 // ---------------------------------------------------------------------------
@@ -320,45 +320,45 @@ export function storeFirebaseAndroidAppId(
 
 export function getStoredFirestoreDatabaseId(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): string | null {
-  return vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_database_id'))?.trim() || null;
+  return vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firestore_database_id'))?.trim() || null;
 }
 
 export function storeFirestoreDatabaseId(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
   databaseId: string,
 ): void {
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_database_id'), databaseId);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firestore_database_id'), databaseId);
 }
 
 export function getStoredFirestoreLocation(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): string | null {
-  return vaultManager.getCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_location'))?.trim() || null;
+  return vaultManager.getCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firestore_location'))?.trim() || null;
 }
 
 export function storeFirestoreLocation(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
   location: string,
 ): void {
-  vaultManager.setCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_location'), location);
+  vaultManager.setCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firestore_location'), location);
 }
 
 export function deleteFirestoreCredentials(
   vaultManager: VaultManager,
-  passphrase: string,
+  vaultKey: Buffer,
   studioProjectId: string,
 ): void {
-  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_database_id'));
-  vaultManager.deleteCredential(passphrase, 'firebase', vaultKey(studioProjectId, 'firestore_location'));
+  vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firestore_database_id'));
+  vaultManager.deleteCredential(vaultKey, 'firebase', vaultKeyPath(studioProjectId, 'firestore_location'));
 }
 
 export { GCP_PROVISIONER_SA_ID, provisionerSaEmail };

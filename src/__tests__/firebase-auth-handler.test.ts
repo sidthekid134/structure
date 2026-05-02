@@ -5,6 +5,7 @@ import { CredentialStore } from '../services/credential-store';
 import {
   enableFirebaseIdentityToolkit,
 } from '../handlers/firebase-auth-handler';
+import { testDeriveKey } from './helpers/test-key.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -15,7 +16,7 @@ function makeTempDir(): string {
 }
 
 function makeCredentialStore(dir: string): CredentialStore {
-  return new CredentialStore(dir, 'test-passphrase-firebase');
+  return new CredentialStore(dir, (purpose: string) => testDeriveKey('test-passphrase-firebase', purpose));
 }
 
 // ---------------------------------------------------------------------------

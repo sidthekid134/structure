@@ -11,6 +11,7 @@ export const googlePlayPlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'Google Play',
   description: 'Play Console listing, signing, service account, and internal testing track.',
+  integrationId: 'google-play',
   provider: 'google-play',
   providerMeta: {
     label: 'Google Play',

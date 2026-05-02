@@ -31,7 +31,8 @@ export type VerificationMethod =
   | { type: 'manual-confirm' };
 
 export type InteractiveAction =
-  | { type: 'oauth'; provider: 'firebase'; label: string };
+  | { type: 'oauth'; provider: 'firebase'; label: string }
+  | { type: 'integration-connect'; provider: string; label: string };
 
 export interface DependencyRef {
   nodeKey: string;
@@ -91,6 +92,7 @@ export interface ManualInstructionDownload {
 export interface ManualInstructionStep {
   title: string;
   detail?: string;
+  copyText?: string;
   downloads?: ManualInstructionDownload[];
 }
 
@@ -586,6 +588,19 @@ export interface ProjectSummary {
   integration_progress: { configured: number; total: number };
 }
 
+export interface InstanceVaultSyncProviderRow {
+  providerId: 'github' | 'eas' | 'apple';
+  label: string;
+  localMissing: boolean;
+  conflicting: boolean;
+}
+
+export interface InstanceVaultSyncStatus {
+  pending: boolean;
+  vaultSealed?: boolean;
+  providers: InstanceVaultSyncProviderRow[];
+}
+
 export interface ProjectDetail {
   project: {
     id: string;
@@ -604,6 +619,14 @@ export interface ProjectDetail {
       updated_at: string;
     }>;
   };
+  instanceVaultSync?: InstanceVaultSyncStatus;
+}
+
+export interface ProjectMigrationBundle {
+  format: 'studio-project-migration';
+  version: 1;
+  projectId: string;
+  encryptedPayload: string;
 }
 
 export interface IntegrationStatusRecord {

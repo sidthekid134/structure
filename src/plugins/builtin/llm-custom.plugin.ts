@@ -18,13 +18,18 @@ export const llmCustomPlugin: PluginDefinition = {
   label: 'Custom OpenAI-Compatible',
   description:
     'Connect a self-hosted OpenAI-compatible inference endpoint (Azure OpenAI, vLLM, Ollama with TLS, LM Studio, …). Stores the API key + HTTPS base URL encrypted in the project vault.',
+  integrationId: 'llm',
   provider: 'llm',
   requiredModules: [],
   optionalModules: [],
   includedInTemplates: [],
   steps: LLM_CUSTOM_STEPS,
   teardownSteps: LLM_CUSTOM_TEARDOWN_STEPS,
-  userActions: [USER_ACTIONS.find((a) => a.key === 'user:provide-custom-llm-credentials')!],
+  userActions: USER_ACTIONS.filter(
+    (a) =>
+      a.key === 'user:provide-custom-llm-credentials' ||
+      a.key === 'user:share-custom-llm-integration-prompt',
+  ),
   displayMeta: {
     icon: 'Server',
     colors: {

@@ -1,0 +1,166 @@
+import type { ProvisioningStepNode } from '../graph.types.js';
+
+export const CLOUDFLARE_STEPS: ProvisioningStepNode[] = [
+  {
+    type: 'step',
+    key: 'cloudflare:add-domain-zone',
+    label: 'Add Domain to Cloudflare',
+    description: 'Create a Cloudflare zone for the project domain.',
+    provider: 'cloudflare',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    dependencies: [{ nodeKey: 'user:provide-cloudflare-token', required: true }],
+    produces: [
+      {
+        key: 'cloudflare_zone_id',
+        label: 'Zone ID',
+        description: 'Cloudflare zone identifier',
+      },
+      {
+        key: 'cloudflare_zone_domain',
+        label: 'Zone Domain',
+        description: 'Cloudflare managed zone (apex domain)',
+      },
+      {
+        key: 'cloudflare_app_domain',
+        label: 'App Domain',
+        description: 'Domain/host used by auth callbacks and deep links',
+      },
+      {
+        key: 'cloudflare_domain_mode',
+        label: 'Domain Mode',
+        description: 'Whether app domain is the zone root or a subdomain',
+      },
+      {
+        key: 'cloudflare_zone_status',
+        label: 'Zone Status',
+        description: 'Cloudflare zone status (pending / active)',
+      },
+      {
+        key: 'cloudflare_zone_nameservers',
+        label: 'Assigned Nameservers',
+        description: 'Cloudflare nameservers that must be set at registrar',
+      },
+    ],
+    estimatedDurationMs: 5000,
+  },
+  {
+    type: 'step',
+    key: 'cloudflare:configure-dns',
+    label: 'Configure DNS Records',
+    description: 'Create A/CNAME records for deep link and API routing.',
+    provider: 'cloudflare',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    dependencies: [
+      { nodeKey: 'cloudflare:add-domain-zone', required: true },
+      { nodeKey: 'user:confirm-dns-nameservers', required: true },
+    ],
+    produces: [
+      {
+        key: 'cloudflare_dns_record_name',
+        label: 'DNS Record Name',
+        description: 'Record name inside the Cloudflare zone (e.g. @ or app)',
+      },
+    ],
+    estimatedDurationMs: 3000,
+  },
+  {
+    type: 'step',
+    key: 'cloudflare:configure-ssl',
+    label: 'Configure SSL',
+    description: 'Set SSL mode (full/strict) for the domain.',
+    provider: 'cloudflare',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    dependencies: [{ nodeKey: 'cloudflare:configure-dns', required: true }],
+    produces: [],
+    estimatedDurationMs: 2000,
+  },
+  {
+    type: 'step',
+    key: 'cloudflare:setup-apple-app-site-association',
+    label: 'Deploy apple-app-site-association',
+    description: 'Host the AASA file for iOS Universal Links.',
+    provider: 'cloudflare',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    bridgeTarget: 'apple',
+    platforms: ['ios'],
+    dependencies: [
+      { nodeKey: 'cloudflare:configure-dns', required: true },
+      {
+        nodeKey: 'apple:register-app-id',
+        required: true,
+        description: 'Needs bundle ID and team ID for AASA content',
+      },
+    ],
+    produces: [],
+    estimatedDurationMs: 3000,
+  },
+  {
+    type: 'step',
+    key: 'cloudflare:setup-android-asset-links',
+    label: 'Deploy assetlinks.json',
+    description: 'Host the Digital Asset Links file for Android App Links.',
+    provider: 'cloudflare',
+    environmentScope: 'global',
+    automationLevel: 'full',
+    bridgeTarget: 'google-play',
+    platforms: ['android'],
+    dependencies: [
+      { nodeKey: 'cloudflare:configure-dns', required: true },
+      {
+        nodeKey: 'google-play:extract-fingerprints',
+        required: true,
+        description: 'Needs SHA-256 fingerprint for asset links',
+      },
+    ],
+    produces: [],
+    estimatedDurationMs: 3000,
+  },
+  {
+    type: 'step',
+    key: 'cloudflare:configure-deep-link-routes',
+    label: 'Configure Deep Link Routes',
+    description: 'Set up Cloudflare Workers or Page Rules for deep link routing.',
+    provider: 'cloudflare',
+    environmentScope: 'per-environment',
+    automationLevel: 'full',
+    dependencies: [{ nodeKey: 'cloudflare:configure-ssl', required: true }],
+    produces: [
+      {
+        key: 'deep_link_base_url',
+        label: 'Deep Link URL',
+        description: 'Base URL for deep link routing',
+      },
+      {
+        key: 'oauth_redirect_uri_deep_link',
+        label: 'Deep Link Redirect URI',
+        description: 'OAuth callback path hosted on the deep-link domain',
+      },
+      {
+        key: 'auth_landing_url',
+        label: 'Auth Landing URL',
+        description: 'Hosted landing endpoint used for auth return flow',
+      },
+    ],
+    estimatedDurationMs: 5000,
+  },
+];
+
+export const CLOUDFLARE_TEARDOWN_STEPS: ProvisioningStepNode[] = [
+  {
+    type: 'step',
+    key: 'cloudflare:remove-domain-zone',
+    label: 'Remove Domain Zone',
+    description: 'Delete Cloudflare zone and DNS configuration for the project domain.',
+    provider: 'cloudflare',
+    environmentScope: 'global',
+    automationLevel: 'assisted',
+    direction: 'teardown',
+    teardownOf: 'cloudflare:add-domain-zone',
+    dependencies: [],
+    produces: [],
+  },
+];

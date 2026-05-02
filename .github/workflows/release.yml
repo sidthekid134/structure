@@ -1,0 +1,94 @@
+# Build pkg binaries for Studio Pro CLI and attach them to GitHub Releases (tags v*).
+# Homebrew tap formula lives in a separate repo; point artifact URLs at this release.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            pkg_target: node20-macos-arm64
+            artifact_name: studio-pro-aarch64-apple-darwin
+          - os: macos-13
+            pkg_target: node20-macos-x64
+            artifact_name: studio-pro-x86_64-apple-darwin
+          - os: ubuntu-latest
+            pkg_target: node20-linux-x64
+            artifact_name: studio-pro-x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            pkg_target: node20-linux-arm64
+            artifact_name: studio-pro-aarch64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Embed bundled OAuth credentials
+        env:
+          GCP_CLIENT_ID: ${{ secrets.PLATFORM_GCP_OAUTH_CLIENT_ID }}
+          GCP_CLIENT_SECRET: ${{ secrets.PLATFORM_GCP_OAUTH_CLIENT_SECRET }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const id = process.env.GCP_CLIENT_ID || '';
+            const secret = process.env.GCP_CLIENT_SECRET || '';
+            fs.writeFileSync('src/core/gcp/gcp-oauth-credentials.ts',
+              \`export const BUNDLED_GCP_CLIENT_ID = '\${id}';\nexport const BUNDLED_GCP_CLIENT_SECRET = '\${secret}';\n\`
+            );
+          "
+
+      - name: Build backend + UI
+        run: npm run build
+
+      - name: Package CLI (single binary)
+        env:
+          STUDIO_PKG_NODE: node20
+        run: node scripts/build-cli.js --target=${{ matrix.pkg_target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: binaries/${{ matrix.artifact_name }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Stage binaries for release
+        run: |
+          mkdir -p upload
+          find release-assets -type f \( -name 'studio-pro-*' -o -name 'studio-pro-*.exe' \) -exec cp {} upload/ \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: upload/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

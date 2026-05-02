@@ -9,6 +9,7 @@ import {
   createOAuthClientHandler,
 } from '../handlers/oauth-client-handler';
 import { GcpHttpError } from '../core/gcp/gcp-api-client';
+import { testDeriveKey } from './helpers/test-key.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -19,7 +20,7 @@ function makeTempDir(): string {
 }
 
 function makeStore(dir: string): CredentialStore {
-  return new CredentialStore(dir, 'test-passphrase-oauth');
+  return new CredentialStore(dir, (purpose: string) => testDeriveKey('test-passphrase-oauth', purpose));
 }
 
 // ---------------------------------------------------------------------------

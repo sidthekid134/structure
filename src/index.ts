@@ -65,5 +65,5 @@ export * from './core/formatting.js';
 export * from './core/eas-connection.js';
 export * from './core/github-connection.js';
 export * from './core/gcp-connection.js';
-export * from './core/provisioning.js';
+export * from './provisioning/provisioning.js';
 export * from './core/drift.js';

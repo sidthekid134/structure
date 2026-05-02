@@ -2,16 +2,23 @@
  * Encryption module for the credential vault.
  *
  * Algorithm:  AES-256-GCM (authenticated encryption)
- * KDF:        PBKDF2-SHA256 with 100,000 iterations
- * Salt:       32 bytes derived from a SHA-256 hash of the vault path
+ * KDF:        Argon2id (libsodium crypto_pwhash)
+ * Salt:       16 bytes derived from a SHA-256 hash of the vault path
  * IV:         16 bytes random per encryption call
  * Auth tag:   16 bytes (GCM default)
  *
  * Wire format (all values hex-encoded, colon-separated):
  *   <iv_hex>:<authTag_hex>:<ciphertext_hex>
+ *
+ * Key derivation: Argon2id only. The previous PBKDF2 path (`deriveKey`) was
+ * removed in v1.0; vaults / migration bundles encrypted under PBKDF2-derived
+ * keys are no longer readable. See docs/security.md for the migration story.
  */
 
 import * as crypto from 'crypto';
+// The "sumo" build is required for crypto_pwhash (Argon2id). The base
+// `libsodium-wrappers` build omits password-hashing primitives.
+import _sodium from 'libsodium-wrappers-sumo';
 import { CryptoError } from './types.js';
 import type { LoggingCallback } from './types.js';
 import { createOperationLogger } from './logger.js';
@@ -19,37 +26,68 @@ import { createOperationLogger } from './logger.js';
 const ALGORITHM = 'aes-256-gcm' as const;
 const KEY_LENGTH = 32; // bytes — AES-256
 const IV_LENGTH = 16; // bytes
-const PBKDF2_ITERATIONS = 100_000;
-const PBKDF2_DIGEST = 'sha256';
+
+// Argon2id parameters — INTERACTIVE preset balances UX (~100ms) and resistance
+// to GPU/ASIC attacks. For server-side or batch use, switch to MODERATE.
+const ARGON2_OPSLIMIT = 2; // crypto_pwhash_OPSLIMIT_INTERACTIVE
+const ARGON2_MEMLIMIT = 67_108_864; // 64 MiB — crypto_pwhash_MEMLIMIT_INTERACTIVE
+const ARGON2_ALG_ID = 2; // crypto_pwhash_ALG_ARGON2ID13
 
 /**
- * Derives a 32-byte AES key from a passphrase.
+ * Derives a 32-byte AES key from a passphrase using Argon2id.
  *
- * The salt is deterministically produced from the vault file path so that
- * the same passphrase always yields the same key for a given vault, without
- * storing the salt alongside the ciphertext.
+ * Argon2id is the OWASP-recommended password-hashing function: it is memory-
+ * hard, which makes large-scale GPU/ASIC brute force economically infeasible.
+ *
+ * The salt is deterministically derived from the vault path so unlocks remain
+ * stateless — no separate salt file.
  *
  * @param passphrase  The user passphrase (UTF-8 string).
  * @param vaultPath   Absolute path to the vault file, used to derive the salt.
+ * @returns           A 32-byte AES-256 key.
  */
-export function deriveKey(passphrase: string, vaultPath: string): Buffer {
-  // 32-byte salt = SHA-256(vaultPath)
-  const salt = crypto.createHash('sha256').update(vaultPath, 'utf8').digest();
+export async function deriveKeyArgon2id(
+  passphrase: string,
+  vaultPath: string,
+): Promise<Buffer> {
+  await _sodium.ready;
+  const sodium = _sodium;
 
-  return crypto.pbkdf2Sync(
+  // Argon2id requires a 16-byte salt (crypto_pwhash_SALTBYTES). Derive a
+  // deterministic 16-byte salt from the vault path so the unlock is stateless.
+  const salt = crypto
+    .createHash('sha256')
+    .update(vaultPath, 'utf8')
+    .digest()
+    .subarray(0, 16);
+
+  const key = sodium.crypto_pwhash(
+    KEY_LENGTH,
     passphrase,
     salt,
-    PBKDF2_ITERATIONS,
-    KEY_LENGTH,
-    PBKDF2_DIGEST,
+    ARGON2_OPSLIMIT,
+    ARGON2_MEMLIMIT,
+    ARGON2_ALG_ID,
   );
+
+  return Buffer.from(key);
+}
+
+/**
+ * Best-effort zero a key buffer in place. Node Buffers don't guarantee no
+ * copies were made by the JIT, but for short-lived derived keys this still
+ * shrinks the window during which a memory scrape could recover the key.
+ */
+export function zeroizeKey(key: Buffer): void {
+  if (!Buffer.isBuffer(key)) return;
+  key.fill(0);
 }
 
 /**
  * Encrypts a UTF-8 plaintext string using AES-256-GCM.
  *
  * @param plaintext   The string to encrypt.
- * @param key         A 32-byte AES key (from deriveKey).
+ * @param key         A 32-byte AES key.
  * @param opts.providerId  Optional provider ID added to error context.
  * @param opts.logger      Optional logging callback.
  * @returns           Wire-format ciphertext string.

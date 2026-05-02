@@ -15,7 +15,6 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import {
   VAULT_SCHEMA_VERSION,
   VaultData,
@@ -23,7 +22,7 @@ import {
   VaultError,
   LoggingCallback,
 } from './types.js';
-import { deriveKey, encrypt, decrypt } from './encryption.js';
+import { encrypt, decrypt } from './encryption.js';
 import { InputValidator } from './validation.js';
 import { createOperationLogger } from './logger.js';
 
@@ -31,6 +30,19 @@ export class VaultManager {
   private readonly vaultPath: string;
   private readonly logger: ReturnType<typeof createOperationLogger>;
   private readonly loggingCallback: LoggingCallback | undefined;
+
+  /** Absolute path to `credentials.enc`. */
+  get filePath(): string {
+    return this.vaultPath;
+  }
+
+  /** `Buffer` must be a raw 32-byte AES-256 key (vault DEK). */
+  private assertMasterKey(masterKey: Buffer): Buffer {
+    if (!Buffer.isBuffer(masterKey) || masterKey.length !== 32) {
+      throw new VaultError('Vault master key must be a 32-byte Buffer.', 'vault', this.vaultPath);
+    }
+    return masterKey;
+  }
 
   constructor(vaultPath: string, loggingCallback?: LoggingCallback) {
     InputValidator.validateVaultPath(vaultPath);
@@ -46,12 +58,14 @@ export class VaultManager {
   /**
    * Loads and decrypts the vault file.
    *
-   * @param passphrase  Master passphrase used for key derivation.
-   * @returns           Parsed VaultData.
+   * @param masterKey  32-byte vault DEK.
    */
-  loadVault(passphrase: string): VaultData {
-    InputValidator.validatePassphrase(passphrase);
+  loadVault(masterKey: Buffer): VaultData {
+    return this.loadVaultFromMasterKey(this.assertMasterKey(masterKey));
+  }
 
+  loadVaultFromMasterKey(masterKey: Buffer): VaultData {
+    const mk = this.assertMasterKey(masterKey);
     this.logger.info('Loading vault', { vaultPath: this.vaultPath });
 
     if (!fs.existsSync(this.vaultPath)) {
@@ -73,8 +87,7 @@ export class VaultManager {
       );
     }
 
-    const key = deriveKey(passphrase, this.vaultPath);
-    const plaintext = decrypt(raw.trim(), key, { logger: this.loggingCallback });
+    const plaintext = decrypt(raw.trim(), mk, { logger: this.loggingCallback });
 
     let data: VaultData;
     try {
@@ -97,18 +110,19 @@ export class VaultManager {
   /**
    * Encrypts and atomically writes the vault to disk.
    *
-   * @param passphrase  Master passphrase used for key derivation.
-   * @param data        VaultData to persist.
+   * @param masterKey  32-byte vault DEK.
    */
-  saveVault(passphrase: string, data: VaultData): void {
-    InputValidator.validatePassphrase(passphrase);
+  saveVault(masterKey: Buffer, data: VaultData): void {
+    this.saveVaultFromMasterKey(this.assertMasterKey(masterKey), data);
+  }
 
+  saveVaultFromMasterKey(masterKey: Buffer, data: VaultData): void {
+    const mk = this.assertMasterKey(masterKey);
     this.logger.info('Saving vault', {
       vaultPath: this.vaultPath,
       entryCount: Object.keys(data.entries).length,
     });
 
-    // Ensure parent directory exists
     const dir = path.dirname(this.vaultPath);
     try {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -123,8 +137,7 @@ export class VaultManager {
 
     const updated: VaultData = { ...data, updatedAt: Date.now() };
     const plaintext = JSON.stringify(updated);
-    const key = deriveKey(passphrase, this.vaultPath);
-    const ciphertext = encrypt(plaintext, key, { logger: this.loggingCallback });
+    const ciphertext = encrypt(plaintext, mk, { logger: this.loggingCallback });
 
     this.atomicWrite(ciphertext);
 
@@ -134,40 +147,30 @@ export class VaultManager {
   /**
    * Retrieves a single credential value from the vault.
    *
-   * @param passphrase  Master passphrase.
-   * @param providerId  Provider identifier (e.g., 'eas', 'github').
+   * @param masterKey  32-byte vault DEK.
    * @param key         Credential field name.
    * @returns           The credential value, or undefined if not found.
    */
-  getCredential(
-    passphrase: string,
-    providerId: string,
-    key: string,
-  ): string | undefined {
+  getCredential(masterKey: Buffer, providerId: string, key: string): string | undefined {
     InputValidator.validateProviderId(providerId);
-    const data = this.loadVault(passphrase);
+    const data = this.loadVault(masterKey);
     return data.entries[providerId]?.credentials[key];
   }
 
   /**
    * Sets a credential value in the vault, then saves the vault atomically.
    *
-   * @param passphrase  Master passphrase.
+   * @param masterKey  32-byte vault DEK.
    * @param providerId  Provider identifier.
    * @param key         Credential field name.
    * @param value       Credential value (never logged).
    */
-  setCredential(
-    passphrase: string,
-    providerId: string,
-    key: string,
-    value: string,
-  ): void {
+  setCredential(masterKey: Buffer, providerId: string, key: string, value: string): void {
     InputValidator.validateCredentialInput(providerId, key, value);
 
     this.logger.info('Setting credential', { providerId, key });
 
-    const data = this.loadVault(passphrase);
+    const data = this.loadVault(masterKey);
 
     const existing: CredentialSchema = data.entries[providerId] ?? {
       providerId,
@@ -187,7 +190,7 @@ export class VaultManager {
       entries: { ...data.entries, [providerId]: updated },
     };
 
-    this.saveVault(passphrase, updatedData);
+    this.saveVault(masterKey, updatedData);
     this.logger.info('Credential set successfully', { providerId, key });
   }
 
@@ -196,18 +199,13 @@ export class VaultManager {
    *
    * @returns true when a credential was removed, false when key/provider did not exist.
    */
-  deleteCredential(
-    passphrase: string,
-    providerId: string,
-    key: string,
-  ): boolean {
-    InputValidator.validatePassphrase(passphrase);
+  deleteCredential(masterKey: Buffer, providerId: string, key: string): boolean {
     InputValidator.validateProviderId(providerId);
     if (typeof key !== 'string' || key.trim().length === 0) {
       throw new VaultError('Credential key must be a non-empty string', 'deleteCredential', this.vaultPath);
     }
 
-    const data = this.loadVault(passphrase);
+    const data = this.loadVault(masterKey);
     const existing = data.entries[providerId];
     if (!existing || !(key in existing.credentials)) {
       return false;
@@ -228,7 +226,7 @@ export class VaultManager {
       };
     }
 
-    this.saveVault(passphrase, { ...data, entries });
+    this.saveVault(masterKey, { ...data, entries });
     this.logger.info('Credential deleted successfully', { providerId, key });
     return true;
   }

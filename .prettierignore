@@ -1,0 +1,10 @@
+node_modules
+dist
+binaries
+coverage
+.cache
+.pkg-cache
+*.tsbuildinfo
+package-lock.json
+studio-ui
+src/studio/static/assets

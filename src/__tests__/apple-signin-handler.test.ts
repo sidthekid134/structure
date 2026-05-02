@@ -6,6 +6,7 @@ import { CredentialStore } from '../services/credential-store';
 import { handleAppleKeyUpload, configureAppleSignIn } from '../handlers/apple-signin-handler';
 import { validateAppleP8Key } from '../validators/apple-key-validator';
 import { CredentialError } from '../types';
+import { testDeriveKey } from './helpers/test-key.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,7 +17,7 @@ function makeTempDir(): string {
 }
 
 function makeStore(dir: string): CredentialStore {
-  return new CredentialStore(dir, 'test-passphrase-apple');
+  return new CredentialStore(dir, (purpose: string) => testDeriveKey('test-passphrase-apple', purpose));
 }
 
 /** Generate a real EC P-256 private key in PKCS#8 PEM format for testing */

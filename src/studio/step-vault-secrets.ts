@@ -93,14 +93,14 @@ export interface StepSecretStatus extends StepSecretDescriptor {
 
 export function readStepSecretStatuses(
   vaultManager: VaultManager,
-  vaultPassphrase: string,
+  vaultMasterKey: Buffer,
   stepKey: string,
   projectId: string,
 ): StepSecretStatus[] {
   const descriptors = getStepSecretDescriptors(stepKey);
   return descriptors.map((descriptor) => {
     const key = resolveVaultKey(descriptor.vaultKey, projectId);
-    const value = vaultManager.getCredential(vaultPassphrase, descriptor.vaultProvider, key);
+    const value = vaultManager.getCredential(vaultMasterKey, descriptor.vaultProvider, key);
     return {
       ...descriptor,
       present: typeof value === 'string' && value.length > 0,
@@ -111,11 +111,11 @@ export function readStepSecretStatuses(
 
 export function readStepSecretValue(
   vaultManager: VaultManager,
-  vaultPassphrase: string,
+  vaultMasterKey: Buffer,
   descriptor: StepSecretDescriptor,
   projectId: string,
 ): string | null {
   const key = resolveVaultKey(descriptor.vaultKey, projectId);
-  const value = vaultManager.getCredential(vaultPassphrase, descriptor.vaultProvider, key);
+  const value = vaultManager.getCredential(vaultMasterKey, descriptor.vaultProvider, key);
   return value ?? null;
 }

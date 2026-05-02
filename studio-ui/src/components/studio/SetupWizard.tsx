@@ -42,6 +42,8 @@ import { StepSecretsPanel, stepHasVaultSecrets } from './StepSecretsPanel';
 import { P8FileInput, extractKeyIdFromP8FileName } from './P8FileInput';
 import {
   JOURNEY_PHASE_TITLE,
+  type InstanceVaultSyncStatus,
+  type ConnectedProviders,
   type JourneyPhaseId,
   type ManualInstructions,
   type NodeState,
@@ -53,6 +55,7 @@ import {
   type UserActionNode,
 } from './types';
 import { OAuthFlowPanel } from './OAuthFlowPanel';
+import { AppleIntegrationFlow } from './AppleIntegrationFlow';
 import { effectiveUserActionInteractiveAction } from './user-action-interactive';
 
 // ---------------------------------------------------------------------------
@@ -407,6 +410,8 @@ function ManualInstructionsPanel({
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [copyingDownloadKey, setCopyingDownloadKey] = useState<string | null>(null);
   const [copiedDownloadKey, setCopiedDownloadKey] = useState<string | null>(null);
+  const [copyingStepKey, setCopyingStepKey] = useState<string | null>(null);
+  const [copiedStepKey, setCopiedStepKey] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
 
   // Reset the override whenever we navigate to a different step so each step
@@ -415,6 +420,8 @@ function ManualInstructionsPanel({
     setOpenOverride(null);
     setCopyingDownloadKey(null);
     setCopiedDownloadKey(null);
+    setCopyingStepKey(null);
+    setCopiedStepKey(null);
     setCopyError(null);
   }, [nodeKey]);
 
@@ -449,6 +456,22 @@ function ManualInstructionsPanel({
       setCopyError((err as Error).message || 'Failed to copy prompt.');
     } finally {
       setCopyingDownloadKey(null);
+    }
+  };
+
+  const copyManualStepText = async (text: string, stepKey: string) => {
+    setCopyError(null);
+    setCopyingStepKey(stepKey);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedStepKey(stepKey);
+      window.setTimeout(() => {
+        setCopiedStepKey((current) => (current === stepKey ? null : current));
+      }, 1600);
+    } catch (err) {
+      setCopyError((err as Error).message || 'Failed to copy text.');
+    } finally {
+      setCopyingStepKey(null);
     }
   };
 
@@ -502,6 +525,24 @@ function ManualInstructionsPanel({
                     ) : (
                       <p className="text-[11px] text-muted-foreground leading-snug">{step.detail}</p>
                     )
+                  ) : null}
+                  {step.copyText ? (
+                    <div className="pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => void copyManualStepText(step.copyText!, `${nodeKey}-manual-${idx}-copy`)}
+                        disabled={copyingStepKey === `${nodeKey}-manual-${idx}-copy`}
+                        className="inline-flex items-center gap-1 rounded-md border border-blue-500/40 bg-blue-500/10 px-2 py-1.5 text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Copy text to clipboard"
+                      >
+                        {copyingStepKey === `${nodeKey}-manual-${idx}-copy` ? (
+                          <Loader2 size={11} className="animate-spin shrink-0" />
+                        ) : (
+                          <Copy size={11} className="shrink-0" />
+                        )}
+                        {copiedStepKey === `${nodeKey}-manual-${idx}-copy` ? 'Copied' : 'Copy prompt'}
+                      </button>
+                    </div>
                   ) : null}
                   {step.downloads && step.downloads.length > 0 ? (
                     <div className="flex flex-col gap-1.5 pt-1">
@@ -576,6 +617,10 @@ export function SetupWizard({
   projectId,
   plan,
   displaySelectedModules,
+  connectedProviders,
+  instanceVaultSync,
+  onRefreshProjectDetail,
+  onProjectProvidersRefresh,
   onPlanChange,
   onUserActionComplete,
   onRefresh,
@@ -588,6 +633,10 @@ export function SetupWizard({
    * Parent should pass pending picks from the Modules tab when they differ from the saved plan.
    */
   displaySelectedModules?: string[];
+  connectedProviders?: ConnectedProviders;
+  instanceVaultSync?: InstanceVaultSyncStatus;
+  onRefreshProjectDetail?: () => Promise<void>;
+  onProjectProvidersRefresh?: () => Promise<void>;
   onPlanChange: (plan: ProvisioningPlanResponse) => void;
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => Promise<void>;
   onRefresh: () => Promise<void>;
@@ -601,6 +650,7 @@ export function SetupWizard({
   const [isRevalidating, setIsRevalidating] = useState(false);
   const [isSkipping, setIsSkipping] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [instanceVaultBusy, setInstanceVaultBusy] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [syncInfo, setSyncInfo] = useState<string | null>(null);
@@ -943,6 +993,10 @@ export function SetupWizard({
       const payload: Record<string, string> = {};
       if (currentNode.verification.type === 'credential-upload') {
         payload[currentNode.verification.secretKey] = credentialText.trim();
+      } else if (currentNode.verification.type === 'manual-confirm') {
+        for (const produced of currentNode.produces) {
+          payload[produced.key] = 'true';
+        }
       } else {
         for (const produced of currentNode.produces) {
           const value = resourceInputs[produced.key]?.trim();
@@ -1205,6 +1259,20 @@ export function SetupWizard({
     Boolean(currentNode && plan) &&
     !['completed', 'skipped', 'in-progress'].includes(currentStatus) &&
     !planHasInProgress;
+
+  const githubPatStepCompleted = useMemo(() => {
+    if (!plan) return false;
+    const node = plan.nodes.find((n) => n.key === 'user:provide-github-pat');
+    if (!node) return false;
+    return getNodeStatus(node, plan.nodeStates, plan.environments) === 'completed';
+  }, [plan]);
+
+  const showMigratedHistoryWithoutOrgGithub =
+    connectedProviders !== undefined &&
+    !connectedProviders.github &&
+    githubPatStepCompleted &&
+    !instanceVaultSync?.pending &&
+    !instanceVaultSync?.vaultSealed;
 
   if (!plan || !currentNode) {
     return (
@@ -1471,6 +1539,108 @@ export function SetupWizard({
             </button>
           ) : null}
         </div>
+
+        {instanceVaultSync?.vaultSealed ? (
+          <div className="rounded-lg border border-amber-500/35 bg-amber-500/5 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
+            <ShieldAlert size={14} className="mt-0.5 shrink-0" />
+            <span>
+              A migration left organization-level credentials on disk, but the vault is sealed. Unlock the vault, then
+              use <strong className="text-foreground">Apply imported integrations</strong> on the Modules tab (or
+              below when unlocked).
+            </span>
+          </div>
+        ) : null}
+
+        {instanceVaultSync?.pending && !instanceVaultSync.vaultSealed ? (
+          <div className="rounded-lg border border-amber-500/35 bg-amber-500/5 p-3 space-y-2">
+            <p className="text-xs font-semibold text-amber-950 dark:text-amber-100">Imported organization credentials</p>
+            <p className="text-[11px] text-amber-900/90 dark:text-amber-200/90">
+              The setup timeline came from another Studio. Steps can show &quot;complete&quot; while this machine
+              still uses different or missing GitHub / Expo / Apple vault entries. Applying copies the{' '}
+              <em>exported</em> organization tokens into this Studio&apos;s vault (replacing any you already had for
+              those providers).
+            </p>
+            <ul className="text-[11px] space-y-0.5 list-disc list-inside text-amber-900/85 dark:text-amber-200/85">
+              {instanceVaultSync.providers.map((p) => (
+                <li key={p.providerId}>
+                  <span className="font-medium text-amber-950 dark:text-amber-50">{p.label}</span>
+                  {p.localMissing ? ' — missing here' : null}
+                  {p.conflicting ? ' — differs from this Studio' : null}
+                </li>
+              ))}
+            </ul>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                type="button"
+                disabled={instanceVaultBusy}
+                onClick={() => {
+                  void (async () => {
+                    setInstanceVaultBusy(true);
+                    setError(null);
+                    setSyncInfo(null);
+                    try {
+                      const ids = instanceVaultSync.providers.map((p) => p.providerId);
+                      await api(`/api/projects/${encodeURIComponent(projectId)}/instance-vault-sync/apply`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ providerIds: ids }),
+                      });
+                      await onRefreshProjectDetail?.();
+                      await onProjectProvidersRefresh?.();
+                      await onRefresh();
+                      setSyncInfo('Applied imported organization credentials.');
+                    } catch (err) {
+                      setError((err as Error).message);
+                    } finally {
+                      setInstanceVaultBusy(false);
+                    }
+                  })();
+                }}
+                className="text-[11px] font-bold rounded-lg border border-amber-700/40 dark:border-amber-400/40 px-3 py-1.5 text-amber-950 dark:text-amber-50 hover:bg-amber-500/15 disabled:opacity-50"
+              >
+                {instanceVaultBusy ? 'Applying…' : 'Apply imported integrations'}
+              </button>
+              <button
+                type="button"
+                disabled={instanceVaultBusy}
+                onClick={() => {
+                  void (async () => {
+                    setInstanceVaultBusy(true);
+                    setError(null);
+                    setSyncInfo(null);
+                    try {
+                      await api(`/api/projects/${encodeURIComponent(projectId)}/instance-vault-sync/dismiss`, {
+                        method: 'POST',
+                      });
+                      await onRefreshProjectDetail?.();
+                      setSyncInfo('Dismissed pending import credentials reminder.');
+                    } catch (err) {
+                      setError((err as Error).message);
+                    } finally {
+                      setInstanceVaultBusy(false);
+                    }
+                  })();
+                }}
+                className="text-[11px] font-semibold rounded-lg border border-amber-800/25 dark:border-amber-300/25 px-3 py-1.5 hover:bg-amber-500/10 disabled:opacity-50"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {showMigratedHistoryWithoutOrgGithub ? (
+          <div className="rounded-lg border border-border bg-muted/35 p-3 space-y-1.5">
+            <p className="text-xs font-semibold text-foreground">GitHub step looks done, but this Studio is not connected</p>
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              The <strong className="text-foreground">complete</strong> state was imported from another machine. There
+              is no GitHub PAT in <em>this</em> Studio&apos;s vault yet, so revalidate and downstream GitHub automation
+              will fail until you connect one. Use <strong className="text-foreground">Organization → GitHub</strong>{' '}
+              to add a PAT, or export the project again from an updated Studio so the bundle can offer{' '}
+              <strong className="text-foreground">Apply imported integrations</strong>.
+            </p>
+          </div>
+        ) : null}
 
         {error ? (
           <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 flex items-start gap-2">
@@ -2063,6 +2233,30 @@ export function SetupWizard({
                   />
                 )}
 
+                {/* Inline integration-connect form (e.g. Apple Developer credentials) */}
+                {oauthInteractive?.type === 'integration-connect' && oauthInteractive.provider === 'apple' && (
+                  <AppleIntegrationFlow
+                    inline
+                    isConnected={false}
+                    connectionDetails={null}
+                    onClose={() => {}}
+                    onConnect={async (fields) => {
+                      await api('/api/organization/integrations/apple/connect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          teamId: fields['appleTeamId'],
+                          ascIssuerId: fields['ascIssuerId'],
+                          ascApiKeyId: fields['ascApiKeyId'],
+                          ascApiKeyP8: fields['ascApiKeyP8'],
+                        }),
+                      });
+                      await syncAndRefresh();
+                    }}
+                    onDisconnect={async () => {}}
+                  />
+                )}
+
                 {credentialVerification && (
                   <div className="space-y-2">
                     <label className="text-xs font-semibold">
@@ -2078,6 +2272,7 @@ export function SetupWizard({
                 )}
 
                 {!credentialVerification &&
+                  userNode.verification.type !== 'manual-confirm' &&
                   currentNode.produces.map((resource) => (
                     <label key={resource.key} className="block space-y-1">
                       <span className="text-xs font-semibold">{resource.label}</span>

@@ -7,6 +7,7 @@ export const appleSigningPlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'Apple Signing',
   description: 'Apple Developer, App ID, signing certificates, provisioning profiles, and ASC API key.',
+  integrationId: 'apple',
   provider: 'apple',
   providerMeta: {
     label: 'Apple',
@@ -47,6 +48,7 @@ export const appleSigningPlugin: PluginDefinition = {
   ],
   userActions: [
     USER_ACTIONS.find((a) => a.key === 'user:enroll-apple-developer')!,
+    USER_ACTIONS.find((a) => a.key === 'user:connect-apple-integration')!,
   ],
   displayMeta: {
     icon: 'ShieldCheck',

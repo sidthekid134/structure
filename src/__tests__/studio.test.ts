@@ -17,6 +17,8 @@ import { StudioServer } from '../studio/server';
 import { WsHandler } from '../studio/ws-handler';
 import { EventLog } from '../orchestration/event-log';
 import { VaultManager } from '../vault';
+import { writeVaultMeta } from '../studio/vault-meta';
+import { getVaultSession } from '../studio/vault-session';
 import { GitHubConnectionService } from '../core/github-connection';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -36,9 +38,18 @@ function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'studio-test-'));
 }
 
+// Module-level token threaded through helpers below. Set in each `beforeEach`
+// from `server.apiToken` so requests carry the bearer token added by the
+// per-install auth middleware.
+let __currentApiToken = '';
+function setApiToken(token: string): void { __currentApiToken = token; }
+function authHeaders(): Record<string, string> {
+  return __currentApiToken ? { Authorization: `Bearer ${__currentApiToken}` } : {};
+}
+
 function getJson(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
+    http.get(url, { headers: authHeaders() }, (res) => {
       let body = '';
       res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
       res.on('end', () => {
@@ -54,7 +65,11 @@ function postJson(url: string, payload: unknown): Promise<unknown> {
     const body = JSON.stringify(payload);
     const req = http.request(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        ...authHeaders(),
+      },
     }, (res) => {
       let data = '';
       res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
@@ -71,7 +86,7 @@ function postJson(url: string, payload: unknown): Promise<unknown> {
 
 function getJsonWithStatus(url: string): Promise<{ statusCode: number; body: unknown }> {
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
+    http.get(url, { headers: authHeaders() }, (res) => {
       let body = '';
       res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
       res.on('end', () => {
@@ -95,7 +110,11 @@ function postJsonWithStatus(url: string, payload: unknown): Promise<{ statusCode
       url,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          ...authHeaders(),
+        },
       },
       (res) => {
         let data = '';
@@ -122,7 +141,7 @@ function deleteJsonWithStatus(url: string): Promise<{ statusCode: number; body: 
   return new Promise((resolve, reject) => {
     const req = http.request(
       url,
-      { method: 'DELETE' },
+      { method: 'DELETE', headers: authHeaders() },
       (res) => {
         let data = '';
         res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
@@ -152,29 +171,32 @@ describe('StudioServer', () => {
   let server: StudioServer;
   let port: number;
   let storeDir: string;
+  /** Matches encrypted vault on disk for this suite. */
+  let testVaultDek: Buffer;
   const originalExpoToken = process.env['EXPO_TOKEN'];
-  const originalStudioVaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE'];
 
   beforeEach(async () => {
     delete process.env['EXPO_TOKEN'];
-    process.env['STUDIO_VAULT_PASSPHRASE'] = 'studio-test-passphrase-12345';
     storeDir = makeTempDir();
     port = 30000 + Math.floor(Math.random() * 5000);
+    const vaultPath = path.join(storeDir, 'credentials.enc');
+    testVaultDek = Buffer.alloc(32, 0xab);
+    const vm = new VaultManager(vaultPath);
+    vm.saveVaultFromMasterKey(testVaultDek, vm.loadVaultFromMasterKey(testVaultDek));
+    writeVaultMeta(storeDir, { vaultKeyMode: 'dek-v1' });
     server = new StudioServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
+    getVaultSession().setVaultDEK(testVaultDek);
+    setApiToken(server.apiToken);
   });
 
   afterEach(async () => {
     await server.close();
+    setApiToken('');
     if (originalExpoToken === undefined) {
       delete process.env['EXPO_TOKEN'];
     } else {
       process.env['EXPO_TOKEN'] = originalExpoToken;
-    }
-    if (originalStudioVaultPassphrase === undefined) {
-      delete process.env['STUDIO_VAULT_PASSPHRASE'];
-    } else {
-      process.env['STUDIO_VAULT_PASSPHRASE'] = originalStudioVaultPassphrase;
     }
   });
 
@@ -183,12 +205,12 @@ describe('StudioServer', () => {
     expect(data.status).toBe('ok');
     expect(typeof data.timestamp).toBe('string');
     expect(typeof data.websocket_connections).toBe('number');
-    expect(data.dev_mode).toBe(false);
+    expect(data.serve_ui_from_source).toBe(false);
   });
 
   it('serves static index.html on root', async () => {
     const html = await new Promise<string>((resolve, reject) => {
-      http.get(`http://127.0.0.1:${port}/`, (res) => {
+      http.get(`http://127.0.0.1:${port}/`, { headers: authHeaders() }, (res) => {
         let body = '';
         res.on('data', (c: Buffer) => { body += c.toString(); });
         res.on('end', () => resolve(body));
@@ -207,7 +229,7 @@ describe('StudioServer', () => {
 
   it('returns 404 for unknown provisioning run', async () => {
     await new Promise<void>((resolve, reject) => {
-      http.get(`http://127.0.0.1:${port}/api/provisioning/nonexistent-run`, (res) => {
+      http.get(`http://127.0.0.1:${port}/api/provisioning/nonexistent-run`, { headers: authHeaders() }, (res) => {
         expect(res.statusCode).toBe(404);
         resolve();
       }).on('error', reject);
@@ -381,7 +403,7 @@ describe('StudioServer', () => {
 
       const vaultPath = path.join(storeDir, 'credentials.enc');
       const vault = new VaultManager(vaultPath);
-      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE'] as string;
+      const passphrase = testVaultDek;
       expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBe('test-token');
       expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBe('sidmoparthi');
       expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBe('sidmoparthi');
@@ -447,7 +469,7 @@ describe('StudioServer', () => {
 
       const vaultPath = path.join(storeDir, 'credentials.enc');
       const vault = new VaultManager(vaultPath);
-      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE'] as string;
+      const passphrase = testVaultDek;
       expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBeUndefined();
       expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBeUndefined();
       expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBeUndefined();
@@ -487,7 +509,7 @@ describe('StudioServer', () => {
 
       const vaultPath = path.join(storeDir, 'credentials.enc');
       const vault = new VaultManager(vaultPath);
-      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE'] as string;
+      const passphrase = testVaultDek;
       expect(vault.getCredential(passphrase, 'github', 'token')).toBe('ghp_test_token_123');
       expect(vault.getCredential(passphrase, 'github', 'username')).toBe('sidmoparthi');
       expect(vault.getCredential(passphrase, 'github', 'user_id')).toBe('12345');
@@ -534,7 +556,7 @@ describe('StudioServer', () => {
 
       const vaultPath = path.join(storeDir, 'credentials.enc');
       const vault = new VaultManager(vaultPath);
-      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE'] as string;
+      const passphrase = testVaultDek;
       expect(vault.getCredential(passphrase, 'github', 'token')).toBeUndefined();
       expect(vault.getCredential(passphrase, 'github', 'username')).toBeUndefined();
       expect(vault.getCredential(passphrase, 'github', 'user_id')).toBeUndefined();
@@ -550,7 +572,11 @@ describe('StudioServer', () => {
       const body = JSON.stringify({ direction: 'invalid-direction' });
       const req = http.request(`http://127.0.0.1:${port}/api/drift/reconcile`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          ...authHeaders(),
+        },
       }, (res) => {
         expect(res.statusCode).toBe(400);
         resolve();
@@ -599,10 +625,12 @@ describe('StudioServer with seeded EventLog', () => {
     port = 30000 + Math.floor(Math.random() * 5000);
     server = new StudioServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
+    setApiToken(server.apiToken);
   });
 
   afterEach(async () => {
     await server.close();
+    setApiToken('');
   });
 
   it('lists seeded provisioning run', async () => {
@@ -632,7 +660,11 @@ describe('StudioServer with seeded EventLog', () => {
         `http://127.0.0.1:${port}/api/provisioning/op-test-app-001/resume`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+            ...authHeaders(),
+          },
         },
         (res) => {
           expect(res.statusCode).toBe(409);
@@ -646,16 +678,15 @@ describe('StudioServer with seeded EventLog', () => {
   });
 
   it('allows resume of a failed run', async () => {
-    // Create a failed run
     const log = new EventLog(storeDir);
     log.createOperation('op-failed-001', 'my-test-app');
     log.updateOperationStatus('op-failed-001', 'failure');
     log.close();
 
-    // Restart server to pick up new run
     await server.close();
     server = new StudioServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
+    setApiToken(server.apiToken);
 
     const data = await postJson(
       `http://127.0.0.1:${port}/api/provisioning/op-failed-001/resume`,
@@ -666,7 +697,6 @@ describe('StudioServer with seeded EventLog', () => {
   });
 
   it('rejects resume with invalid choice', async () => {
-    // Create a failed run first
     const log = new EventLog(storeDir);
     log.createOperation('op-failed-002', 'my-test-app');
     log.updateOperationStatus('op-failed-002', 'failure');
@@ -675,6 +705,7 @@ describe('StudioServer with seeded EventLog', () => {
     await server.close();
     server = new StudioServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
+    setApiToken(server.apiToken);
 
     await new Promise<void>((resolve, reject) => {
       const body = JSON.stringify({ choice: 'invalid-choice' });
@@ -682,7 +713,11 @@ describe('StudioServer with seeded EventLog', () => {
         `http://127.0.0.1:${port}/api/provisioning/op-failed-002/resume`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+            ...authHeaders(),
+          },
         },
         (res) => {
           expect(res.statusCode).toBe(400);
@@ -696,24 +731,26 @@ describe('StudioServer with seeded EventLog', () => {
   });
 });
 
-describe('StudioServer dev mode', () => {
+describe('StudioServer serve UI from source', () => {
   let server: StudioServer;
   let port: number;
 
   beforeEach(async () => {
     const storeDir = makeTempDir();
     port = 33000 + Math.floor(Math.random() * 5000);
-    server = new StudioServer({ port, host: '127.0.0.1', storeDir, devMode: true });
+    server = new StudioServer({ port, host: '127.0.0.1', storeDir, serveUiFromSource: true });
     await server.listen();
+    setApiToken(server.apiToken);
   });
 
   afterEach(async () => {
     await server.close();
+    setApiToken('');
   });
 
-  it('reports dev mode enabled in health response', async () => {
+  it('reports serve_ui_from_source enabled in health response', async () => {
     const data = await getJson(`http://127.0.0.1:${port}/api/health`) as Record<string, unknown>;
-    expect(data.dev_mode).toBe(true);
+    expect(data.serve_ui_from_source).toBe(true);
   });
 
   it('exposes live reload event stream endpoint', async () => {

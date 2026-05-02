@@ -48,6 +48,7 @@ export const githubRepoPlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'GitHub Repository',
   description: 'Create the repository and core integration metadata.',
+  integrationId: 'github',
   provider: 'github',
   providerMeta: {
     label: 'GitHub',

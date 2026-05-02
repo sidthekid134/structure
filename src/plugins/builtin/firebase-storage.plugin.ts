@@ -6,6 +6,7 @@ export const firebaseStoragePlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'Cloud Storage',
   description: 'Deploy storage rules for configured environments.',
+  integrationId: 'gcp',
   provider: 'firebase',
   requiredModules: ['firebase-core'],
   optionalModules: [],

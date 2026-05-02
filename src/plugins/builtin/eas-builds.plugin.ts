@@ -7,6 +7,7 @@ export const easBuildsPlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'EAS Builds',
   description: 'Register project with EAS and configure build profiles.',
+  integrationId: 'eas',
   provider: 'eas',
   providerMeta: {
     label: 'EAS',

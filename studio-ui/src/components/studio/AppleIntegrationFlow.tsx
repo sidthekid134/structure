@@ -21,6 +21,8 @@ import {
 } from 'lucide-react';
 
 interface AppleIntegrationFlowProps {
+  /** Render without the modal backdrop — for embedding inside a step card. */
+  inline?: boolean;
   isConnected: boolean;
   connectionDetails?: {
     team_id?: string;
@@ -100,6 +102,7 @@ function validateField(
 }
 
 export function AppleIntegrationFlow({
+  inline = false,
   isConnected,
   connectionDetails,
   onClose,
@@ -205,14 +208,15 @@ export function AppleIntegrationFlow({
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/55" onClick={onClose}>
+  const cardContent = (
       <motion.div
         initial={{ opacity: 0, scale: 0.96, y: 12 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.96, y: 12 }}
         transition={{ duration: 0.2, ease: 'easeOut' }}
-        className="bg-background border border-border rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden"
+        className={inline
+          ? 'bg-background border border-border rounded-2xl w-full overflow-hidden'
+          : 'bg-background border border-border rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden'}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between p-6 border-b border-border">
@@ -353,6 +357,13 @@ export function AppleIntegrationFlow({
           </>
         )}
       </motion.div>
+  );
+
+  if (inline) return cardContent;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/55" onClick={onClose}>
+      {cardContent}
     </div>
   );
 }

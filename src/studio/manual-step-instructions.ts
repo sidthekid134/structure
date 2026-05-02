@@ -36,6 +36,8 @@ export interface ManualInstructionStep {
   title: string;
   /** Optional clarifier rendered under the title (URLs, copy-paste values, caveats). */
   detail?: string;
+  /** Optional full text payload rendered with a one-click copy button. */
+  copyText?: string;
   /**
    * Files the user needs while performing this step (typically things they
    * uploaded to Studio earlier and now have to re-upload to a third-party
@@ -101,11 +103,76 @@ interface InstructionContext {
   bundleId: string;
   appName: string;
   expectedGcpId: string;
+  platforms: string[];
+  environments: string[];
   /** Project-wide Apple Auth Key snapshot (see type docs). */
   appleAuthKeys: AppleAuthKeyRegistrySnapshot;
 }
 
 type InstructionBuilder = (ctx: InstructionContext) => ManualInstructions;
+
+type LlmKind = 'openai' | 'anthropic' | 'gemini' | 'custom';
+
+const LLM_RUNTIME_KEYS_BY_KIND: Record<LlmKind, string[]> = {
+  openai: ['LLM_OPENAI_API_KEY', 'LLM_OPENAI_ORGANIZATION_ID', 'LLM_OPENAI_DEFAULT_MODEL'],
+  anthropic: ['LLM_ANTHROPIC_API_KEY', 'LLM_ANTHROPIC_DEFAULT_MODEL'],
+  gemini: ['LLM_GEMINI_API_KEY', 'LLM_GEMINI_DEFAULT_MODEL'],
+  custom: ['LLM_CUSTOM_API_KEY', 'LLM_CUSTOM_BASE_URL', 'LLM_CUSTOM_DEFAULT_MODEL'],
+};
+
+const LLM_VAULT_SLOTS_BY_KIND: Record<LlmKind, string[]> = {
+  openai: ['llm/openai_api_key', 'llm/openai_organization_id'],
+  anthropic: ['llm/anthropic_api_key'],
+  gemini: ['llm/gemini_api_key'],
+  custom: ['llm/custom_api_key', 'llm/custom_base_url'],
+};
+
+function buildLlmIntegrationPromptInstructions(
+  ctx: InstructionContext,
+  kind: LlmKind,
+  providerLabel: string,
+): ManualInstructions {
+  const envKeys = LLM_RUNTIME_KEYS_BY_KIND[kind];
+  const vaultSlots = LLM_VAULT_SLOTS_BY_KIND[kind];
+  const platformLabel = ctx.platforms.length > 0 ? ctx.platforms.join(', ') : 'ios, android';
+  const envLabel = ctx.environments.length > 0 ? ctx.environments.join(', ') : 'preview, production';
+  const bundleId = ctx.bundleId || `com.example.${ctx.slug}`;
+  const domainLabel = ctx.domain || `${ctx.slug}.example.com`;
+  const defaultModel = (ctx.upstream[`llm_${kind}_default_model`] ?? '').trim();
+
+  const prompt =
+    `Update the "${ctx.appName}" app to use ${providerLabel}. ` +
+    `Project context: slug="${ctx.slug}", domain="${domainLabel}", bundleId="${bundleId}", ` +
+    `platforms=${platformLabel}, environments=${envLabel}. ` +
+    `Read credentials from ${envKeys.map((k) => `process.env.${k}`).join(', ')} ` +
+    `(synced by Studio to Expo EAS env slots ${envLabel}); fallback source in Studio vault slots: ${vaultSlots.join(', ')}. ` +
+    `Keep tokens server-side only, never log or hardcode them, and add a provider health check plus clear error reporting.` +
+    (defaultModel ? ` Default model currently pinned by Studio: "${defaultModel}".` : '');
+
+  return {
+    intro:
+      `This handoff gate gives you a copy/paste prompt to apply the ${providerLabel} integration in your app repository via your coding LLM, with project-specific context.`,
+    steps: [
+      {
+        title: `Review where ${providerLabel} credentials are available`,
+        detail:
+          `Expo EAS runtime env vars: ${envKeys.join(', ')}. Studio vault slots: ${vaultSlots.join(', ')}.`,
+      },
+      {
+        title: 'Copy this prompt into your project coding LLM',
+        detail: 'Use the copy button to grab the full prompt, then paste it into your coding LLM.',
+        copyText: prompt,
+      },
+      {
+        title: 'Apply changes in your app repo, run your local smoke test, then mark this gate complete',
+        detail:
+          `Validate on ${platformLabel} targets and verify env resolution across ${envLabel} configurations before confirming.`,
+      },
+    ],
+    note:
+      'This confirmation step does not mutate your repository automatically; it verifies that app-level integration handoff has been completed intentionally.',
+  };
+}
 
 /**
  * Registry of manual-instruction builders keyed by node key. Add a new
@@ -476,6 +543,14 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
     note:
       'This gate is a user verification checkpoint so Studio does not treat app-repo auth wiring as complete until you explicitly confirm it.',
   }),
+  'user:share-openai-integration-prompt': (ctx) =>
+    buildLlmIntegrationPromptInstructions(ctx, 'openai', 'OpenAI'),
+  'user:share-anthropic-integration-prompt': (ctx) =>
+    buildLlmIntegrationPromptInstructions(ctx, 'anthropic', 'Anthropic Claude'),
+  'user:share-gemini-integration-prompt': (ctx) =>
+    buildLlmIntegrationPromptInstructions(ctx, 'gemini', 'Google Gemini'),
+  'user:share-custom-llm-integration-prompt': (ctx) =>
+    buildLlmIntegrationPromptInstructions(ctx, 'custom', 'Custom OpenAI-compatible'),
 };
 
 type Capability = 'apns' | 'sign_in_with_apple';
@@ -818,6 +893,8 @@ export function buildManualInstructionsByNodeKey(
       bundleId,
       appName,
       expectedGcpId,
+      platforms: project.platforms ?? [],
+      environments: project.environments ?? [],
       appleAuthKeys,
     });
   }

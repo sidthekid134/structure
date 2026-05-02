@@ -18,6 +18,8 @@ import type {
 } from '../providers/types.js';
 import { PLATFORM_CORE_VERSION } from '../providers/types.js';
 import type { ProvisioningPlan } from '../provisioning/graph.types.js';
+import { VaultSealedError } from './vault-session.js';
+import { getVaultFileMasterKey } from './row-crypto.js';
 
 // ---------------------------------------------------------------------------
 // Vault reader
@@ -29,24 +31,30 @@ import type { ProvisioningPlan } from '../provisioning/graph.types.js';
  */
 export function createVaultReader(
   vaultManager: VaultManager,
+  storeDir: string,
 ): (key: string) => Promise<string | null> {
   return async (key: string): Promise<string | null> => {
-    const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-    if (!passphrase) return null;
+    let vk: string | Buffer;
     try {
-      const firebaseValue = vaultManager.getCredential(passphrase, 'firebase', key);
+      vk = getVaultFileMasterKey(storeDir);
+    } catch (e) {
+      if (e instanceof VaultSealedError) return null;
+      throw e;
+    }
+    try {
+      const firebaseValue = vaultManager.getCredential(vk, 'firebase', key);
       if (firebaseValue) return firebaseValue;
-      const githubValue = vaultManager.getCredential(passphrase, 'github', key);
+      const githubValue = vaultManager.getCredential(vk, 'github', key);
       if (githubValue) return githubValue;
-      const easValue = vaultManager.getCredential(passphrase, 'eas', key);
+      const easValue = vaultManager.getCredential(vk, 'eas', key);
       if (easValue) return easValue;
-      const appleValue = vaultManager.getCredential(passphrase, 'apple', key);
+      const appleValue = vaultManager.getCredential(vk, 'apple', key);
       if (appleValue) return appleValue;
-      const oauthValue = vaultManager.getCredential(passphrase, 'oauth', key);
+      const oauthValue = vaultManager.getCredential(vk, 'oauth', key);
       if (oauthValue) return oauthValue;
-      const cloudflareValue = vaultManager.getCredential(passphrase, 'cloudflare', key);
+      const cloudflareValue = vaultManager.getCredential(vk, 'cloudflare', key);
       if (cloudflareValue) return cloudflareValue;
-      const googlePlayValue = vaultManager.getCredential(passphrase, 'google-play', key);
+      const googlePlayValue = vaultManager.getCredential(vk, 'google-play', key);
       return googlePlayValue ?? null;
     } catch {
       return null;
@@ -56,14 +64,12 @@ export function createVaultReader(
 
 export function createVaultWriter(
   vaultManager: VaultManager,
+  storeDir: string,
   providerId = 'firebase',
 ): (key: string, value: string) => Promise<void> {
   return async (key: string, value: string): Promise<void> => {
-    const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-    if (!passphrase) {
-      throw new Error('STUDIO_VAULT_PASSPHRASE is required to write provisioning credentials.');
-    }
-    vaultManager.setCredential(passphrase, providerId, key, value);
+    const vk = getVaultFileMasterKey(storeDir);
+    vaultManager.setCredential(vk, providerId, key, value);
   };
 }
 

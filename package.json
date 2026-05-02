@@ -1,8 +1,43 @@
 {
-  "name": "credential-vault",
+  "name": "studio-pro",
   "version": "1.0.0",
-  "description": "Encrypted credential vault and secret management",
+  "description": "Local provisioning studio with passkey-protected encrypted vault. Provisions Firebase, GCP, Apple, EAS, GitHub and more from a unified, plugin-driven UI.",
+  "keywords": [
+    "mobile",
+    "provisioning",
+    "firebase",
+    "expo",
+    "eas",
+    "apple",
+    "google-cloud",
+    "vault",
+    "credentials",
+    "passkey",
+    "webauthn",
+    "studio"
+  ],
+  "homepage": "https://github.com/sidthekid134/structure#readme",
+  "bugs": {
+    "url": "https://github.com/sidthekid134/structure/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sidthekid134/structure.git"
+  },
+  "author": "Sidhartha Moparthi",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "main": "dist/index.js",
+  "bin": {
+    "studio-pro": "./dist/studio/cli.js"
+  },
   "scripts": {
     "ui:install": "npm --prefix studio-ui install",
     "ui:dev": "npm --prefix studio-ui run dev",
@@ -10,19 +45,27 @@
     "ui:build": "npm --prefix studio-ui run build",
     "build:backend": "tsc && mkdir -p dist/studio/static && cp -R src/studio/static/. dist/studio/static",
     "build": "npm run ui:build && npm run build:backend",
-    "dev:backend": "STUDIO_DEV_MODE=1 tsc-watch --preserveWatchOutput --onSuccess \"node dist/studio/server.js\"",
+    "build:cli": "node scripts/build-cli.js",
+    "build:cli:all": "node scripts/build-cli.js --all",
+    "dev:backend": "STUDIO_SERVE_UI_FROM_SOURCE=1 tsc-watch --preserveWatchOutput --onSuccess \"node dist/studio/server.js\"",
     "dev:full": "concurrently -k -n backend,ui -c cyan,magenta \"npm run dev:backend\" \"npm run ui:watch\"",
+    "reset:data": "npm run build:backend && node dist/studio/cli.js vault destroy --i-am-sure",
     "prod:backend": "npm run build:backend && node dist/studio/server.js",
     "prod:ui": "npm run ui:build && npm --prefix studio-ui run preview -- --host 127.0.0.1 --port 4173",
+    "lint:no-raw-console": "node scripts/check-no-raw-console.js",
+    "pretest": "npm run lint:no-raw-console",
     "test": "jest --testPathPattern='src/__tests__'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepack": "node -e \"console.error('studio-pro is distributed via GitHub Releases binaries, not npm. See docs/distribution.md.'); process.exit(1)\""
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "^4.17.21",
     "@types/jest": "^29.5.0",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.5.10",
+    "@yao-pkg/pkg": "^6.19.0",
     "concurrently": "^9.2.1",
     "jest": "^29.5.0",
     "ts-jest": "^29.1.0",
@@ -32,20 +75,43 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/src/__tests__/helpers/",
+      "/src/__tests__/mocks/"
+    ],
     "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
+      "^(\\.{1,2}/.*)\\.js$": "$1",
+      "^env-paths$": "<rootDir>/src/__tests__/mocks/env-paths-mock.cjs"
     }
+  },
+  "pkg": {
+    "scripts": [
+      "dist/**/*.js"
+    ],
+    "assets": [
+      "dist/studio/static/**/*",
+      "node_modules/better-sqlite3/build/Release/*.node",
+      "node_modules/libsodium-wrappers/dist/**/*",
+      "node_modules/libsodium/dist/**/*"
+    ],
+    "outputPath": "binaries"
   },
   "dependencies": {
     "@expo/apple-utils": "^2.1.21",
     "@octokit/rest": "^18.12.0",
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.0",
     "@types/libsodium-wrappers": "^0.8.2",
     "better-sqlite3": "^12.8.0",
+    "cookie-parser": "^1.4.7",
     "dotenv": "^17.3.1",
+    "env-paths": "^4.0.0",
     "express": "^4.18.2",
     "google-auth-library": "^10.6.2",
     "jszip": "^3.10.1",
     "libsodium-wrappers": "^0.8.2",
+    "libsodium-wrappers-sumo": "^0.8.4",
     "ws": "^8.16.0"
   }
 }

@@ -6,6 +6,7 @@ export const firebaseAuthPlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'Firebase Auth',
   description: 'Enable auth providers and configure redirect domains.',
+  integrationId: 'gcp',
   provider: 'oauth',
   providerMeta: {
     label: 'OAuth',

@@ -1,41 +1,47 @@
-import { deriveKey, encrypt, decrypt } from '../encryption';
+import { deriveKeyArgon2id, encrypt, decrypt } from '../encryption';
 import { CryptoError } from '../types';
 import * as crypto from 'crypto';
 
 const VAULT_PATH = '/home/user/.platform/credentials.enc';
 const PASSPHRASE = 'super-secret-passphrase-123!';
 
-describe('deriveKey', () => {
-  it('returns a 32-byte buffer', () => {
-    const key = deriveKey(PASSPHRASE, VAULT_PATH);
+describe('deriveKeyArgon2id', () => {
+  it('returns a 32-byte buffer', async () => {
+    const key = await deriveKeyArgon2id(PASSPHRASE, VAULT_PATH);
     expect(Buffer.isBuffer(key)).toBe(true);
     expect(key.length).toBe(32);
   });
 
-  it('is deterministic for the same passphrase + path', () => {
-    const k1 = deriveKey(PASSPHRASE, VAULT_PATH);
-    const k2 = deriveKey(PASSPHRASE, VAULT_PATH);
+  it('is deterministic for the same passphrase + path', async () => {
+    const k1 = await deriveKeyArgon2id(PASSPHRASE, VAULT_PATH);
+    const k2 = await deriveKeyArgon2id(PASSPHRASE, VAULT_PATH);
     expect(k1.equals(k2)).toBe(true);
   });
 
-  it('produces different keys for different passphrases', () => {
-    const k1 = deriveKey(PASSPHRASE, VAULT_PATH);
-    const k2 = deriveKey('different-passphrase-456!', VAULT_PATH);
+  it('produces different keys for different passphrases', async () => {
+    const k1 = await deriveKeyArgon2id(PASSPHRASE, VAULT_PATH);
+    const k2 = await deriveKeyArgon2id('different-passphrase-456!', VAULT_PATH);
     expect(k1.equals(k2)).toBe(false);
   });
 
-  it('produces different keys for different vault paths', () => {
-    const k1 = deriveKey(PASSPHRASE, VAULT_PATH);
-    const k2 = deriveKey(PASSPHRASE, '/other/path/credentials.enc');
+  it('produces different keys for different vault paths', async () => {
+    const k1 = await deriveKeyArgon2id(PASSPHRASE, VAULT_PATH);
+    const k2 = await deriveKeyArgon2id(PASSPHRASE, '/other/path/credentials.enc');
     expect(k1.equals(k2)).toBe(false);
+  });
+
+  it('PBKDF2 deriveKey export has been removed', () => {
+    // Guards against accidental re-introduction of the legacy KDF.
+    const enc = require('../encryption') as Record<string, unknown>;
+    expect(enc['deriveKey']).toBeUndefined();
   });
 });
 
 describe('encrypt / decrypt round-trip', () => {
   let key: Buffer;
 
-  beforeEach(() => {
-    key = deriveKey(PASSPHRASE, VAULT_PATH);
+  beforeEach(async () => {
+    key = await deriveKeyArgon2id(PASSPHRASE, VAULT_PATH);
   });
 
   it('encrypts and decrypts a string correctly', () => {

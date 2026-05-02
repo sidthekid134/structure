@@ -212,7 +212,15 @@ export interface PluginDefinition {
   label: string;
   description: string;
 
-  // ── Provider ────────────────────────────────────────────────────────────
+  // ── Integration / Provider ──────────────────────────────────────────────
+  /**
+   * Top-level integration this plugin belongs to (e.g. 'gcp', 'apple', 'github').
+   * Lookup key for `IntegrationDefinition` in `src/plugins/builtin-integrations.ts`.
+   * Used to group plugins in the UI swimlanes and the integrations tab.
+   *
+   * If omitted, the registry falls back to `provider` for backward compatibility.
+   */
+  integrationId?: string;
   provider: string;
   /**
    * Provide this when the plugin introduces a provider not in the built-in set,

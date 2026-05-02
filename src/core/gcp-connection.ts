@@ -17,8 +17,11 @@
 import { GoogleAuth } from 'google-auth-library';
 import type { VaultManager } from '../vault.js';
 import type { ProjectManager, IntegrationConfigRecord } from '../studio/project-manager.js';
+import { createOperationLogger } from '../logger.js';
 import { OAuthManager } from './oauth-manager.js';
 import { GcpOAuthProvider } from './gcp/gcp-oauth-provider.js';
+
+const log = createOperationLogger('studio-gcp');
 import {
   GcpHttpError,
   gcpRequest,
@@ -60,6 +63,7 @@ import {
   type GcpConnectionDetails,
   type GcpProjectConnectionStatus,
 } from './gcp/gcp-credentials.js';
+import { getVaultUnlock as resolveVaultUnlock } from '../studio/vault-session.js';
 
 // ---------------------------------------------------------------------------
 // Re-export types consumed by api.ts and other callers
@@ -135,11 +139,10 @@ export class GcpConnectionService implements GcpCredentialProvider {
   constructor(
     private readonly vaultManager: VaultManager,
     private readonly projectManager: ProjectManager,
-    oauthClientId: string,
-    oauthClientSecret: string,
+    oauthClientId?: string,
   ) {
-    this.gcpProvider = new GcpOAuthProvider(oauthClientId, oauthClientSecret);
-    this.oauthManager = new OAuthManager(vaultManager, () => this.getVaultPassphrase());
+    this.gcpProvider = new GcpOAuthProvider(oauthClientId);
+    this.oauthManager = new OAuthManager(vaultManager, () => resolveVaultUnlock());
   }
 
   // ---------------------------------------------------------------------------
@@ -166,7 +169,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
   async startProjectOAuthFlow(projectId: string): Promise<GcpOAuthSessionStart> {
     if (!this.gcpProvider.isConfigured()) {
-      throw new Error('Google OAuth is not configured. Set PLATFORM_GCP_OAUTH_CLIENT_ID and PLATFORM_GCP_OAUTH_CLIENT_SECRET.');
+      throw new Error('Google OAuth client is not configured.');
     }
     this.ensureProjectExists(projectId);
 
@@ -174,14 +177,14 @@ export class GcpConnectionService implements GcpCredentialProvider {
       this.gcpProvider,
       projectId,
       async (accessToken, email) => {
-        const passphrase = this.getVaultPassphrase();
+        const passphrase = resolveVaultUnlock();
         this.gcpProvider.storeConnectedEmail(this.vaultManager, passphrase, projectId, email);
         const discover = await this.discoverStudioGcpProjectWithUserAccessToken(projectId, accessToken);
         return { gcpProjectDiscover: discover };
       },
     );
 
-    console.log(`[studio-gcp] OAuth flow started for Studio project "${projectId}" (session ${start.sessionId}).`);
+    log.info('OAuth flow started', { projectId, sessionId: start.sessionId });
     return {
       sessionId: start.sessionId,
       authUrl: start.authUrl,
@@ -194,7 +197,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
   getProjectOAuthStatus(projectId: string, sessionId: string): GcpOAuthSessionStatus {
     this.ensureProjectExists(projectId);
     const status = this.oauthManager.getSessionStatus(sessionId, projectId);
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const details = status.connected
       ? (getStoredConnectionDetails(this.vaultManager, passphrase, projectId) ??
         buildOAuthPreviewDetails(projectId, this.vaultManager, passphrase, status.connectedEmail ?? 'unknown'))
@@ -218,7 +221,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
   getProjectConnectionStatus(projectId: string): GcpProjectConnectionStatus {
     this.ensureProjectExists(projectId);
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const details = getStoredConnectionDetails(this.vaultManager, passphrase, projectId);
     const integration = this.projectManager.getProject(projectId).integrations.firebase;
 
@@ -261,7 +264,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
   ): Promise<GcpOAuthProjectDiscoverResult> {
     const expectedProjectId = buildStudioGcpProjectId(studioProjectId);
     const expectedDisplayName = `Studio ${studioProjectId}`;
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const userEmail = this.gcpProvider.getConnectedEmail(this.vaultManager, passphrase, studioProjectId);
 
     try {
@@ -337,17 +340,17 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
   getStoredGcpProjectId(studioProjectId: string): string | null {
     this.ensureProjectExists(studioProjectId);
-    return getStoredGcpProjectId(this.vaultManager, this.getVaultPassphrase(), studioProjectId);
+    return getStoredGcpProjectId(this.vaultManager, resolveVaultUnlock(), studioProjectId);
   }
 
   storeGcpProjectIdInVault(studioProjectId: string, gcpProjectId: string): void {
     this.ensureProjectExists(studioProjectId);
-    storeGcpProjectId(this.vaultManager, this.getVaultPassphrase(), studioProjectId, gcpProjectId);
+    storeGcpProjectId(this.vaultManager, resolveVaultUnlock(), studioProjectId, gcpProjectId);
   }
 
   storeProvisionerServiceAccountEmail(studioProjectId: string, email: string): void {
     this.ensureProjectExists(studioProjectId);
-    storeSaEmail(this.vaultManager, this.getVaultPassphrase(), studioProjectId, email);
+    storeSaEmail(this.vaultManager, resolveVaultUnlock(), studioProjectId, email);
   }
 
   recordProvisionerServiceAccountKey(
@@ -359,7 +362,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
     this.ensureProjectExists(studioProjectId);
     return recordProvisionerServiceAccountKey(
       this.vaultManager,
-      this.getVaultPassphrase(),
+      resolveVaultUnlock(),
       this.projectManager,
       studioProjectId,
       gcpProjectId,
@@ -393,7 +396,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
     if (parsed.type !== 'service_account') throw new Error('Invalid service account JSON: "type" must be "service_account".');
     if (!parsed.project_id || !parsed.client_email) throw new Error('Invalid service account JSON: missing project_id or client_email.');
 
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const details: GcpConnectionDetails = {
       projectId: parsed.project_id,
       serviceAccountEmail: parsed.client_email,
@@ -407,7 +410,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
   disconnectProject(projectId: string): GcpProjectConnectionStatus & { removed: boolean } {
     this.ensureProjectExists(projectId);
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const removed = deleteGcpCredentials(this.vaultManager, passphrase, projectId);
 
     const project = this.projectManager.getProject(projectId);
@@ -455,7 +458,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
   async validateStep(studioProjectId: string, stepId: GcpBootstrapPhaseId): Promise<GcpStepValidationResult> {
     this.ensureProjectExists(studioProjectId);
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const hasOAuth = this.hasStoredUserOAuthRefreshToken(studioProjectId);
 
     switch (stepId) {
@@ -559,7 +562,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
     this.ensureProjectExists(studioProjectId);
     const toRun = new Set(cascadeStepIds);
     const results: GcpStepRevertResult[] = [];
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
 
     let accessToken: string | null = null;
     let tokenError: string | null = null;
@@ -655,10 +658,10 @@ export class GcpConnectionService implements GcpCredentialProvider {
   // ---------------------------------------------------------------------------
 
   async ensureProjectForStudioProject(accessToken: string, studioProjectId: string): Promise<string> {
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const existingId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
     const gcpProjectId = existingId ?? buildStudioGcpProjectId(studioProjectId);
-    console.log(`[studio-gcp] ensureProjectForStudioProject: studioId="${studioProjectId}" gcpId="${gcpProjectId}" existing=${Boolean(existingId)}`);
+    log.info('ensureProjectForStudioProject', { studioProjectId, gcpProjectId, existing: Boolean(existingId) });
 
     if (existingId) {
       const status = await getGcpProjectStatus(accessToken, gcpProjectId);
@@ -705,14 +708,14 @@ export class GcpConnectionService implements GcpCredentialProvider {
    */
   async deleteLinkedGcpProject(studioProjectId: string): Promise<{ gcpProjectId: string }> {
     this.ensureProjectExists(studioProjectId);
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const gcpProjectId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
     if (!gcpProjectId) {
       throw new Error(`No GCP project linked to studio project "${studioProjectId}". Nothing to delete.`);
     }
     const accessToken = await this.getAccessTokenForGcpOperations(studioProjectId, 'delete-linked-project');
     await deleteGcpProject(accessToken, gcpProjectId);
-    console.log(`[studio-gcp] Deleted GCP project "${gcpProjectId}" for studio project "${studioProjectId}".`);
+    log.info('deleted linked GCP project', { studioProjectId, gcpProjectId });
     return { gcpProjectId };
   }
 
@@ -725,7 +728,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
   }
 
   private async getServiceAccountAccessToken(studioProjectId: string): Promise<string> {
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     const saJson = getStoredSaKeyJson(this.vaultManager, passphrase, studioProjectId);
     if (!saJson) throw new Error('No service account key in vault. Cannot call GCP APIs for validate/revert.');
     let credentials: Record<string, unknown>;
@@ -743,15 +746,15 @@ export class GcpConnectionService implements GcpCredentialProvider {
   private async getAccessTokenForGcpOperations(studioProjectId: string, context?: string): Promise<string> {
     const userToken = await this.getUserOAuthAccessToken(studioProjectId);
     if (userToken) {
-      if (context) console.log(`[studio-gcp] ${context}: using user OAuth token.`);
+      if (context) log.info('using user OAuth token', { context });
       return userToken;
     }
-    if (context) console.warn(`[studio-gcp] ${context}: no user OAuth token — falling back to service account key.`);
+    if (context) log.warn('falling back to service account key', { context });
     return this.getServiceAccountAccessToken(studioProjectId);
   }
 
   private buildStepHandlerContext(studioProjectId: string): import('../provisioning/step-handler-registry.js').StepHandlerContext {
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     return {
       projectId: studioProjectId,
       upstreamArtifacts: {},
@@ -773,9 +776,4 @@ export class GcpConnectionService implements GcpCredentialProvider {
     this.projectManager.getProject(projectId);
   }
 
-  private getVaultPassphrase(): string {
-    const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-    if (!passphrase) throw new Error('STUDIO_VAULT_PASSPHRASE is required to use Studio credential storage for GCP/Firebase.');
-    return passphrase;
-  }
 }

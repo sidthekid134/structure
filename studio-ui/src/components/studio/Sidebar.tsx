@@ -1,4 +1,4 @@
-import { Activity, Cpu, Layers, Plus, User } from 'lucide-react';
+import { Activity, Download, Layers, Plus, User } from 'lucide-react';
 import type { ProjectSummary, StudioView } from './types';
 
 export function Sidebar({
@@ -8,6 +8,7 @@ export function Sidebar({
   onSelectProject,
   onViewChange,
   onShowCreate,
+  onShowImport,
 }: {
   projects: ProjectSummary[];
   activeProjectId: string | null;
@@ -15,22 +16,37 @@ export function Sidebar({
   onSelectProject: (projectId: string) => void;
   onViewChange: (view: StudioView) => void;
   onShowCreate: () => void;
+  onShowImport: () => void;
 }) {
   return (
     <aside className="w-72 border-r border-border bg-card flex flex-col shrink-0 overflow-hidden">
       <div className="p-4 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-primary text-primary-foreground flex items-center justify-center">
-            <Cpu size={16} />
+          <div className="w-8 h-8 rounded overflow-hidden shrink-0">
+            <img src="/studio-pro-icon.png" alt="Studio Pro" className="w-full h-full object-cover" />
           </div>
           <div className="overflow-hidden">
-            <p className="text-sm font-bold leading-tight">Studio Core</p>
-            <p className="text-[10px] text-muted-foreground">Magicpath UI</p>
+            <p className="text-sm font-bold leading-tight">Studio Pro</p>
+            <p className="text-[10px] text-muted-foreground">Local · Encrypted</p>
           </div>
         </div>
-        <button type="button" onClick={onShowCreate} className="rounded-md px-2 py-1 text-xs bg-primary text-primary-foreground flex items-center gap-1 shrink-0">
-          <Plus size={12} /> New
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onShowImport}
+            className="rounded-md px-2 py-1 text-xs border border-border hover:bg-muted flex items-center gap-1 shrink-0"
+            title="Import encrypted project migration"
+          >
+            <Download size={12} /> Import
+          </button>
+          <button
+            type="button"
+            onClick={onShowCreate}
+            className="rounded-md px-2 py-1 text-xs bg-primary text-primary-foreground flex items-center gap-1 shrink-0"
+          >
+            <Plus size={12} /> New
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 flex flex-col">

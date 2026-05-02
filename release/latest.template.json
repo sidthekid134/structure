@@ -1,0 +1,19 @@
+{
+  "_comment": "Optional release metadata for tooling. Studio Pro publishes CLI binaries via GitHub Releases (see .github/workflows/release.yml). Asset names match `studio-pro-<rust-triple>` produced by scripts/build-cli.js. Replace OWNER, REPO, and TAG when publishing.",
+  "version": "1.0.0",
+  "notes": "Replace with release notes when tagging.",
+  "assets": {
+    "darwin-arm64": {
+      "url": "https://github.com/OWNER/REPO/releases/download/TAG/studio-pro-aarch64-apple-darwin"
+    },
+    "darwin-x64": {
+      "url": "https://github.com/OWNER/REPO/releases/download/TAG/studio-pro-x86_64-apple-darwin"
+    },
+    "linux-x64": {
+      "url": "https://github.com/OWNER/REPO/releases/download/TAG/studio-pro-x86_64-unknown-linux-gnu"
+    },
+    "linux-arm64": {
+      "url": "https://github.com/OWNER/REPO/releases/download/TAG/studio-pro-aarch64-unknown-linux-gnu"
+    }
+  }
+}

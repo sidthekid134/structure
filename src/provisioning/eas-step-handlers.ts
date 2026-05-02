@@ -150,6 +150,14 @@ function studioEnvToExpoSlot(env: string): string {
   throw new Error(`Unsupported Studio environment "${env}".`);
 }
 
+function envSlotPresent(
+  environments: string[] | null | undefined,
+  slot: string,
+): boolean {
+  const wanted = slot.trim().toUpperCase();
+  return (environments ?? []).some((env) => env.trim().toUpperCase() === wanted);
+}
+
 async function deriveFirebaseApiKey(context: StepHandlerContext): Promise<string> {
   const gcpProjectId =
     context.upstreamArtifacts['firebase_project_id']?.trim() ||
@@ -468,7 +476,7 @@ const syncRuntimeEnvHandler: StepHandler = {
       const slotVars = vars.filter(
         (v) =>
           v.name === name &&
-          (v.environments ?? []).includes(expoSlot),
+          envSlotPresent(v.environments, expoSlot),
       );
       if (!normalized) {
         return slotVars.length > 0;
@@ -606,7 +614,7 @@ const syncLlmSecretsHandler: StepHandler = {
     const mismatched = expected.filter(([name]) => {
       const matching = vars.filter((v) => v.name === name);
       // Secret values can be masked in readback, so existence in each target slot is enough.
-      return projectSlots.some((slot) => !matching.some((v) => (v.environments ?? []).includes(slot)));
+      return projectSlots.some((slot) => !matching.some((v) => envSlotPresent(v.environments, slot)));
     });
     if (mismatched.length > 0) {
       return {

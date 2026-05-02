@@ -6,6 +6,7 @@ export const easSubmitPlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'EAS Submit',
   description: 'Configure EAS Submit for App Store and Google Play uploads.',
+  integrationId: 'eas',
   provider: 'eas',
   requiredModules: ['eas-builds'],
   optionalModules: ['apple-signing', 'google-play-publishing'],

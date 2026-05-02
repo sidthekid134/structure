@@ -221,24 +221,22 @@ export function ModuleSelectionWizard({
   variant = 'workspace',
   selectedTemplateId,
   selectedModuleIds,
+  savedModuleIds = [],
   onTemplateChange,
   onModulesChange,
   hasPendingChanges = false,
   isApplying = false,
   onApply = () => {},
-  setupStepCount = null,
-  savedModuleCount = null,
 }: {
   variant?: 'workspace' | 'modal';
   selectedTemplateId: ProjectTemplateId;
   selectedModuleIds: ModuleId[];
+  savedModuleIds?: ModuleId[];
   onTemplateChange: (templateId: ProjectTemplateId, modules: ModuleId[]) => void;
   onModulesChange: (modules: ModuleId[]) => void;
   hasPendingChanges?: boolean;
   isApplying?: boolean;
   onApply?: () => void;
-  setupStepCount?: number | null;
-  savedModuleCount?: number | null;
 }) {
   const isModal = variant === 'modal';
   const { catalog: pluginCatalog, loading: catalogLoading, error: catalogError } = usePluginCatalog();
@@ -302,9 +300,17 @@ export function ModuleSelectionWizard({
     return map;
   }, [selectedSet, moduleById]);
 
-  const selectedList = useMemo(
-    () => modules.filter((m) => selectedSet.has(m.id)),
-    [modules, selectedSet],
+  const savedSet = useMemo(
+    () => new Set(resolveDependencies(savedModuleIds, modules)),
+    [savedModuleIds, modules],
+  );
+  const addedModules = useMemo(
+    () => modules.filter((m) => selectedSet.has(m.id) && !savedSet.has(m.id)),
+    [modules, selectedSet, savedSet],
+  );
+  const removedModules = useMemo(
+    () => modules.filter((m) => savedSet.has(m.id) && !selectedSet.has(m.id)),
+    [modules, selectedSet, savedSet],
   );
 
   // ── Graph layout ──────────────────────────────────────────────────────────
@@ -727,46 +733,6 @@ export function ModuleSelectionWizard({
 
         {!isModal ? (
           <aside className="lg:sticky lg:top-4 space-y-3">
-            <div className="rounded-2xl border border-border bg-card p-4 shadow-sm space-y-4">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Summary</p>
-                <p className="text-2xl font-bold tabular-nums text-foreground mt-1">{selectedSet.size}</p>
-                <p className="text-xs text-muted-foreground">modules in scope (with dependencies)</p>
-              </div>
-              <div className="rounded-xl bg-muted/40 border border-border/80 p-3 space-y-2 text-xs">
-                <div className="flex justify-between gap-2">
-                  <span className="text-muted-foreground">Setup steps (saved plan)</span>
-                  <span className="font-mono font-semibold text-foreground">
-                    {setupStepCount === null ? '—' : setupStepCount}
-                  </span>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <span className="text-muted-foreground">Modules on server</span>
-                  <span className="font-mono font-semibold text-foreground">
-                    {savedModuleCount === null ? '—' : savedModuleCount}
-                  </span>
-                </div>
-              </div>
-              {selectedList.length > 0 ? (
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Selected</p>
-                  <ul className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
-                    {selectedList.map((m) => (
-                      <li
-                        key={m.id}
-                        className="flex items-center gap-2 text-[11px] text-foreground/90 rounded-lg bg-muted/30 px-2 py-1.5 border border-border/60"
-                      >
-                        <Check size={11} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
-                        <span className="truncate font-medium">{m.label}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground italic">No modules selected. Choose a template or toggle items.</p>
-              )}
-            </div>
-
             <div
               className={`rounded-2xl border p-4 shadow-sm transition-colors ${
                 hasPendingChanges
@@ -782,6 +748,44 @@ export function ModuleSelectionWizard({
                   ? 'Update the server plan so the Setup tab shows the right steps and journey phases.'
                   : 'Your module list matches the last saved provisioning plan.'}
               </p>
+              {hasPendingChanges && (
+                <div className="mt-3 space-y-2">
+                  {addedModules.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                        Added
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {addedModules.map((m) => (
+                          <span
+                            key={`add-${m.id}`}
+                            className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-800 dark:text-emerald-200"
+                          >
+                            {m.label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {removedModules.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-red-700 dark:text-red-300">
+                        Removed
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {removedModules.map((m) => (
+                          <span
+                            key={`remove-${m.id}`}
+                            className="rounded-md border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[11px] text-red-800 dark:text-red-200"
+                          >
+                            {m.label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
                 disabled={!hasPendingChanges || isApplying}

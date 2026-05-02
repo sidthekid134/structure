@@ -7,6 +7,7 @@ export const oauthSocialPlugin: PluginDefinition = {
   label: 'Social OAuth & Deep Links',
   description:
     'Apple Sign-In credential creation + Firebase provider wiring, and deep link domain configuration for mobile auth.',
+  integrationId: 'gcp',
   provider: 'oauth',
   requiredModules: ['firebase-auth'],
   optionalModules: ['cloudflare-domain', 'apple-signing'],

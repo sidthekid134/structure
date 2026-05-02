@@ -10,6 +10,7 @@ export const firebaseCorePlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'GCP Core',
   description: 'GCP project creation, Firebase project setup, service accounts, and app registrations.',
+  integrationId: 'gcp',
   provider: 'firebase',
   providerMeta: {
     label: 'Firebase',
@@ -41,6 +42,7 @@ export const firebaseCorePlugin: PluginDefinition = {
   ],
   userActions: [
     USER_ACTIONS.find((a) => a.key === 'user:setup-gcp-billing')!,
+    USER_ACTIONS.find((a) => a.key === 'user:connect-gcp-integration')!,
   ],
   displayMeta: {
     icon: 'Cloud',

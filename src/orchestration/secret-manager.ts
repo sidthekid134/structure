@@ -1,18 +1,18 @@
 /**
  * SecretManager — encrypts and stores provider credentials in SQLite.
  *
- * Each secret is encrypted with a key derived from:
- *   SHA-256(masterPassphrase + providerId + secretName)
+ * Each secret is encrypted with a per-(provider,key) Argon2id-derived AES key,
+ * with the masterPassphrase as input keying material and `${provider}:${key}`
+ * as the salt source.
  *
  * Secrets table is maintained inside the same SQLite database as the
  * orchestration event log, accessed via the EventLog instance.
  */
 
-import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
-import { encrypt, decrypt, deriveKey } from '../encryption.js';
+import { encrypt, decrypt, deriveKeyArgon2id } from '../encryption.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
 import type { ProviderType } from '../providers/types.js';
@@ -72,11 +72,11 @@ export class SecretManager {
   // Derive per-secret encryption key
   // ---------------------------------------------------------------------------
 
-  private deriveSecretKey(provider: ProviderType, secretKey: string): Buffer {
-    // Use a virtual path built from provider+secretKey to keep the deriveKey
-    // interface unchanged (it expects a vault path as the salt source).
+  private async deriveSecretKey(provider: ProviderType, secretKey: string): Promise<Buffer> {
+    // The "vault path" passed to Argon2id is just the salt source — using
+    // `${provider}:${key}` here gives every secret its own derived key.
     const saltSource = `${provider}:${secretKey}`;
-    return deriveKey(this.masterPassphrase, saltSource);
+    return deriveKeyArgon2id(this.masterPassphrase, saltSource);
   }
 
   // ---------------------------------------------------------------------------
@@ -87,13 +87,13 @@ export class SecretManager {
    * Encrypts a secret value and stores it under (provider, key).
    * Existing values are overwritten (upsert).
    */
-  storeSecret(provider: ProviderType, key: string, value: string): void {
+  async storeSecret(provider: ProviderType, key: string, value: string): Promise<void> {
     if (!value) {
       this.log.warn('storeSecret called with empty value — skipping', { provider, key });
       return;
     }
 
-    const encKey = this.deriveSecretKey(provider, key);
+    const encKey = await this.deriveSecretKey(provider, key);
     const encValue = encrypt(value, encKey, { providerId: provider });
 
     this.db
@@ -110,14 +110,14 @@ export class SecretManager {
    * Retrieves and decrypts a secret.
    * Returns null if the secret does not exist.
    */
-  retrieveSecret(provider: ProviderType, key: string): string | null {
+  async retrieveSecret(provider: ProviderType, key: string): Promise<string | null> {
     const row = this.db
       .prepare('SELECT encrypted_value FROM secrets WHERE provider = ? AND key = ?')
       .get(provider, key) as { encrypted_value: string } | undefined;
 
     if (!row) return null;
 
-    const encKey = this.deriveSecretKey(provider, key);
+    const encKey = await this.deriveSecretKey(provider, key);
     try {
       return decrypt(row.encrypted_value, encKey, { providerId: provider });
     } catch {
@@ -129,14 +129,14 @@ export class SecretManager {
   /**
    * Stores all credentials returned by a provider's extractCredentials().
    */
-  storeProviderCredentials(
+  async storeProviderCredentials(
     provider: ProviderType,
     credentials: Record<string, string>,
-  ): string[] {
+  ): Promise<string[]> {
     const stored: string[] = [];
     for (const [key, value] of Object.entries(credentials)) {
       try {
-        this.storeSecret(provider, key, value);
+        await this.storeSecret(provider, key, value);
         stored.push(key);
       } catch (err) {
         this.log.error('Failed to store credential', {

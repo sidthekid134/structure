@@ -2,6 +2,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { CredentialStore } from '../services/credential-store';
+import { testDeriveKey } from './helpers/test-key.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -12,7 +13,7 @@ function makeTempDir(): string {
 }
 
 function makeStore(dir: string): CredentialStore {
-  return new CredentialStore(dir, 'test-passphrase-flow');
+  return new CredentialStore(dir, (purpose: string) => testDeriveKey('test-passphrase-flow', purpose));
 }
 
 // ---------------------------------------------------------------------------

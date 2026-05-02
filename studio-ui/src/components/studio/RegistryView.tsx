@@ -2,8 +2,8 @@ import { ArrowRight, CheckCircle2, Code2, Link2 } from 'lucide-react';
 import {
   CATEGORY_LABEL_MAP,
   CATEGORY_PILL_STYLE,
-  INTEGRATION_CONFIGS,
 } from './constants';
+import { useIntegrationCatalog } from './useIntegrationCatalog';
 import { usePluginCatalog } from './usePluginCatalog';
 import type { ConnectedProviders, IntegrationConfig, ProviderId, RegistryPlugin } from './types';
 
@@ -15,19 +15,6 @@ function isPluginConnected(plugin: RegistryPlugin, connectedProviders: Connected
   if (plugin.providerId === 'apple') return connectedProviders.apple;
   if (plugin.providerId === 'cloudflare') return connectedProviders.cloudflare;
   return false;
-}
-
-function getProviderConfig(plugin: RegistryPlugin): IntegrationConfig | null {
-  if (
-    plugin.providerId === 'firebase' ||
-    plugin.providerId === 'expo' ||
-    plugin.providerId === 'github' ||
-    plugin.providerId === 'apple' ||
-    plugin.providerId === 'cloudflare'
-  ) {
-    return INTEGRATION_CONFIGS.find((c) => c.id === plugin.providerId) ?? null;
-  }
-  return null;
 }
 
 export function RegistryView({
@@ -48,6 +35,12 @@ export function RegistryView({
   onOpenProjectPlugin?: (pluginId: string) => boolean;
 }) {
   const { catalog, loading, error, reload } = usePluginCatalog();
+  const integrationConfigs = useIntegrationCatalog();
+
+  function getProviderConfig(plugin: RegistryPlugin): IntegrationConfig | null {
+    if (!integrationConfigs) return null;
+    return integrationConfigs.find((c) => c.id === plugin.providerId) ?? null;
+  }
 
   if (loading) {
     return (
@@ -95,7 +88,7 @@ export function RegistryView({
 
       <div className="bg-card border border-border rounded-xl p-4 flex items-center gap-3 flex-wrap">
         <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mr-1">Integrations</p>
-        {INTEGRATION_CONFIGS.map((cfg) => {
+        {(integrationConfigs ?? []).map((cfg) => {
           const connected = connectedProviders[cfg.id];
           const available = cfg.scope === 'project' && !activeProjectId;
           const CfgIcon = cfg.logo;

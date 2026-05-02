@@ -9,9 +9,10 @@ import {
   Smartphone,
   TrendingUp,
 } from 'lucide-react';
-import { INTEGRATION_CONFIGS } from './constants';
 import { formatDate } from './helpers';
+import { useIntegrationCatalog } from './useIntegrationCatalog';
 import { usePluginCatalog } from './usePluginCatalog';
+import { VaultDangerZone } from './VaultDangerZone';
 import type { ConnectedProviders, ProjectSummary, ProviderId } from './types';
 
 export function OrgOverview({
@@ -30,7 +31,8 @@ export function OrgOverview({
   totalModulesConfigured: number;
 }) {
   const { catalog: pluginCatalog } = usePluginCatalog();
-  const integrationSummary = INTEGRATION_CONFIGS.map((cfg) => ({
+  const integrationConfigs = useIntegrationCatalog();
+  const integrationSummary = (integrationConfigs ?? []).map((cfg) => ({
     ...cfg,
     connected: connectedProviders[cfg.id],
     pluginCount: pluginCatalog?.providerPluginMap[cfg.id]?.length ?? 0,
@@ -183,6 +185,8 @@ export function OrgOverview({
           </div>
         </div>
       </div>
+
+      <VaultDangerZone />
     </div>
   );
 }

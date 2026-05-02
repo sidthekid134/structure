@@ -30,6 +30,7 @@ export const githubCiPlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'GitHub CI/CD',
   description: 'Deploy workflows and environment secrets.',
+  integrationId: 'github',
   provider: 'github',
   requiredModules: ['github-repo', 'firebase-core'],
   optionalModules: ['eas-builds'],

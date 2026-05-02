@@ -6,6 +6,7 @@ export const firebaseFirestorePlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'Firestore',
   description: 'Create a Firestore database and deploy security rules.',
+  integrationId: 'gcp',
   provider: 'firebase',
   requiredModules: ['firebase-core'],
   optionalModules: [],

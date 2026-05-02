@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertCircle, CheckCircle2, Settings } from 'lucide-react';
 import { api } from './helpers';
 import { inferTemplateIdFromModules, ModuleSelectionWizard } from './ModuleSelectionWizard';
-import { LlmProvidersPanel } from './LlmProvidersPanel';
 import { ProjectQuickLinks } from './ProjectQuickLinks';
 import { SetupWizard } from './SetupWizard';
 import { TeardownWizard } from './TeardownWizard';
 import { usePluginCatalog } from './usePluginCatalog';
 import type {
+  ConnectedProviders,
   ModuleDefinition,
   ModuleFunctionGroupId,
   ModuleId,
@@ -17,18 +17,21 @@ import type {
   ProvisioningPlanResponse,
 } from './types';
 
-export type ProjectSubtab = 'modules' | 'setup' | 'dashboard' | 'llm' | 'settings';
+export type ProjectSubtab = 'modules' | 'setup' | 'dashboard' | 'settings';
 
 export function ProjectDetailView({
   projectDetail,
   projectTab,
   onProjectTabChange,
   onDeleteProject,
+  onRefreshProjectDetail,
+  connectedProviders,
+  onProjectProvidersRefresh,
 }: {
   projectDetail: ProjectDetail;
   projectTab?: ProjectSubtab;
   onProjectTabChange?: (tab: ProjectSubtab) => void;
-  connectedProviders?: unknown;
+  connectedProviders?: ConnectedProviders;
   projectPlugins?: string[];
   firebaseConnectionDetails?: unknown;
   githubProjectInitialized?: boolean;
@@ -38,14 +41,21 @@ export function ProjectDetailView({
   onProjectOAuthStart?: unknown;
   onProjectTriggerSetup?: unknown;
   onProjectDisconnect?: unknown;
-  onProjectProvidersRefresh?: unknown;
+  onProjectProvidersRefresh?: () => Promise<void>;
   onDeleteProject: () => void;
+  /** After applying or dismissing imported instance vault sync, refresh project detail from the parent. */
+  onRefreshProjectDetail?: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<ProjectSubtab>('modules');
   const [plan, setPlan] = useState<ProvisioningPlanResponse | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSavingModules, setIsSavingModules] = useState(false);
   const [isTeardownRunning, setIsTeardownRunning] = useState(false);
+  const [isExportingMigration, setIsExportingMigration] = useState(false);
+  const [instanceVaultBusy, setInstanceVaultBusy] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportPassphraseMode, setExportPassphraseMode] = useState<'custom' | 'none'>('none');
+  const [exportPassphrase, setExportPassphrase] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<ProjectTemplateId>(
     'mobile-app' as ProjectTemplateId,
@@ -87,6 +97,7 @@ export function ProjectDetailView({
   const catalogModulesRef = useRef(catalogModules);
   catalogTemplatesRef.current = catalogTemplates;
   catalogModulesRef.current = catalogModules;
+  const hasAutoNavigatedRef = useRef(false);
 
   const projectId = projectDetail.project.id;
   const activeTab = projectTab ?? tab;
@@ -116,7 +127,8 @@ export function ProjectDetailView({
       const allDone = Object.values(payload.nodeStates).every(
         (state) => state.status === 'completed' || state.status === 'skipped',
       );
-      if (allDone) {
+      if (allDone && !hasAutoNavigatedRef.current) {
+        hasAutoNavigatedRef.current = true;
         updateTab('dashboard');
       }
     } catch (err) {
@@ -181,12 +193,51 @@ export function ProjectDetailView({
     }
   }, [loadPlan, projectId]);
 
+  const exportProjectMigration = useCallback(
+    async (mode: 'custom' | 'none', customPassphrase?: string) => {
+      setIsExportingMigration(true);
+      try {
+        const body =
+          mode === 'custom' && customPassphrase
+            ? { passphrase: customPassphrase }
+            : {};
+        const payload = await api<{
+          fileName: string;
+          bundle: {
+            format: 'studio-project-migration';
+            version: 1;
+            projectId: string;
+            encryptedPayload: string;
+          };
+        }>(`/api/projects/${encodeURIComponent(projectId)}/migration/export`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const blob = new Blob([JSON.stringify(payload.bundle, null, 2)], {
+          type: 'application/json;charset=utf-8',
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = payload.fileName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      } finally {
+        setIsExportingMigration(false);
+      }
+    },
+    [projectId],
+  );
+
   return (
     <div className="space-y-4">
       <ProjectQuickLinks plan={plan} onDeleteProject={onDeleteProject} />
 
       <div className="flex items-center gap-1 border-b border-border flex-wrap">
-        {(['modules', 'setup', 'dashboard', 'llm', 'settings'] as const).map((tabId) => (
+        {(['modules', 'setup', 'dashboard', 'settings'] as const).map((tabId) => (
           <button
             key={tabId}
             type="button"
@@ -203,9 +254,7 @@ export function ProjectDetailView({
                 ? 'Setup'
                 : tabId === 'dashboard'
                   ? 'Dashboard'
-                  : tabId === 'llm'
-                    ? 'AI / LLM'
-                    : 'Settings'}
+                  : 'Settings'}
           </button>
         ))}
       </div>
@@ -217,10 +266,92 @@ export function ProjectDetailView({
         </div>
       )}
 
+      {projectDetail.instanceVaultSync?.vaultSealed ? (
+        <div className="rounded-lg border border-amber-500/35 bg-amber-500/5 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            A pending migration included organization-level credentials (GitHub, Expo, or Apple). Unlock your vault to
+            compare them with this Studio or apply them to this machine.
+          </span>
+        </div>
+      ) : null}
+
+      {projectDetail.instanceVaultSync?.pending && !projectDetail.instanceVaultSync.vaultSealed ? (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-2">
+          <p className="text-sm font-semibold">Imported instance integrations</p>
+          <p className="text-xs text-muted-foreground">
+            Provisioning history came from another Studio, but this machine&apos;s organization vault does not match
+            the exported GitHub, Expo, or Apple material. Apply the import to align this Studio with the source, or
+            dismiss if you intentionally use different tokens here.
+          </p>
+          <ul className="text-xs space-y-1 list-disc list-inside text-muted-foreground">
+            {projectDetail.instanceVaultSync.providers.map((p) => (
+              <li key={p.providerId}>
+                <span className="font-medium text-foreground">{p.label}</span>
+                {p.localMissing ? ' — not configured on this Studio' : null}
+                {p.conflicting ? ' — differs from credentials on this Studio' : null}
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button
+              type="button"
+              disabled={instanceVaultBusy}
+              onClick={() => {
+                void (async () => {
+                  setInstanceVaultBusy(true);
+                  setError(null);
+                  try {
+                    const ids = projectDetail.instanceVaultSync!.providers.map((p) => p.providerId);
+                    await api(`/api/projects/${encodeURIComponent(projectId)}/instance-vault-sync/apply`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ providerIds: ids }),
+                    });
+                    await onRefreshProjectDetail?.();
+                  } catch (err) {
+                    setError((err as Error).message);
+                  } finally {
+                    setInstanceVaultBusy(false);
+                  }
+                })();
+              }}
+              className="text-xs font-bold rounded-lg border border-primary/40 px-3 py-2 text-primary hover:bg-primary/10 disabled:opacity-50"
+            >
+              {instanceVaultBusy ? 'Applying…' : 'Apply imported integrations'}
+            </button>
+            <button
+              type="button"
+              disabled={instanceVaultBusy}
+              onClick={() => {
+                void (async () => {
+                  setInstanceVaultBusy(true);
+                  setError(null);
+                  try {
+                    await api(`/api/projects/${encodeURIComponent(projectId)}/instance-vault-sync/dismiss`, {
+                      method: 'POST',
+                    });
+                    await onRefreshProjectDetail?.();
+                  } catch (err) {
+                    setError((err as Error).message);
+                  } finally {
+                    setInstanceVaultBusy(false);
+                  }
+                })();
+              }}
+              className="text-xs font-semibold rounded-lg border border-border px-3 py-2 hover:bg-accent disabled:opacity-50"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {activeTab === 'modules' && (
         <ModuleSelectionWizard
           selectedTemplateId={selectedTemplateId}
           selectedModuleIds={selectedModules}
+          savedModuleIds={(plan?.selectedModules as ModuleId[]) ?? []}
           onTemplateChange={(templateId, modules) => {
             setSelectedTemplateId(templateId);
             setSelectedModules(modules);
@@ -231,8 +362,6 @@ export function ProjectDetailView({
           }}
           hasPendingChanges={modulesDirty}
           isApplying={isSavingModules}
-          setupStepCount={plan?.nodes.length ?? null}
-          savedModuleCount={plan?.selectedModules.length ?? null}
           onApply={() => {
             void (async () => {
               setIsSavingModules(true);
@@ -260,6 +389,10 @@ export function ProjectDetailView({
           projectId={projectId}
           plan={plan}
           displaySelectedModules={selectedModulesForStepCopy}
+          connectedProviders={connectedProviders}
+          instanceVaultSync={projectDetail.instanceVaultSync}
+          onRefreshProjectDetail={onRefreshProjectDetail}
+          onProjectProvidersRefresh={onProjectProvidersRefresh}
           onPlanChange={setPlan}
           onUserActionComplete={async (nodeKey, resources) => {
             await api(
@@ -307,17 +440,119 @@ export function ProjectDetailView({
         </div>
       )}
 
-      {activeTab === 'llm' && (
-        <LlmProvidersPanel
-          projectId={projectId}
-          effectiveSelectedModules={selectedModulesForStepCopy as ModuleId[]}
-          onJumpToSetup={() => updateTab('setup')}
-          onJumpToModules={() => updateTab('modules')}
-        />
-      )}
-
       {activeTab === 'settings' && (
         <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+            <div>
+              <p className="text-sm font-semibold">Project Migration</p>
+              <p className="text-xs text-muted-foreground">
+                Export an encrypted migration file. Optionally set a bundle passphrase for use on another machine;
+                otherwise the bundle is sealed with your unlocked vault session keys only.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={isExportingMigration}
+              onClick={() => setShowExportModal(true)}
+              className="text-xs font-bold rounded-lg border border-primary/40 px-3 py-2 text-primary hover:bg-primary/10 disabled:opacity-50"
+            >
+              Export Encrypted Migration
+            </button>
+          </div>
+
+          {showExportModal && (
+            <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-6">
+              <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 space-y-4 shadow-lg">
+                <div>
+                  <h2 className="text-lg font-semibold">Export Project Migration</h2>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Choose how to encrypt the bundle. Use a passphrase to make it importable on any machine.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  {(
+                    [
+                      { value: 'custom', label: 'Set a custom passphrase', hint: 'Import on another machine with this passphrase' },
+                      {
+                        value: 'none',
+                        label: 'No bundle passphrase',
+                        hint: 'Uses your unlocked vault keys — import only on this install with the vault unlocked',
+                      },
+                    ] as const
+                  ).map(({ value, label, hint }) => (
+                    <label key={value} className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="exportMode"
+                        value={value}
+                        checked={exportPassphraseMode === value}
+                        onChange={() => setExportPassphraseMode(value)}
+                        className="mt-0.5"
+                      />
+                      <div>
+                        <p className="text-xs font-semibold">{label}</p>
+                        <p className="text-[11px] text-muted-foreground">{hint}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+
+                {exportPassphraseMode === 'custom' && (
+                  <label className="block text-xs font-semibold text-muted-foreground">
+                    Passphrase <span className="font-normal">(min. 12 chars)</span>
+                    <input
+                      type="password"
+                      className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                      placeholder="Enter bundle passphrase"
+                      value={exportPassphrase}
+                      onChange={(e) => setExportPassphrase(e.target.value)}
+                    />
+                  </label>
+                )}
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowExportModal(false);
+                      setExportPassphrase('');
+                      setExportPassphraseMode('none');
+                    }}
+                    className="rounded-md border border-border px-3 py-2 text-xs font-semibold hover:bg-accent"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      isExportingMigration ||
+                      (exportPassphraseMode === 'custom' && exportPassphrase.trim().length < 12)
+                    }
+                    onClick={() => {
+                      const pass = exportPassphraseMode === 'custom' ? exportPassphrase.trim() : undefined;
+                      void exportProjectMigration(exportPassphraseMode, pass)
+                        .then(() => {
+                          setShowExportModal(false);
+                          setExportPassphrase('');
+                          setExportPassphraseMode('none');
+                        })
+                        .catch((err: Error) => {
+                          setError(err.message);
+                          setShowExportModal(false);
+                          setExportPassphrase('');
+                          setExportPassphraseMode('none');
+                        });
+                    }}
+                    className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+                  >
+                    {isExportingMigration ? 'Exporting...' : 'Export'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="rounded-xl border border-border bg-card p-4 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Settings size={14} className="text-muted-foreground" />

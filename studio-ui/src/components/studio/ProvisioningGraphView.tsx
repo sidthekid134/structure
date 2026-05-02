@@ -46,29 +46,34 @@ import {
 } from './provisioning-display-registry';
 
 // ---------------------------------------------------------------------------
-// Provider metadata — built-in fallback; dynamic data served via plan.providerDisplayMeta
+// Provider metadata — sourced from /api/plugin-catalog (plan.providerDisplayMeta).
+// Studio Core no longer hardcodes provider colors; new providers/integrations
+// pick up rendering automatically when the backend registers them.
 // ---------------------------------------------------------------------------
 
-const BUILTIN_PROVIDER_META: Record<string, { label: string; color: string; bg: string; border: string }> = {
-  firebase: { label: 'Firebase', color: 'text-orange-500', bg: 'bg-orange-500/10', border: 'border-orange-500/30' },
-  github: { label: 'GitHub', color: 'text-slate-600 dark:text-slate-300', bg: 'bg-slate-500/10', border: 'border-slate-500/30' },
-  eas: { label: 'EAS', color: 'text-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/30' },
-  apple: { label: 'Apple', color: 'text-zinc-600 dark:text-zinc-300', bg: 'bg-zinc-500/10', border: 'border-zinc-500/30' },
-  'google-play': { label: 'Google Play', color: 'text-green-600', bg: 'bg-green-500/10', border: 'border-green-500/30' },
-  cloudflare: { label: 'Cloudflare', color: 'text-amber-600', bg: 'bg-amber-500/10', border: 'border-amber-500/30' },
-  oauth: { label: 'OAuth', color: 'text-violet-500', bg: 'bg-violet-500/10', border: 'border-violet-500/30' },
-  'user-action': { label: 'Required Action', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30' },
+const USER_ACTION_FALLBACK = {
+  label: 'Required Action',
+  color: 'text-amber-600 dark:text-amber-400',
+  bg: 'bg-amber-500/10',
+  border: 'border-amber-500/30',
+};
+
+const NEUTRAL_FALLBACK = {
+  label: '',
+  color: 'text-muted-foreground',
+  bg: 'bg-muted',
+  border: 'border-border',
 };
 
 function getProviderMeta(
   node: ProvisioningGraphNode,
   dynamicMeta?: Record<string, { label: string; color: string; bg: string; border: string }>,
 ) {
-  const meta = { ...BUILTIN_PROVIDER_META, ...dynamicMeta };
+  const meta = dynamicMeta ?? {};
   if (node.type === 'user-action') {
-    return node.provider ? (meta[node.provider] ?? meta['user-action']) : meta['user-action'];
+    return (node.provider && meta[node.provider]) || USER_ACTION_FALLBACK;
   }
-  return meta[node.provider] ?? { label: node.provider, color: 'text-muted-foreground', bg: 'bg-muted', border: 'border-border' };
+  return meta[node.provider] ?? { ...NEUTRAL_FALLBACK, label: node.provider };
 }
 
 // ---------------------------------------------------------------------------

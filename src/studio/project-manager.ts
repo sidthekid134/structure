@@ -127,6 +127,7 @@ export class ProjectManager {
   }
 
   listProjects(): ProjectInfo[] {
+    fs.mkdirSync(this.projectsRoot, { recursive: true, mode: 0o700 });
     const entries = fs.readdirSync(this.projectsRoot, { withFileTypes: true });
     const projects = entries
       .filter((entry) => entry.isDirectory())
@@ -180,6 +181,15 @@ export class ProjectManager {
   }
 
   getOrganization(): OrganizationProfile {
+    if (!fs.existsSync(this.organizationPath)) {
+      const now = new Date().toISOString();
+      const profile: OrganizationProfile = { integrations: {}, updatedAt: now };
+      fs.writeFileSync(this.organizationPath, JSON.stringify(profile, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      return profile;
+    }
     const raw = fs.readFileSync(this.organizationPath, 'utf8');
     return JSON.parse(raw) as OrganizationProfile;
   }

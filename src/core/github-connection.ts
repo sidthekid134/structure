@@ -5,6 +5,7 @@ import {
   ProjectManager,
   IntegrationConfigRecord,
 } from '../studio/project-manager.js';
+import { getVaultUnlock as resolveVaultUnlock } from '../studio/vault-session.js';
 
 export interface GitHubConnectionDetails {
   userId: string;
@@ -36,18 +37,18 @@ export class GitHubConnectionService {
   ) {}
 
   getStoredGitHubToken(): string | undefined {
-    return this.vaultManager.getCredential(this.getVaultPassphrase(), 'github', 'token');
+    return this.vaultManager.getCredential(resolveVaultUnlock(), 'github', 'token');
   }
 
   storeGitHubToken(token: string): void {
     if (typeof token !== 'string' || token.trim().length === 0) {
       throw new Error('GitHub token is required.');
     }
-    this.vaultManager.setCredential(this.getVaultPassphrase(), 'github', 'token', token.trim());
+    this.vaultManager.setCredential(resolveVaultUnlock(), 'github', 'token', token.trim());
   }
 
   storeGitHubConnectionDetails(details: GitHubConnectionDetails): void {
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     this.vaultManager.setCredential(passphrase, 'github', 'user_id', details.userId);
     this.vaultManager.setCredential(passphrase, 'github', 'username', details.username);
     this.vaultManager.setCredential(passphrase, 'github', 'orgs', JSON.stringify(details.orgNames));
@@ -61,7 +62,7 @@ export class GitHubConnectionService {
   }
 
   deleteStoredGitHubConnectionDetails(): void {
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     this.vaultManager.deleteCredential(passphrase, 'github', 'user_id');
     this.vaultManager.deleteCredential(passphrase, 'github', 'username');
     this.vaultManager.deleteCredential(passphrase, 'github', 'orgs');
@@ -70,7 +71,7 @@ export class GitHubConnectionService {
   }
 
   deleteStoredGitHubToken(): boolean {
-    return this.vaultManager.deleteCredential(this.getVaultPassphrase(), 'github', 'token');
+    return this.vaultManager.deleteCredential(resolveVaultUnlock(), 'github', 'token');
   }
 
   async fetchGitHubConnectionDetails(token: string): Promise<GitHubConnectionDetails> {
@@ -263,13 +264,4 @@ export class GitHubConnectionService {
     }
   }
 
-  private getVaultPassphrase(): string {
-    const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-    if (!passphrase) {
-      throw new Error(
-        'STUDIO_VAULT_PASSPHRASE is required to use Studio credential storage for GitHub tokens.',
-      );
-    }
-    return passphrase;
-  }
 }

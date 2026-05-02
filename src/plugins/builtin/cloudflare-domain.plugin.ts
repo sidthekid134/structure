@@ -10,6 +10,7 @@ export const cloudflareDomainPlugin: PluginDefinition = {
   version: '1.0.0',
   label: 'Domain & SSL',
   description: 'DNS management, SSL, deep link routing, and AASA/asset-links hosting.',
+  integrationId: 'cloudflare',
   provider: 'cloudflare',
   providerMeta: {
     label: 'Cloudflare',

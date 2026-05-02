@@ -14,7 +14,7 @@ import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
-import { encrypt, decrypt, deriveKey } from '../encryption.js';
+import { encrypt, decrypt } from '../encryption.js';
 import type {
   GuidedFlow,
   GuidedFlowWithSteps,
@@ -39,14 +39,14 @@ import { GOOGLE_PLAY_FLOW } from '../flows/google-play.flow.js';
 
 export class GuidedFlowService {
   private readonly db: Database.Database;
-  private readonly masterPassphrase: string;
+  private readonly deriveRowSecretKey: (purpose: string) => Buffer;
 
-  constructor(storeDir: string, masterPassphrase: string) {
+  constructor(storeDir: string, deriveRowSecretKey: (purpose: string) => Buffer) {
     fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
     const dbPath = path.join(storeDir, 'guided-flows.db');
     this.db = new Database(dbPath);
     try { fs.chmodSync(dbPath, 0o600); } catch { /* best-effort */ }
-    this.masterPassphrase = masterPassphrase;
+    this.deriveRowSecretKey = deriveRowSecretKey;
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initSchema();
@@ -236,7 +236,7 @@ export class GuidedFlowService {
     const id = crypto.randomUUID();
     const now = Date.now();
     const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-    const key = deriveKey(this.masterPassphrase, `file_upload:${id}`);
+    const key = this.deriveRowSecretKey(`file_upload:${id}`);
     const encryptedData = encrypt(fileBuffer.toString('base64'), key);
 
     this.db.prepare(`
@@ -265,7 +265,7 @@ export class GuidedFlowService {
       .get(uploadId) as { encrypted_file_data: string } | undefined;
     if (!row) return null;
     try {
-      const key = deriveKey(this.masterPassphrase, `file_upload:${uploadId}`);
+      const key = this.deriveRowSecretKey(`file_upload:${uploadId}`);
       const base64 = decrypt(row.encrypted_file_data, key);
       return Buffer.from(base64, 'base64');
     } catch {

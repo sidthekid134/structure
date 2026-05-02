@@ -23,6 +23,7 @@ export const llmOpenAIPlugin: PluginDefinition = {
   label: 'OpenAI',
   description:
     'Connect an OpenAI API key. Stores it encrypted in the project vault and verifies model access by listing available models.',
+  integrationId: 'llm',
   provider: 'llm',
   providerMeta: {
     label: 'LLM',
@@ -49,7 +50,11 @@ export const llmOpenAIPlugin: PluginDefinition = {
   includedInTemplates: [],
   steps: LLM_OPENAI_STEPS,
   teardownSteps: LLM_OPENAI_TEARDOWN_STEPS,
-  userActions: [USER_ACTIONS.find((a) => a.key === 'user:provide-openai-api-key')!],
+  userActions: USER_ACTIONS.filter(
+    (a) =>
+      a.key === 'user:provide-openai-api-key' ||
+      a.key === 'user:share-openai-integration-prompt',
+  ),
   adapter: new LlmAdapter() as ProviderAdapter<ProviderConfig>,
   displayMeta: {
     icon: 'Sparkles',

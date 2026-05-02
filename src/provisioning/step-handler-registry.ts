@@ -42,7 +42,8 @@ export interface StepHandlerContext {
   hasToken(providerId: string): boolean;
   /** Direct vault access for credential reads/writes. */
   vaultManager: VaultManager;
-  passphrase: string;
+  /** 32-byte vault DEK (passkey-unlocked session). */
+  passphrase: Buffer;
   /** When set, LLM EAS handlers merge vault reads with SQLite-stored Studio API keys (`llm_*_api_key`). */
   credentialService?: CredentialService;
   /** Project manager for integration metadata updates. */

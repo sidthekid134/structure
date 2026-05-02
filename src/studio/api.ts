@@ -18,11 +18,15 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { createHash } from 'crypto';
+import * as fs from 'fs';
 import * as path from 'path';
+import Database from 'better-sqlite3';
 import JSZip from 'jszip';
 import { EventLog, OperationRecord } from '../orchestration/event-log.js';
 import { WsHandler } from './ws-handler.js';
 import { VaultManager } from '../vault.js';
+import { getVaultUnlock, VaultSealedError } from './vault-session.js';
 import {
   ProjectManager,
   IntegrationProvider,
@@ -68,7 +72,7 @@ import {
   GCP_PROVISIONER_SERVICE_ACCOUNT_ID,
   type GcpBootstrapPhaseId,
 } from '../core/gcp-connection.js';
-import { resumeProvisioningRun } from '../core/provisioning.js';
+import { resumeProvisioningRun } from '../provisioning/provisioning.js';
 import { getDriftStatus, startDriftReconcile } from '../core/drift.js';
 import { GitHubAdapter, HttpGitHubApiClient } from '../providers/github.js';
 import { FirebaseAdapter, StubFirebaseApiClient } from '../providers/firebase.js';
@@ -166,6 +170,9 @@ import { GooglePlayHandler } from '../handlers/google-play-flow-handler.js';
 import type { GuidedFlowType } from '../models/guided-flow.js';
 import { GuidedFlowError } from '../models/guided-flow.js';
 import { CredentialRetrievalService } from '../services/credential-retrieval-service.js';
+import { encrypt, decrypt } from '../encryption.js';
+import { deriveStudioRowKey, getVaultFileMasterKey } from './row-crypto.js';
+import { sealMigrationExport, openMigrationExport } from './export-format.js';
 
 // Register all step handlers at startup
 globalStepHandlerRegistry.registerAll(FIREBASE_STEP_HANDLERS);
@@ -179,6 +186,138 @@ const GCP_BOOTSTRAP_PHASE_IDS: readonly GcpBootstrapPhaseId[] = [
   'iam_binding',
   'vault',
 ];
+
+const PROJECT_MIGRATION_FORMAT = 'studio-project-migration';
+const PROJECT_MIGRATION_VERSION = 1;
+
+const INSTANCE_VAULT_MIGRATION_PROVIDER_IDS = ['github', 'eas', 'apple'] as const;
+type InstanceVaultMigrationProviderId = (typeof INSTANCE_VAULT_MIGRATION_PROVIDER_IDS)[number];
+
+const INSTANCE_VAULT_PROVIDER_LABELS: Record<InstanceVaultMigrationProviderId, string> = {
+  github: 'GitHub (personal access token)',
+  eas: 'Expo / EAS',
+  apple: 'Apple App Store Connect API',
+};
+
+const PENDING_INSTANCE_VAULT_ROW_PURPOSE = 'pending-instance-vault-sync';
+
+export interface InstanceVaultSyncProviderRow {
+  providerId: InstanceVaultMigrationProviderId;
+  label: string;
+  localMissing: boolean;
+  conflicting: boolean;
+}
+
+export interface InstanceVaultSyncStatus {
+  pending: boolean;
+  /** When true, a pending sync file exists but the vault is sealed — unlock to compare or apply. */
+  vaultSealed?: boolean;
+  providers: InstanceVaultSyncProviderRow[];
+}
+interface MigrationProjectFile {
+  relativePath: string;
+  mode: number;
+  base64Contents: string;
+}
+
+interface MigrationVaultProviderEntry {
+  providerId: string;
+  credentials: Record<string, string>;
+}
+
+interface MigrationOperationRecordRow extends OperationRecord {}
+
+interface MigrationOperationEventRow {
+  id: string;
+  operation_id: string;
+  provider: string;
+  step: string;
+  status: string;
+  result_json: string | null;
+  error_message: string | null;
+  timestamp: number;
+}
+
+interface MigrationIdempotencyRow {
+  key: string;
+  operation_id: string;
+  result_hash: string;
+  created_at: number;
+}
+
+interface MigrationProjectCredentialRow {
+  id: string;
+  credential_type: CredentialType;
+  value: string;
+  metadata_json: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
+interface MigrationFirebaseAuthConfigRow {
+  id: string;
+  project_id: string;
+  identity_toolkit_enabled: number;
+  encrypted_config: string | null;
+  apns_configured: number;
+  play_fingerprint_configured: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface MigrationOauthClientRow {
+  id: string;
+  firebase_config_id: string;
+  provider: string;
+  client_id: string;
+  client_secret: string;
+  redirect_uris_json: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface MigrationProviderCredentialRow {
+  id: string;
+  project_id: string;
+  provider_type: string;
+  credential_data_json: string;
+  credential_hash: string;
+  expires_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface MigrationOauthSessionRow {
+  id: string;
+  project_id: string;
+  provider: string;
+  state_token: string;
+  redirect_uri: string;
+  expires_at: number;
+  completed: number;
+  access_token: string | null;
+  created_at: number;
+}
+
+interface ProjectMigrationPayloadV1 {
+  format: typeof PROJECT_MIGRATION_FORMAT;
+  version: typeof PROJECT_MIGRATION_VERSION;
+  exportedAt: string;
+  projectId: string;
+  projectFiles: MigrationProjectFile[];
+  operations: MigrationOperationRecordRow[];
+  operationEvents: MigrationOperationEventRow[];
+  idempotencyKeys: MigrationIdempotencyRow[];
+  projectCredentials: MigrationProjectCredentialRow[];
+  firebaseAuthConfigs: MigrationFirebaseAuthConfigRow[];
+  oauthClients: MigrationOauthClientRow[];
+  providerCredentials: MigrationProviderCredentialRow[];
+  oauthSessions: MigrationOauthSessionRow[];
+  vaultEntries: MigrationVaultProviderEntry[];
+  /** Organization-scoped vault material from the exporting Studio (GitHub PAT, Expo token, Apple ASC). */
+  instanceVaultEntries?: MigrationVaultProviderEntry[];
+}
 
 function isGcpBootstrapPhaseId(value: string): value is GcpBootstrapPhaseId {
   return (GCP_BOOTSTRAP_PHASE_IDS as readonly string[]).includes(value);
@@ -245,6 +384,78 @@ function summarizeResourcesProducedForLog(resources: Record<string, string> | un
   return out;
 }
 
+function validateProjectIdForMigration(projectId: string): void {
+  if (!/^[a-z0-9-]{1,64}$/.test(projectId)) {
+    throw new Error('Migration bundle project ID is invalid.');
+  }
+}
+
+function stableCredentialFingerprint(credentials: Record<string, string>): string {
+  const sorted: Record<string, string> = {};
+  for (const k of Object.keys(credentials).sort()) {
+    sorted[k] = credentials[k];
+  }
+  return createHash('sha256').update(JSON.stringify(sorted), 'utf8').digest('hex');
+}
+
+function isInstanceVaultMigrationProviderId(id: string): id is InstanceVaultMigrationProviderId {
+  return (INSTANCE_VAULT_MIGRATION_PROVIDER_IDS as readonly string[]).includes(id);
+}
+
+function instanceVaultProviderHasSecrets(providerId: string, credentials: Record<string, string>): boolean {
+  if (providerId === 'github') return Boolean(credentials.token?.trim());
+  if (providerId === 'eas') return Boolean(credentials.expo_token?.trim());
+  if (providerId === 'apple') return Boolean(credentials['apple/asc_api_key_p8']?.trim());
+  return false;
+}
+
+function pendingInstanceVaultSyncDir(storeDir: string, projectId: string): string {
+  return path.join(storeDir, 'projects', projectId, '.studio');
+}
+
+function pendingInstanceVaultSyncFile(storeDir: string, projectId: string): string {
+  return path.join(pendingInstanceVaultSyncDir(storeDir, projectId), 'pending-instance-vault-sync.enc');
+}
+
+function pendingInstanceVaultSyncExists(storeDir: string, projectId: string): boolean {
+  return fs.existsSync(pendingInstanceVaultSyncFile(storeDir, projectId));
+}
+
+function assertMigrationInstanceVaultEntries(value: unknown): asserts value is MigrationVaultProviderEntry[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Invalid project migration bundle payload (instanceVaultEntries).');
+  }
+  for (const row of value) {
+    const r = row as { providerId?: unknown; credentials?: unknown };
+    if (typeof r.providerId !== 'string' || !r.providerId) {
+      throw new Error('Invalid project migration bundle payload (instanceVaultEntries).');
+    }
+    if (!r.credentials || typeof r.credentials !== 'object' || Array.isArray(r.credentials)) {
+      throw new Error('Invalid project migration bundle payload (instanceVaultEntries).');
+    }
+    for (const v of Object.values(r.credentials as Record<string, unknown>)) {
+      if (typeof v !== 'string') {
+        throw new Error('Invalid project migration bundle payload (instanceVaultEntries).');
+      }
+    }
+  }
+}
+
+function assertProjectMigrationPayloadV1(parsed: unknown): ProjectMigrationPayloadV1 {
+  const p = parsed as Partial<ProjectMigrationPayloadV1>;
+  if (p.format !== PROJECT_MIGRATION_FORMAT || p.version !== PROJECT_MIGRATION_VERSION) {
+    throw new Error('Unsupported project migration bundle format.');
+  }
+  if (typeof p.projectId !== 'string' || !Array.isArray(p.projectFiles)) {
+    throw new Error('Invalid project migration bundle payload.');
+  }
+  validateProjectIdForMigration(p.projectId);
+  if (p.instanceVaultEntries !== undefined) {
+    assertMigrationInstanceVaultEntries(p.instanceVaultEntries);
+  }
+  return p as ProjectMigrationPayloadV1;
+}
+
 // ---------------------------------------------------------------------------
 // Router factory
 // ---------------------------------------------------------------------------
@@ -253,7 +464,7 @@ export function createApiRouter(
   eventLog: EventLog,
   wsHandler: WsHandler,
   storeDir: string,
-  devMode = false,
+  serveUiFromSource = false,
 ): Router {
   const router = Router();
   const SERVER_STARTED_AT = Date.now();
@@ -264,21 +475,12 @@ export function createApiRouter(
   const gcpConnectionService = new GcpConnectionService(
     vaultManager,
     projectManager,
-    process.env['PLATFORM_GCP_OAUTH_CLIENT_ID'] ?? '',
-    process.env['PLATFORM_GCP_OAUTH_CLIENT_SECRET'] ?? '',
+    process.env['PLATFORM_GCP_OAUTH_CLIENT_ID'],
   );
-  const credentialStore = new CredentialStore(
-    storeDir,
-    process.env['STUDIO_VAULT_PASSPHRASE'] ?? 'studio-default-passphrase',
-  );
-  const credentialService = new CredentialService(
-    storeDir,
-    process.env['STUDIO_VAULT_PASSPHRASE'] ?? 'studio-default-passphrase',
-  );
-  const guidedFlowService = new GuidedFlowService(
-    storeDir,
-    process.env['STUDIO_VAULT_PASSPHRASE'] ?? 'studio-default-passphrase',
-  );
+  const rowSecret = (purpose: string) => deriveStudioRowKey(storeDir, purpose);
+  const credentialStore = new CredentialStore(storeDir, rowSecret);
+  const credentialService = new CredentialService(storeDir, rowSecret);
+  const guidedFlowService = new GuidedFlowService(storeDir, rowSecret);
   const appleSigningHandler = new AppleSigningHandler(guidedFlowService, credentialService);
   const googlePlayHandler = new GooglePlayHandler(guidedFlowService, credentialService);
   const credentialRetrievalService = new CredentialRetrievalService(
@@ -857,8 +1059,615 @@ export function createApiRouter(
     return plan.nodes.some((n) => n.provider === 'cloudflare');
   }
 
+  /**
+   * Auto-complete integration gate nodes whose credentials are already stored.
+   * Called at plan run start so users don't have to manually confirm gates
+   * that are already satisfied.
+   */
+  function autoCompleteIntegrationGates(projectId: string, plan: ProvisioningPlan): void {
+    function markCompleted(nodeKey: string, resources: Record<string, string>): void {
+      const state = plan.nodeStates.get(nodeKey);
+      if (state && state.status === 'not-started') {
+        state.status = 'completed';
+        state.resourcesProduced = resources;
+        state.completedAt = Date.now();
+      }
+    }
+
+    if (gitHubConnectionService.getStoredGitHubToken()) {
+      markCompleted('user:provide-github-pat', { github_token: '[stored in vault]' });
+    }
+    if (easConnectionService.getStoredExpoToken()) {
+      markCompleted('user:provide-expo-token', { expo_token: '[stored in vault]' });
+    }
+    if (getCloudflareTokenForProject(projectId)) {
+      markCompleted('user:provide-cloudflare-token', { cloudflare_token: '[stored in vault]' });
+    }
+    if (gcpConnectionService.getProjectConnectionStatus(projectId).connected) {
+      markCompleted('user:connect-gcp-integration', { gcp_oauth_connected: 'true' });
+    }
+    const org = projectManager.getOrganization();
+    if (org.integrations.apple?.status === 'configured') {
+      markCompleted('user:connect-apple-integration', { apple_integration_connected: 'true' });
+    }
+  }
+
   function getRunsForProject(projectId: string): OperationRecord[] {
     return eventLog.listOperationsByAppId(projectId, 200);
+  }
+
+  function readProjectFilesForMigration(projectId: string): MigrationProjectFile[] {
+    const projectRoot = path.join(storeDir, 'projects', projectId);
+    if (!fs.existsSync(projectRoot)) {
+      throw new Error(`Project "${projectId}" not found.`);
+    }
+    const files: MigrationProjectFile[] = [];
+    const walk = (dirPath: string) => {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          walk(fullPath);
+          continue;
+        }
+        if (!entry.isFile()) {
+          continue;
+        }
+        const relativePath = path.relative(projectRoot, fullPath).replace(/\\/g, '/');
+        const stat = fs.statSync(fullPath);
+        files.push({
+          relativePath,
+          mode: stat.mode,
+          base64Contents: fs.readFileSync(fullPath).toString('base64'),
+        });
+      }
+    };
+    walk(projectRoot);
+    files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+    return files;
+  }
+
+  function writeProjectFilesFromMigration(projectId: string, files: MigrationProjectFile[]): void {
+    const projectRoot = path.join(storeDir, 'projects', projectId);
+    if (fs.existsSync(projectRoot)) {
+      throw new Error(`Project "${projectId}" already exists.`);
+    }
+    fs.mkdirSync(projectRoot, { recursive: true, mode: 0o700 });
+    for (const file of files) {
+      if (typeof file.relativePath !== 'string' || !file.relativePath) {
+        throw new Error('Migration file entry is invalid.');
+      }
+      const normalized = path.posix.normalize(file.relativePath);
+      if (
+        normalized.startsWith('../') ||
+        normalized.includes('/../') ||
+        normalized.startsWith('/') ||
+        normalized === '..'
+      ) {
+        throw new Error(`Migration file path "${file.relativePath}" is invalid.`);
+      }
+      const destinationPath = path.join(projectRoot, normalized);
+      fs.mkdirSync(path.dirname(destinationPath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(destinationPath, Buffer.from(file.base64Contents, 'base64'), {
+        mode: (file.mode ?? 0o600) & 0o777,
+      });
+    }
+  }
+
+  function exportVaultEntriesForProject(projectId: string): MigrationVaultProviderEntry[] {
+    let vk: Buffer;
+    try {
+      vk = getVaultFileMasterKey(storeDir);
+    } catch (e) {
+      if (e instanceof VaultSealedError) return [];
+      throw e;
+    }
+    const vault = vaultManager.loadVaultFromMasterKey(vk);
+    const entries: MigrationVaultProviderEntry[] = [];
+    for (const [providerId, entry] of Object.entries(vault.entries)) {
+      const scopedCredentials = Object.fromEntries(
+        Object.entries(entry.credentials).filter(([key]) => key.startsWith(`${projectId}/`)),
+      );
+      if (Object.keys(scopedCredentials).length === 0) {
+        continue;
+      }
+      entries.push({ providerId, credentials: scopedCredentials });
+    }
+    return entries;
+  }
+
+  function importVaultEntriesForProject(projectId: string, entries: MigrationVaultProviderEntry[]): void {
+    if (entries.length === 0) {
+      return;
+    }
+    const vk = getVaultFileMasterKey(storeDir);
+    for (const entry of entries) {
+      for (const [key, value] of Object.entries(entry.credentials)) {
+        if (!key.startsWith(`${projectId}/`)) {
+          throw new Error(`Vault key "${key}" does not match the migrated project ID.`);
+        }
+        vaultManager.setCredential(vk, entry.providerId, key, value);
+      }
+    }
+  }
+
+  function readPendingInstanceVaultSyncDecrypted(projectId: string): MigrationVaultProviderEntry[] | null {
+    const filePath = pendingInstanceVaultSyncFile(storeDir, projectId);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const key = deriveStudioRowKey(storeDir, `${PENDING_INSTANCE_VAULT_ROW_PURPOSE}:${projectId}`);
+    const plaintext = decrypt(fs.readFileSync(filePath, 'utf8').trim(), key, {
+      providerId: 'pending-instance-vault-sync',
+    });
+    const parsed = JSON.parse(plaintext) as unknown;
+    assertMigrationInstanceVaultEntries(parsed);
+    return parsed;
+  }
+
+  function writePendingInstanceVaultSyncEncrypted(projectId: string, entries: MigrationVaultProviderEntry[]): void {
+    const dir = pendingInstanceVaultSyncDir(storeDir, projectId);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const key = deriveStudioRowKey(storeDir, `${PENDING_INSTANCE_VAULT_ROW_PURPOSE}:${projectId}`);
+    const ciphertext = encrypt(JSON.stringify(entries), key, { providerId: 'pending-instance-vault-sync' });
+    fs.writeFileSync(pendingInstanceVaultSyncFile(storeDir, projectId), ciphertext, { mode: 0o600 });
+  }
+
+  function removePendingInstanceVaultSync(projectId: string): void {
+    const fp = pendingInstanceVaultSyncFile(storeDir, projectId);
+    if (fs.existsSync(fp)) {
+      fs.unlinkSync(fp);
+    }
+  }
+
+  function loadLocalInstanceVaultProviderSnapshot(providerId: string): Record<string, string> {
+    let vk: Buffer;
+    try {
+      vk = getVaultFileMasterKey(storeDir);
+    } catch {
+      return {};
+    }
+    const vault = vaultManager.loadVaultFromMasterKey(vk);
+    const creds = vault.entries[providerId]?.credentials;
+    return creds ? { ...creds } : {};
+  }
+
+  function exportInstanceVaultEntriesForMigration(): MigrationVaultProviderEntry[] {
+    let vk: Buffer;
+    try {
+      vk = getVaultFileMasterKey(storeDir);
+    } catch (e) {
+      if (e instanceof VaultSealedError) {
+        return [];
+      }
+      throw e;
+    }
+    const vault = vaultManager.loadVaultFromMasterKey(vk);
+    const out: MigrationVaultProviderEntry[] = [];
+    for (const providerId of INSTANCE_VAULT_MIGRATION_PROVIDER_IDS) {
+      const creds = vault.entries[providerId]?.credentials;
+      if (!creds || Object.keys(creds).length === 0) {
+        continue;
+      }
+      if (!instanceVaultProviderHasSecrets(providerId, creds)) {
+        continue;
+      }
+      out.push({ providerId, credentials: { ...creds } });
+    }
+    return out;
+  }
+
+  function compareExportedInstanceVaultToLocal(exported?: MigrationVaultProviderEntry[]): {
+    providers: InstanceVaultSyncProviderRow[];
+    stashSlice: MigrationVaultProviderEntry[];
+  } {
+    const providers: InstanceVaultSyncProviderRow[] = [];
+    const stashSlice: MigrationVaultProviderEntry[] = [];
+    if (!exported?.length) {
+      return { providers, stashSlice };
+    }
+    for (const entry of exported) {
+      if (!isInstanceVaultMigrationProviderId(entry.providerId)) {
+        continue;
+      }
+      if (!instanceVaultProviderHasSecrets(entry.providerId, entry.credentials)) {
+        continue;
+      }
+      const local = loadLocalInstanceVaultProviderSnapshot(entry.providerId);
+      const expFp = stableCredentialFingerprint(entry.credentials);
+      const localHasSecret = instanceVaultProviderHasSecrets(entry.providerId, local);
+      const localFp = localHasSecret ? stableCredentialFingerprint(local) : '';
+      if (localFp && localFp === expFp) {
+        continue;
+      }
+      providers.push({
+        providerId: entry.providerId,
+        label: INSTANCE_VAULT_PROVIDER_LABELS[entry.providerId],
+        localMissing: !localHasSecret,
+        conflicting: Boolean(localHasSecret && localFp !== expFp),
+      });
+      stashSlice.push({ providerId: entry.providerId, credentials: { ...entry.credentials } });
+    }
+    return { providers, stashSlice };
+  }
+
+  function materializeInstanceVaultSyncAfterMigration(
+    projectId: string,
+    exported?: MigrationVaultProviderEntry[],
+  ): InstanceVaultSyncStatus {
+    const { providers, stashSlice } = compareExportedInstanceVaultToLocal(exported);
+    if (providers.length === 0) {
+      removePendingInstanceVaultSync(projectId);
+      return { pending: false, providers: [] };
+    }
+    writePendingInstanceVaultSyncEncrypted(projectId, stashSlice);
+    return { pending: true, providers };
+  }
+
+  function resolveInstanceVaultSyncStatusForProject(projectId: string): InstanceVaultSyncStatus {
+    if (!pendingInstanceVaultSyncExists(storeDir, projectId)) {
+      return { pending: false, providers: [] };
+    }
+    let stash: MigrationVaultProviderEntry[] | null;
+    try {
+      stash = readPendingInstanceVaultSyncDecrypted(projectId);
+    } catch (e) {
+      if (e instanceof VaultSealedError) {
+        return { pending: true, vaultSealed: true, providers: [] };
+      }
+      removePendingInstanceVaultSync(projectId);
+      return { pending: false, providers: [] };
+    }
+    if (!stash?.length) {
+      removePendingInstanceVaultSync(projectId);
+      return { pending: false, providers: [] };
+    }
+    const { providers, stashSlice } = compareExportedInstanceVaultToLocal(stash);
+    if (providers.length === 0) {
+      removePendingInstanceVaultSync(projectId);
+      return { pending: false, providers: [] };
+    }
+    writePendingInstanceVaultSyncEncrypted(projectId, stashSlice);
+    return { pending: true, providers };
+  }
+
+  function loadProjectMigrationPayload(projectId: string): ProjectMigrationPayloadV1 {
+    validateProjectIdForMigration(projectId);
+    const operationsDb = new Database(path.join(storeDir, 'operations.db'), { readonly: true });
+    const projectCredentialsDb = new Database(path.join(storeDir, 'project-credentials.db'), {
+      readonly: true,
+    });
+    const credentialsDb = new Database(path.join(storeDir, 'credentials.db'), { readonly: true });
+    try {
+      const operations = operationsDb
+        .prepare('SELECT * FROM operations WHERE app_id = ? ORDER BY created_at ASC')
+        .all(projectId) as MigrationOperationRecordRow[];
+      const operationIds = operations.map((record) => record.id);
+      const operationEvents =
+        operationIds.length === 0
+          ? []
+          : (operationsDb
+              .prepare(
+                `SELECT * FROM events WHERE operation_id IN (${operationIds
+                  .map(() => '?')
+                  .join(',')}) ORDER BY timestamp ASC`,
+              )
+              .all(...operationIds) as MigrationOperationEventRow[]);
+      const idempotencyKeys =
+        operationIds.length === 0
+          ? []
+          : (operationsDb
+              .prepare(
+                `SELECT * FROM idempotency_keys WHERE operation_id IN (${operationIds
+                  .map(() => '?')
+                  .join(',')}) ORDER BY created_at ASC`,
+              )
+              .all(...operationIds) as MigrationIdempotencyRow[]);
+
+      const rawProjectCredentials = projectCredentialsDb
+        .prepare('SELECT * FROM project_credentials WHERE project_id = ? ORDER BY created_at ASC')
+        .all(projectId) as Array<{
+        id: string;
+        credential_type: CredentialType;
+        encrypted_value: string;
+        metadata_json: string;
+        created_at: number;
+        updated_at: number;
+        deleted_at: number | null;
+      }>;
+      const projectCredentials = rawProjectCredentials.map((row) => ({
+        id: row.id,
+        credential_type: row.credential_type,
+        value: decrypt(
+          row.encrypted_value,
+          deriveStudioRowKey(storeDir, `credential:${row.id}`),
+          { providerId: 'project-migration-project-credentials' },
+        ),
+        metadata_json: row.metadata_json,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        deleted_at: row.deleted_at,
+      }));
+
+      const firebaseAuthConfigs = credentialsDb
+        .prepare('SELECT * FROM firebase_auth_configs WHERE project_id = ? ORDER BY created_at ASC')
+        .all(projectId) as MigrationFirebaseAuthConfigRow[];
+      const firebaseConfigIds = firebaseAuthConfigs.map((row) => row.id);
+
+      const rawOauthClients =
+        firebaseConfigIds.length === 0
+          ? []
+          : (credentialsDb
+              .prepare(
+                `SELECT * FROM oauth_clients WHERE firebase_config_id IN (${firebaseConfigIds
+                  .map(() => '?')
+                  .join(',')}) ORDER BY created_at ASC`,
+              )
+              .all(...firebaseConfigIds) as Array<{
+              id: string;
+              firebase_config_id: string;
+              provider: string;
+              client_id: string;
+              encrypted_client_secret: string;
+              redirect_uris_json: string;
+              created_at: number;
+              updated_at: number;
+            }>);
+      const oauthClients = rawOauthClients.map((row) => ({
+        id: row.id,
+        firebase_config_id: row.firebase_config_id,
+        provider: row.provider,
+        client_id: row.client_id,
+        client_secret: decrypt(
+          row.encrypted_client_secret,
+          deriveStudioRowKey(storeDir, `oauth_client:${row.id}`),
+          { providerId: 'project-migration-oauth-clients' },
+        ),
+        redirect_uris_json: row.redirect_uris_json,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      }));
+
+      const rawProviderCredentials = credentialsDb
+        .prepare('SELECT * FROM provider_credentials WHERE project_id = ? ORDER BY created_at ASC')
+        .all(projectId) as Array<{
+        id: string;
+        project_id: string;
+        provider_type: string;
+        encrypted_credential_data: string;
+        credential_hash: string;
+        expires_at: number | null;
+        created_at: number;
+        updated_at: number;
+      }>;
+      const providerCredentials = rawProviderCredentials.map((row) => ({
+        id: row.id,
+        project_id: row.project_id,
+        provider_type: row.provider_type,
+        credential_data_json: decrypt(
+          row.encrypted_credential_data,
+          deriveStudioRowKey(storeDir, `provider_cred:${row.id}`),
+          { providerId: 'project-migration-provider-credentials' },
+        ),
+        credential_hash: row.credential_hash,
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      }));
+
+      const oauthSessions = credentialsDb
+        .prepare('SELECT * FROM oauth_sessions WHERE project_id = ? ORDER BY created_at ASC')
+        .all(projectId) as MigrationOauthSessionRow[];
+
+      return {
+        format: PROJECT_MIGRATION_FORMAT,
+        version: PROJECT_MIGRATION_VERSION,
+        exportedAt: new Date().toISOString(),
+        projectId,
+        projectFiles: readProjectFilesForMigration(projectId),
+        operations,
+        operationEvents,
+        idempotencyKeys,
+        projectCredentials,
+        firebaseAuthConfigs,
+        oauthClients,
+        providerCredentials,
+        oauthSessions,
+        vaultEntries: exportVaultEntriesForProject(projectId),
+        instanceVaultEntries: exportInstanceVaultEntriesForMigration(),
+      };
+    } finally {
+      operationsDb.close();
+      projectCredentialsDb.close();
+      credentialsDb.close();
+    }
+  }
+
+  function importProjectMigrationPayload(payload: ProjectMigrationPayloadV1): InstanceVaultSyncStatus {
+    validateProjectIdForMigration(payload.projectId);
+    const projectId = payload.projectId;
+    const projectRoot = path.join(storeDir, 'projects', projectId);
+    if (fs.existsSync(projectRoot)) {
+      throw new Error(`Project "${projectId}" already exists.`);
+    }
+    const operationsDb = new Database(path.join(storeDir, 'operations.db'));
+    const projectCredentialsDb = new Database(path.join(storeDir, 'project-credentials.db'));
+    const credentialsDb = new Database(path.join(storeDir, 'credentials.db'));
+    try {
+      const existingRun = operationsDb
+        .prepare('SELECT id FROM operations WHERE app_id = ? LIMIT 1')
+        .get(projectId) as { id: string } | undefined;
+      if (existingRun) {
+        throw new Error(`Project "${projectId}" already has operation history in this Studio instance.`);
+      }
+
+      writeProjectFilesFromMigration(projectId, payload.projectFiles);
+      projectManager.getProject(projectId);
+
+      const operationsTxn = operationsDb.transaction(() => {
+        for (const record of payload.operations) {
+          operationsDb
+            .prepare(
+              'INSERT INTO operations (id, app_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+            )
+            .run(record.id, record.app_id, record.status, record.created_at, record.updated_at);
+        }
+        for (const event of payload.operationEvents) {
+          operationsDb
+            .prepare(
+              `INSERT INTO events (id, operation_id, provider, step, status, result_json, error_message, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              event.id,
+              event.operation_id,
+              event.provider,
+              event.step,
+              event.status,
+              event.result_json,
+              event.error_message,
+              event.timestamp,
+            );
+        }
+        for (const key of payload.idempotencyKeys) {
+          operationsDb
+            .prepare(
+              'INSERT INTO idempotency_keys (key, operation_id, result_hash, created_at) VALUES (?, ?, ?, ?)',
+            )
+            .run(key.key, key.operation_id, key.result_hash, key.created_at);
+        }
+      });
+      operationsTxn();
+
+      const projectCredentialsTxn = projectCredentialsDb.transaction(() => {
+        for (const credential of payload.projectCredentials) {
+          const encryptedValue = encrypt(
+            credential.value,
+            deriveStudioRowKey(storeDir, `credential:${credential.id}`),
+            { providerId: 'project-migration-project-credentials' },
+          );
+          projectCredentialsDb
+            .prepare(
+              `INSERT INTO project_credentials
+               (id, project_id, credential_type, encrypted_value, metadata_json, created_at, updated_at, deleted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              credential.id,
+              projectId,
+              credential.credential_type,
+              encryptedValue,
+              credential.metadata_json,
+              credential.created_at,
+              credential.updated_at,
+              credential.deleted_at,
+            );
+        }
+      });
+      projectCredentialsTxn();
+
+      const credentialStoreTxn = credentialsDb.transaction(() => {
+        for (const config of payload.firebaseAuthConfigs) {
+          credentialsDb
+            .prepare(
+              `INSERT INTO firebase_auth_configs
+               (id, project_id, identity_toolkit_enabled, encrypted_config, apns_configured, play_fingerprint_configured, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              config.id,
+              projectId,
+              config.identity_toolkit_enabled,
+              config.encrypted_config,
+              config.apns_configured,
+              config.play_fingerprint_configured,
+              config.created_at,
+              config.updated_at,
+            );
+        }
+
+        for (const client of payload.oauthClients) {
+          const encryptedClientSecret = encrypt(
+            client.client_secret,
+            deriveStudioRowKey(storeDir, `oauth_client:${client.id}`),
+            { providerId: 'project-migration-oauth-clients' },
+          );
+          credentialsDb
+            .prepare(
+              `INSERT INTO oauth_clients
+               (id, firebase_config_id, provider, client_id, encrypted_client_secret, redirect_uris_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              client.id,
+              client.firebase_config_id,
+              client.provider,
+              client.client_id,
+              encryptedClientSecret,
+              client.redirect_uris_json,
+              client.created_at,
+              client.updated_at,
+            );
+        }
+
+        for (const credential of payload.providerCredentials) {
+          const encryptedCredentialData = encrypt(
+            credential.credential_data_json,
+            deriveStudioRowKey(storeDir, `provider_cred:${credential.id}`),
+            { providerId: 'project-migration-provider-credentials' },
+          );
+          credentialsDb
+            .prepare(
+              `INSERT INTO provider_credentials
+               (id, project_id, provider_type, encrypted_credential_data, credential_hash, expires_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              credential.id,
+              projectId,
+              credential.provider_type,
+              encryptedCredentialData,
+              credential.credential_hash,
+              credential.expires_at,
+              credential.created_at,
+              credential.updated_at,
+            );
+        }
+
+        for (const session of payload.oauthSessions) {
+          credentialsDb
+            .prepare(
+              `INSERT INTO oauth_sessions
+               (id, project_id, provider, state_token, redirect_uri, expires_at, completed, access_token, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              session.id,
+              projectId,
+              session.provider,
+              session.state_token,
+              session.redirect_uri,
+              session.expires_at,
+              session.completed,
+              session.access_token,
+              session.created_at,
+            );
+        }
+      });
+      credentialStoreTxn();
+
+      importVaultEntriesForProject(projectId, payload.vaultEntries);
+    } catch (error) {
+      if (fs.existsSync(projectRoot)) {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+      throw error;
+    } finally {
+      operationsDb.close();
+      projectCredentialsDb.close();
+      credentialsDb.close();
+    }
+    return materializeInstanceVaultSyncAfterMigration(projectId, payload.instanceVaultEntries);
   }
 
   // -------------------------------------------------------------------------
@@ -870,6 +1679,38 @@ export function createApiRouter(
   router.get('/plugin-catalog', (_req: Request, res: Response) => {
     try {
       res.json(globalPluginRegistry.getPluginCatalog());
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/integration-catalog — Integration → Plugin → Step tree.
+  // Source of truth for Studio Core's swimlanes and integrations tab.
+  // /api/plugin-catalog returns the same `integrations` field; this endpoint
+  // is a focused subset for clients that don't need the full module list.
+  // -------------------------------------------------------------------------
+  router.get('/integration-catalog', (_req: Request, res: Response) => {
+    try {
+      const integrations = globalPluginRegistry.getIntegrations().map((integration) => {
+        const plugins = globalPluginRegistry.getPluginsForIntegration(integration.id);
+        return {
+          ...integration,
+          plugins: plugins.map((p) => ({
+            id: p.id,
+            label: p.label,
+            description: p.description,
+            provider: p.provider,
+            requiredModules: p.requiredModules,
+            optionalModules: p.optionalModules,
+            stepKeys: p.steps.map((s) => s.key),
+            teardownStepKeys: p.teardownSteps.map((s) => s.key),
+            userActionKeys: p.userActions.map((a) => a.key),
+            displayMeta: p.displayMeta,
+          })),
+        };
+      });
+      res.json({ integrations });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -1767,27 +2608,29 @@ export function createApiRouter(
           { project_id: projectId, p8_file_buffer: fileBuffer, key_id, team_id, key_purpose: purpose },
           credentialStore,
         );
-        const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-        if (vaultPassphrase) {
+        try {
+          const vaultMk = getVaultFileMasterKey(storeDir);
           if (purpose === 'sign_in') {
-            vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_sign_in_key_id`, key_id);
-            vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_team_id`, team_id);
+            vaultManager.setCredential(vaultMk, 'firebase', `${projectId}/apple_sign_in_key_id`, key_id);
+            vaultManager.setCredential(vaultMk, 'firebase', `${projectId}/apple_team_id`, team_id);
             vaultManager.setCredential(
-              vaultPassphrase,
+              vaultMk,
               'firebase',
               `${projectId}/apple_sign_in_p8`,
               fileBuffer.toString('utf8'),
             );
           } else {
-            vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apns_key_id`, key_id);
-            vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_team_id`, team_id);
+            vaultManager.setCredential(vaultMk, 'firebase', `${projectId}/apns_key_id`, key_id);
+            vaultManager.setCredential(vaultMk, 'firebase', `${projectId}/apple_team_id`, team_id);
             vaultManager.setCredential(
-              vaultPassphrase,
+              vaultMk,
               'firebase',
               `${projectId}/apns_key_p8`,
               fileBuffer.toString('utf8'),
             );
           }
+        } catch (e) {
+          if (!(e instanceof VaultSealedError)) throw e;
         }
         res.status(201).json(result);
       } catch (err) {
@@ -1833,18 +2676,24 @@ export function createApiRouter(
           return;
         }
 
-        const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-        if (!passphrase) {
-          res.status(500).json({
-            error: 'STUDIO_VAULT_PASSPHRASE is not configured; cannot decrypt the Apple Auth Key vault.',
-          });
-          return;
+        let vaultMk: Buffer;
+        try {
+          vaultMk = getVaultFileMasterKey(storeDir);
+        } catch (e) {
+          if (e instanceof VaultSealedError) {
+            res.status(423).json({
+              code: 'VAULT_SEALED',
+              error: 'Vault is sealed; cannot read Apple Auth Key from the vault.',
+            });
+            return;
+          }
+          throw e;
         }
 
         let pem: string | null = null;
 
         const registryRaw = vaultManager.getCredential(
-          passphrase,
+          vaultMk,
           'firebase',
           appleAuthKeysVaultPath(projectId),
         );
@@ -1874,23 +2723,23 @@ export function createApiRouter(
           // registry on its next run, but we shouldn't make the user run a
           // step just to get a download).
           const legacyApns = vaultManager.getCredential(
-            passphrase,
+            vaultMk,
             'firebase',
             `${projectId}/apns_key_p8`,
           );
           const legacyApnsId = vaultManager
-            .getCredential(passphrase, 'firebase', `${projectId}/apns_key_id`)
+            .getCredential(vaultMk, 'firebase', `${projectId}/apns_key_id`)
             ?.toUpperCase();
           if (legacyApns && legacyApnsId === keyId) {
             pem = legacyApns;
           } else {
             const legacySiwa = vaultManager.getCredential(
-              passphrase,
+              vaultMk,
               'firebase',
               `${projectId}/apple_sign_in_p8`,
             );
             const legacySiwaId = vaultManager
-              .getCredential(passphrase, 'firebase', `${projectId}/apple_sign_in_key_id`)
+              .getCredential(vaultMk, 'firebase', `${projectId}/apple_sign_in_key_id`)
               ?.toUpperCase();
             if (legacySiwa && legacySiwaId === keyId) {
               pem = legacySiwa;
@@ -1998,13 +2847,18 @@ export function createApiRouter(
     async (req: Request, res: Response) => {
       try {
         const { projectId } = req.params;
-        const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-        if (!passphrase) {
-          res.status(500).json({
-            error:
-              'STUDIO_VAULT_PASSPHRASE is not configured; cannot decrypt vault-backed project secrets.',
-          });
-          return;
+        let vaultMk: Buffer;
+        try {
+          vaultMk = getVaultFileMasterKey(storeDir);
+        } catch (e) {
+          if (e instanceof VaultSealedError) {
+            res.status(423).json({
+              code: 'VAULT_SEALED',
+              error: 'Vault is sealed; cannot build integration kit env export.',
+            });
+            return;
+          }
+          throw e;
         }
         const plan = loadPersistedPlan(projectId);
         if (!plan) {
@@ -2045,7 +2899,7 @@ export function createApiRouter(
         const bundle = buildProjectEnvBundle(
           plan,
           projectModule,
-          (providerId, key) => vaultManager.getCredential(passphrase, providerId, key),
+          (providerId, key) => vaultManager.getCredential(vaultMk, providerId, key),
           {
             firebaseApiKey: derivedFirebaseApiKey,
           },
@@ -2096,12 +2950,14 @@ export function createApiRouter(
           { project_id: projectId, gcp_project_id, team_id, key_id, service_id, access_token: accessToken },
           credentialStore,
         );
-        const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-        if (vaultPassphrase) {
-          vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/gcp_project_id`, gcp_project_id);
-          vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_team_id`, team_id);
-          vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_sign_in_key_id`, key_id);
-          vaultManager.setCredential(vaultPassphrase, 'firebase', `${projectId}/apple_sign_in_service_id`, service_id);
+        try {
+          const vaultMk = getVaultFileMasterKey(storeDir);
+          vaultManager.setCredential(vaultMk, 'firebase', `${projectId}/gcp_project_id`, gcp_project_id);
+          vaultManager.setCredential(vaultMk, 'firebase', `${projectId}/apple_team_id`, team_id);
+          vaultManager.setCredential(vaultMk, 'firebase', `${projectId}/apple_sign_in_key_id`, key_id);
+          vaultManager.setCredential(vaultMk, 'firebase', `${projectId}/apple_sign_in_service_id`, service_id);
+        } catch (e) {
+          if (!(e instanceof VaultSealedError)) throw e;
         }
         res.json(result);
       } catch (err) {
@@ -2322,13 +3178,18 @@ export function createApiRouter(
         privateKeyP8: ascApiKeyP8,
       });
 
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-      if (!vaultPassphrase) {
-        res.status(400).json({
-          error:
-            'STUDIO_VAULT_PASSPHRASE is required to store the App Store Connect API key. Set the environment variable and retry.',
-        });
-        return;
+      let vaultMk: Buffer;
+      try {
+        vaultMk = getVaultFileMasterKey(storeDir);
+      } catch (e) {
+        if (e instanceof VaultSealedError) {
+          res.status(423).json({
+            code: 'VAULT_SEALED',
+            error: 'Vault is sealed; unlock the vault before storing App Store Connect API credentials.',
+          });
+          return;
+        }
+        throw e;
       }
 
       const organization = projectManager.getOrganization();
@@ -2336,10 +3197,10 @@ export function createApiRouter(
         projectManager.addOrganizationIntegration('apple');
       }
 
-      vaultManager.setCredential(vaultPassphrase, 'apple', 'apple/team_id', teamId);
-      vaultManager.setCredential(vaultPassphrase, 'apple', 'apple/asc_issuer_id', ascIssuerId);
-      vaultManager.setCredential(vaultPassphrase, 'apple', 'apple/asc_api_key_id', ascApiKeyId);
-      vaultManager.setCredential(vaultPassphrase, 'apple', 'apple/asc_api_key_p8', ascApiKeyP8);
+      vaultManager.setCredential(vaultMk, 'apple', 'apple/team_id', teamId);
+      vaultManager.setCredential(vaultMk, 'apple', 'apple/asc_issuer_id', ascIssuerId);
+      vaultManager.setCredential(vaultMk, 'apple', 'apple/asc_api_key_id', ascApiKeyId);
+      vaultManager.setCredential(vaultMk, 'apple', 'apple/asc_api_key_p8', ascApiKeyP8);
 
       const updated = projectManager.updateOrganizationIntegration('apple', {
         status: 'configured',
@@ -2439,6 +3300,7 @@ export function createApiRouter(
           total: runs.length,
           runs,
         },
+        instanceVaultSync: resolveInstanceVaultSyncStatusForProject(projectId),
       });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -2446,6 +3308,202 @@ export function createApiRouter(
         return;
       }
       res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:projectId/migration/export
+  // Session-authenticated; encrypts with HKDF(DEK, export purpose).
+  // -------------------------------------------------------------------------
+  router.post('/projects/:projectId/migration/export', async (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      projectManager.getProject(projectId);
+      const payload = loadProjectMigrationPayload(projectId);
+      let exportPassphrase: string | undefined;
+      if (typeof req.body?.passphrase === 'string' && req.body.passphrase.trim()) {
+        exportPassphrase = (req.body.passphrase as string).trim();
+      }
+      const encryptedPayload = await sealMigrationExport(storeDir, payload, exportPassphrase);
+      const fileName = `${projectId}-migration-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      res.json({
+        fileName,
+        bundle: {
+          format: PROJECT_MIGRATION_FORMAT,
+          version: PROJECT_MIGRATION_VERSION,
+          projectId,
+          encryptedPayload,
+        },
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/migration/import
+  // Body: { bundle } — ciphertext sealed with current vault session keys.
+  // -------------------------------------------------------------------------
+  router.post('/projects/migration/import', async (req: Request, res: Response) => {
+    try {
+      const bundle = req.body?.bundle as
+        | {
+            format?: string;
+            version?: number;
+            projectId?: string;
+            encryptedPayload?: string;
+          }
+        | undefined;
+      if (
+        !bundle ||
+        bundle.format !== PROJECT_MIGRATION_FORMAT ||
+        bundle.version !== PROJECT_MIGRATION_VERSION ||
+        typeof bundle.encryptedPayload !== 'string' ||
+        !bundle.encryptedPayload
+      ) {
+        res.status(400).json({ error: 'Invalid migration bundle.' });
+        return;
+      }
+      const importPassphrase =
+        typeof req.body?.passphrase === 'string' && req.body.passphrase.trim()
+          ? (req.body.passphrase as string).trim()
+          : undefined;
+      const raw = await openMigrationExport(storeDir, bundle.encryptedPayload, importPassphrase);
+      const payload = assertProjectMigrationPayloadV1(raw);
+      if (bundle.projectId && bundle.projectId !== payload.projectId) {
+        throw new Error('Migration bundle project ID mismatch.');
+      }
+      const instanceVaultSync = importProjectMigrationPayload(payload);
+      const project = projectManager.getProject(payload.projectId);
+      const runs = getRunsForProject(payload.projectId);
+      res.status(201).json({
+        projectId: payload.projectId,
+        projectName: project.project.name,
+        importedRuns: runs.length,
+        instanceVaultSync,
+      });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:projectId/instance-vault-sync/apply
+  // Merge selected organization vault credentials from a pending migration import.
+  // -------------------------------------------------------------------------
+  router.post('/projects/:projectId/instance-vault-sync/apply', async (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      projectManager.getProject(projectId);
+      const bodyIds = req.body?.providerIds;
+      if (!Array.isArray(bodyIds) || bodyIds.length === 0) {
+        res.status(400).json({ error: 'providerIds array is required.' });
+        return;
+      }
+      const providerIds = bodyIds.map((x: unknown) => String(x)).filter(Boolean);
+      for (const id of providerIds) {
+        if (!isInstanceVaultMigrationProviderId(id)) {
+          res.status(400).json({ error: `Unknown integration provider "${id}".` });
+          return;
+        }
+      }
+      const stash = readPendingInstanceVaultSyncDecrypted(projectId);
+      if (!stash?.length) {
+        res.status(404).json({ error: 'No pending imported integration data for this project.' });
+        return;
+      }
+      const toApply = stash.filter((e) => providerIds.includes(e.providerId));
+      if (toApply.length === 0) {
+        res.status(400).json({ error: 'None of the requested providers are present in the pending import.' });
+        return;
+      }
+      const vk = getVaultUnlock();
+      for (const entry of toApply) {
+        for (const [key, value] of Object.entries(entry.credentials)) {
+          vaultManager.setCredential(vk, entry.providerId, key, value);
+        }
+      }
+      if (toApply.some((e) => e.providerId === 'github')) {
+        await gitHubConnectionService.syncGitHubIntegrationFromCredentialStore();
+      }
+      if (toApply.some((e) => e.providerId === 'eas')) {
+        await easConnectionService.syncExpoIntegrationFromCredentialStore();
+      }
+      if (toApply.some((e) => e.providerId === 'apple')) {
+        const teamId = vaultManager.getCredential(vk, 'apple', 'apple/team_id')?.trim();
+        const ascIssuerId = vaultManager.getCredential(vk, 'apple', 'apple/asc_issuer_id')?.trim();
+        const ascApiKeyId = vaultManager.getCredential(vk, 'apple', 'apple/asc_api_key_id')?.trim();
+        const ascApiKeyP8 = vaultManager.getCredential(vk, 'apple', 'apple/asc_api_key_p8')?.trim();
+        if (!teamId || !ascIssuerId || !ascApiKeyId || !ascApiKeyP8) {
+          res.status(400).json({ error: 'Apple credentials in the import are incomplete.' });
+          return;
+        }
+        await verifyAscApiCredentials({
+          issuerId: ascIssuerId,
+          keyId: ascApiKeyId,
+          privateKeyP8: ascApiKeyP8,
+        });
+        const organization = projectManager.getOrganization();
+        if (!organization.integrations.apple) {
+          projectManager.addOrganizationIntegration('apple');
+        }
+        projectManager.updateOrganizationIntegration('apple', {
+          status: 'configured',
+          notes: 'Apple Team ID + App Store Connect Team Key configured at organization scope.',
+          config: {
+            team_id: teamId,
+            asc_issuer_id: ascIssuerId,
+            asc_api_key_id: ascApiKeyId,
+            asc_api_key_source: 'organization_vault',
+          },
+          replaceConfig: true,
+        });
+      }
+      const remaining = stash.filter((e) => !providerIds.includes(e.providerId));
+      if (remaining.length === 0) {
+        removePendingInstanceVaultSync(projectId);
+      } else {
+        writePendingInstanceVaultSyncEncrypted(projectId, remaining);
+      }
+      res.json({
+        ok: true,
+        instanceVaultSync: resolveInstanceVaultSyncStatusForProject(projectId),
+      });
+    } catch (err) {
+      if (err instanceof VaultSealedError) {
+        res.status(423).json({ code: 'VAULT_SEALED', error: (err as Error).message });
+        return;
+      }
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:projectId/instance-vault-sync/dismiss
+  // -------------------------------------------------------------------------
+  router.post('/projects/:projectId/instance-vault-sync/dismiss', (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      projectManager.getProject(projectId);
+      removePendingInstanceVaultSync(projectId);
+      res.json({
+        ok: true,
+        instanceVaultSync: { pending: false, providers: [] } satisfies InstanceVaultSyncStatus,
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(400).json({ error: (err as Error).message });
     }
   });
 
@@ -3025,10 +4083,18 @@ export function createApiRouter(
         manifestProviders.push(buildEasManifestConfig(projectManager, projectId, plan));
       }
       if (planUsesAppleProvider(plan)) {
-        manifestProviders.push(buildAppleManifestConfig(projectId, plan));
+        try {
+          manifestProviders.push(buildAppleManifestConfig(projectId, plan));
+        } catch (err) {
+          console.warn(`[studio] Apple manifest not ready: ${(err as Error).message}. Apple steps will fail when reached.`);
+        }
       }
       if (planUsesCloudflareProvider(plan)) {
-        manifestProviders.push(buildCloudflareManifestConfig(projectId));
+        try {
+          manifestProviders.push(buildCloudflareManifestConfig(projectId));
+        } catch (err) {
+          console.warn(`[studio] Cloudflare manifest not ready: ${(err as Error).message}. Cloudflare steps will fail when reached.`);
+        }
       }
       if (planUsesOauthProvider(plan)) {
         manifestProviders.push(buildOauthManifestConfig(projectId, plan));
@@ -3070,7 +4136,7 @@ export function createApiRouter(
         );
       }
       const orchestrator = new Orchestrator(registry, eventLog);
-      const vaultRead = createVaultReader(vaultManager);
+      const vaultRead = createVaultReader(vaultManager, storeDir);
 
       void (async () => {
         const currentPlan = loadPersistedPlan(projectId);
@@ -3378,8 +4444,21 @@ export function createApiRouter(
           status: 'completed',
           completedAt: Date.now(),
           resourcesProduced: mergedProduced,
+          // A successful re-run must clear manual/triggered stale markers so
+          // the UI no longer renders "stale / refresh required".
+          error: undefined,
+          invalidatedBy: undefined,
+          invalidatedAt: undefined,
         };
         plan.nodeStates.set(nodeKey, updated);
+        const invalidated = invalidateRefreshTriggeredNodes(plan, nodeKey);
+        for (const stale of invalidated) {
+          console.log(
+            `[plan/user-action/complete] studio="${projectId}" | ↻ "${stale.nodeKey}"` +
+              (stale.environment ? `@${stale.environment}` : '') +
+              ` invalidated by "${nodeKey}".`,
+          );
+        }
         savePersistedPlan(projectId, plan);
 
         logStudioApiAction('provisioning/plan/user-action/complete POST', {
@@ -3538,8 +4617,9 @@ export function createApiRouter(
           undefined,
           module.project.platforms ?? [],
         );
-        savePersistedPlan(projectId, plan);
       }
+      autoCompleteIntegrationGates(projectId, plan);
+      savePersistedPlan(projectId, plan);
 
       // Read the stored GitHub PAT from the credential vault
       const githubToken = gitHubConnectionService.getStoredGitHubToken();
@@ -3587,10 +4667,18 @@ export function createApiRouter(
         manifestProviders.push(buildEasManifestConfig(projectManager, projectId, plan));
       }
       if (planUsesAppleProvider(plan)) {
-        manifestProviders.push(buildAppleManifestConfig(projectId, plan));
+        try {
+          manifestProviders.push(buildAppleManifestConfig(projectId, plan));
+        } catch (err) {
+          console.warn(`[studio] Apple manifest not ready: ${(err as Error).message}. Apple steps will fail when reached.`);
+        }
       }
       if (planUsesCloudflareProvider(plan)) {
-        manifestProviders.push(buildCloudflareManifestConfig(projectId));
+        try {
+          manifestProviders.push(buildCloudflareManifestConfig(projectId));
+        } catch (err) {
+          console.warn(`[studio] Cloudflare manifest not ready: ${(err as Error).message}. Cloudflare steps will fail when reached.`);
+        }
       }
       if (planUsesOauthProvider(plan)) {
         manifestProviders.push(buildOauthManifestConfig(projectId, plan));
@@ -3649,8 +4737,8 @@ export function createApiRouter(
         );
       }
 
-      const vaultRead = createVaultReader(vaultManager);
-      const vaultWrite = createVaultWriter(vaultManager);
+      const vaultRead = createVaultReader(vaultManager, storeDir);
+      const vaultWrite = createVaultWriter(vaultManager, storeDir);
 
       const orchestrator = new Orchestrator(registry, eventLog);
 
@@ -3794,6 +4882,9 @@ export function createApiRouter(
         return;
       }
 
+      autoCompleteIntegrationGates(projectId, plan);
+      savePersistedPlan(projectId, plan);
+
       // Expand per-environment steps sent as base keys (e.g. "firebase:enable-services")
       // into their env-specific variants ("firebase:enable-services@dev", etc.) so state
       // is written to the correct per-env keys that the UI reads.
@@ -3902,8 +4993,6 @@ export function createApiRouter(
         return;
       }
 
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim() ?? '';
-
       // Pre-mark ALL requested step nodes as in-progress immediately so the
       // frontend reflects activity the moment this request returns.
       for (const nk of effectiveNodeKeys) {
@@ -3950,6 +5039,51 @@ export function createApiRouter(
       void (async () => {
         const currentPlan = loadPersistedPlan(projectId);
         if (!currentPlan) return;
+
+        let vaultKey!: Buffer;
+        if (handlerBacked.length > 0) {
+          try {
+            vaultKey = getVaultFileMasterKey(storeDir);
+          } catch (e) {
+            if (e instanceof VaultSealedError) {
+              console.error(`[plan/run/nodes] Vault sealed for ${projectId} — aborting handler execution.`);
+              wsHandler.broadcastStepProgress(
+                projectId,
+                'run',
+                'step',
+                'failure',
+                undefined,
+                undefined,
+                'Vault is sealed. Unlock the vault first.',
+              );
+              for (const nk of effectiveNodeKeys) {
+                const baseKey = nk.includes('@') ? nk.split('@')[0]! : nk;
+                const environment = nk.includes('@') ? nk.split('@')[1] : undefined;
+                const stateKey = environment ? `${baseKey}@${environment}` : baseKey;
+                const st = currentPlan.nodeStates.get(stateKey);
+                if (st?.status === 'in-progress') {
+                  currentPlan.nodeStates.set(stateKey, {
+                    ...st,
+                    status: 'failed',
+                    error: 'Vault is sealed. Unlock the vault first.',
+                  });
+                  wsHandler.broadcastStepProgress(
+                    projectId,
+                    baseKey,
+                    'step',
+                    'failure',
+                    environment,
+                    undefined,
+                    'Vault is sealed.',
+                  );
+                }
+              }
+              savePersistedPlan(projectId, currentPlan);
+              return;
+            }
+            throw e;
+          }
+        }
 
         wsHandler.broadcastStepProgress(projectId, 'run', 'step', 'running');
 
@@ -4011,7 +5145,7 @@ export function createApiRouter(
             hasToken: (providerId: string) =>
               providerId === 'gcp' ? gcpConnectionService.hasStoredUserOAuthRefreshToken(projectId) : false,
             vaultManager,
-            passphrase: vaultPassphrase,
+            passphrase: vaultKey,
             projectManager,
             credentialService,
           };
@@ -4176,8 +5310,8 @@ export function createApiRouter(
           }
 
           const orchestrator = new Orchestrator(registry, eventLog);
-          const vaultRead = createVaultReader(vaultManager);
-          const vaultWrite = createVaultWriter(vaultManager);
+          const vaultRead = createVaultReader(vaultManager, storeDir);
+          const vaultWrite = createVaultWriter(vaultManager, storeDir);
           const nodeKeysFilter = new Set(orchestratorBacked);
           const initialUpstreamResources = {
             ...buildInitialUpstreamSeed(
@@ -4349,7 +5483,21 @@ export function createApiRouter(
 
       // Execute delete() on each registered handler in reverse provisioning order
       // (dependents were collected in dependency order so reversing is correct).
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim() ?? '';
+      let vaultKey!: Buffer;
+      if (handlerKeysToDelete.length > 0) {
+        try {
+          vaultKey = getVaultFileMasterKey(storeDir);
+        } catch (e) {
+          if (e instanceof VaultSealedError) {
+            res.status(423).json({
+              code: 'VAULT_SEALED',
+              error: 'Vault is sealed; cannot run handler teardown.',
+            });
+            return;
+          }
+          throw e;
+        }
+      }
       let revertWarnings: string[] = [];
       const revertManualActions: RevertManualAction[] = [];
       const revertArtifactSnapshot: Record<string, string> = {};
@@ -4382,7 +5530,7 @@ export function createApiRouter(
             hasToken: (providerId: string) =>
               providerId === 'gcp' ? gcpConnectionService.hasStoredUserOAuthRefreshToken(projectId) : false,
             vaultManager,
-            passphrase: vaultPassphrase,
+            passphrase: vaultKey,
             projectManager,
             credentialService,
           };
@@ -4586,16 +5734,21 @@ export function createApiRouter(
         return;
       }
 
-      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-      if (!passphrase) {
-        res.status(500).json({
-          error:
-            'STUDIO_VAULT_PASSPHRASE is not configured; cannot inspect vault-stored secrets.',
-        });
-        return;
+      let vaultKey!: Buffer;
+      try {
+        vaultKey = getVaultFileMasterKey(storeDir);
+      } catch (e) {
+        if (e instanceof VaultSealedError) {
+          res.status(423).json({
+            code: 'VAULT_SEALED',
+            error: 'Vault is sealed; cannot inspect vault-stored secrets.',
+          });
+          return;
+        }
+        throw e;
       }
 
-      const statuses = readStepSecretStatuses(vaultManager, passphrase, stepKey, projectId);
+      const statuses = readStepSecretStatuses(vaultManager, vaultKey, stepKey, projectId);
       res.json({ stepKey, secrets: statuses });
     },
   );
@@ -4620,15 +5773,21 @@ export function createApiRouter(
         return;
       }
 
-      const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-      if (!passphrase) {
-        res.status(500).json({
-          error: 'STUDIO_VAULT_PASSPHRASE is not configured; cannot decrypt the vault.',
-        });
-        return;
+      let vaultKey!: Buffer;
+      try {
+        vaultKey = getVaultFileMasterKey(storeDir);
+      } catch (e) {
+        if (e instanceof VaultSealedError) {
+          res.status(423).json({
+            code: 'VAULT_SEALED',
+            error: 'Vault is sealed; cannot decrypt vault secrets.',
+          });
+          return;
+        }
+        throw e;
       }
 
-      const value = readStepSecretValue(vaultManager, passphrase, descriptor, projectId);
+      const value = readStepSecretValue(vaultManager, vaultKey, descriptor, projectId);
       if (value === null || value.length === 0) {
         res.status(404).json({
           error: `No vault entry stored for ${descriptor.label}. Connect the source integration first.`,
@@ -4831,7 +5990,10 @@ export function createApiRouter(
       const githubToken = gitHubConnectionService.getStoredGitHubToken();
       if (node.provider === 'github' && !githubToken) {
         res.status(400).json({
-          error: 'GitHub is not connected. Connect a GitHub PAT before revalidating GitHub steps.',
+          error:
+            'GitHub is not connected. Connect a GitHub PAT before revalidating GitHub steps. ' +
+            'If you imported this project, the timeline can show "complete" while this Studio has no PAT yet — ' +
+            'use Organization → GitHub, or apply “imported integrations” from the migration prompt when your bundle includes them.',
         });
         return;
       }
@@ -4855,12 +6017,20 @@ export function createApiRouter(
         );
       }
       if (planUsesAppleProvider(plan)) {
-        providerConfigsByProvider.set('apple', buildAppleManifestConfig(projectId, plan));
-        registry.register('apple', new AppleAdapter());
+        try {
+          providerConfigsByProvider.set('apple', buildAppleManifestConfig(projectId, plan));
+          registry.register('apple', new AppleAdapter());
+        } catch (err) {
+          console.warn(`[studio] Apple manifest not ready: ${(err as Error).message}. Apple steps will fail when reached.`);
+        }
       }
       if (planUsesCloudflareProvider(plan)) {
-        providerConfigsByProvider.set('cloudflare', buildCloudflareManifestConfig(projectId));
-        registry.register('cloudflare', buildCloudflareAdapter(projectId));
+        try {
+          providerConfigsByProvider.set('cloudflare', buildCloudflareManifestConfig(projectId));
+          registry.register('cloudflare', buildCloudflareAdapter(projectId));
+        } catch (err) {
+          console.warn(`[studio] Cloudflare manifest not ready: ${(err as Error).message}. Cloudflare steps will fail when reached.`);
+        }
       }
       if (planUsesOauthProvider(plan)) {
         providerConfigsByProvider.set('oauth', buildOauthManifestConfig(projectId, plan));
@@ -4900,7 +6070,21 @@ export function createApiRouter(
         return;
       }
 
-      const vaultRead = createVaultReader(vaultManager);
+      const vaultRead = createVaultReader(vaultManager, storeDir);
+
+      let revalidateVaultKey!: Buffer;
+      try {
+        revalidateVaultKey = getVaultFileMasterKey(storeDir);
+      } catch (e) {
+        if (e instanceof VaultSealedError) {
+          res.status(423).json({
+            code: 'VAULT_SEALED',
+            error: 'Vault is sealed. Unlock the vault first.',
+          });
+          return;
+        }
+        throw e;
+      }
 
       const { sequentialExecutionItems } = buildPlanViewModel(plan.nodes, plan.environments);
       const upstream: Record<string, string> = {};
@@ -4916,7 +6100,7 @@ export function createApiRouter(
       const targetItems = sequentialExecutionItems.filter((i) => i.nodeKey === nodeKey);
       let checked = 0;
 
-      const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim() ?? '';
+      const vaultPassphrase = revalidateVaultKey;
 
       for (const item of targetItems) {
         const stateKey = item.environment ? `${nodeKey}@${item.environment}` : nodeKey;
@@ -5067,8 +6251,9 @@ export function createApiRouter(
           undefined,
           _module.project.platforms ?? [],
         );
-        savePersistedPlan(projectId, plan);
       }
+      autoCompleteIntegrationGates(projectId, plan);
+      savePersistedPlan(projectId, plan);
 
       const isAlreadyRunning = Array.from(plan.nodeStates.values()).some(
         (s) => s.status === 'in-progress',
@@ -5135,14 +6320,22 @@ export function createApiRouter(
         registry.register('github', new GitHubAdapter(new HttpGitHubApiClient(githubToken)));
       }
       if (planUsesAppleProvider(plan)) {
-        const appleConfig = buildAppleManifestConfig(projectId, plan);
-        providerConfigsByProvider.set('apple', appleConfig);
-        registry.register('apple', new AppleAdapter());
+        try {
+          const appleConfig = buildAppleManifestConfig(projectId, plan);
+          providerConfigsByProvider.set('apple', appleConfig);
+          registry.register('apple', new AppleAdapter());
+        } catch (err) {
+          console.warn(`[studio] Apple manifest not ready: ${(err as Error).message}. Apple steps will fail when reached.`);
+        }
       }
       if (planUsesCloudflareProvider(plan)) {
-        const cloudflareConfig = buildCloudflareManifestConfig(projectId);
-        providerConfigsByProvider.set('cloudflare', cloudflareConfig);
-        registry.register('cloudflare', buildCloudflareAdapter(projectId));
+        try {
+          const cloudflareConfig = buildCloudflareManifestConfig(projectId);
+          providerConfigsByProvider.set('cloudflare', cloudflareConfig);
+          registry.register('cloudflare', buildCloudflareAdapter(projectId));
+        } catch (err) {
+          console.warn(`[studio] Cloudflare manifest not ready: ${(err as Error).message}. Cloudflare steps will fail when reached.`);
+        }
       }
       if (planUsesOauthProvider(plan)) {
         const oauthConfig = buildOauthManifestConfig(projectId, plan);
@@ -5157,7 +6350,21 @@ export function createApiRouter(
         );
       }
 
-      const vaultRead = createVaultReader(vaultManager);
+      const vaultRead = createVaultReader(vaultManager, storeDir);
+
+      let syncVaultKey!: Buffer;
+      try {
+        syncVaultKey = getVaultFileMasterKey(storeDir);
+      } catch (e) {
+        if (e instanceof VaultSealedError) {
+          res.status(423).json({
+            code: 'VAULT_SEALED',
+            error: 'Vault is sealed; cannot sync provisioning plan.',
+          });
+          return;
+        }
+        throw e;
+      }
 
       // Resolve credential gates before sync — uses the same resolver the
       // orchestrator would use so gate resolution logic lives in one place.
@@ -5366,8 +6573,6 @@ export function createApiRouter(
             if (isHandlerBacked && node.provider !== 'firebase') {
               const handler = globalStepHandlerRegistry.get(baseStepKey);
               if (handler) {
-                const vaultPassphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim() ?? '';
-
                 wsHandler.broadcastStepProgress(
                   projectId,
                   item.nodeKey,
@@ -5392,7 +6597,7 @@ export function createApiRouter(
                       ? gcpConnectionService.hasStoredUserOAuthRefreshToken(currentPlan.projectId)
                       : false,
                   vaultManager,
-                  passphrase: vaultPassphrase,
+                  passphrase: syncVaultKey,
                   projectManager,
                   credentialService,
                 };
@@ -5597,7 +6802,7 @@ export function createApiRouter(
       status: 'ok',
       timestamp: new Date().toISOString(),
       websocket_connections: wsHandler.connectionCount,
-      dev_mode: devMode,
+      serve_ui_from_source: serveUiFromSource,
     });
   });
 

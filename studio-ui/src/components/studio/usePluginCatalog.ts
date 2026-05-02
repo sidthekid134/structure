@@ -190,12 +190,15 @@ export interface UsePluginCatalogResult {
   reload: () => void;
 }
 
-export function usePluginCatalog(): UsePluginCatalogResult {
+export function usePluginCatalog(enabled = true): UsePluginCatalogResult {
   const [catalog, setCatalog] = useState<ConvertedCatalog | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [loadKey, setLoadKey] = useState(0);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     let cancelled = false;
     setError(null);
     loadCatalog()
@@ -210,11 +213,11 @@ export function usePluginCatalog(): UsePluginCatalogResult {
     return () => {
       cancelled = true;
     };
-  }, [loadKey]);
+  }, [loadKey, enabled]);
 
   return {
     catalog,
-    loading: catalog === null && error === null,
+    loading: !enabled || (catalog === null && error === null),
     error,
     reload: () => {
       invalidatePluginCatalog();

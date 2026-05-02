@@ -17,13 +17,18 @@ export const llmGeminiPlugin: PluginDefinition = {
   label: 'Google Gemini',
   description:
     'Connect a Google AI Studio API key. Stores it encrypted in the project vault and verifies Gemini model access by listing available models.',
+  integrationId: 'llm',
   provider: 'llm',
   requiredModules: [],
   optionalModules: [],
   includedInTemplates: [],
   steps: LLM_GEMINI_STEPS,
   teardownSteps: LLM_GEMINI_TEARDOWN_STEPS,
-  userActions: [USER_ACTIONS.find((a) => a.key === 'user:provide-gemini-api-key')!],
+  userActions: USER_ACTIONS.filter(
+    (a) =>
+      a.key === 'user:provide-gemini-api-key' ||
+      a.key === 'user:share-gemini-integration-prompt',
+  ),
   displayMeta: {
     icon: 'Stars',
     colors: {

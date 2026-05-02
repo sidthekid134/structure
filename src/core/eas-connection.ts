@@ -4,6 +4,7 @@ import {
   ProjectManager,
   IntegrationConfigRecord,
 } from '../studio/project-manager.js';
+import { getVaultUnlock as resolveVaultUnlock } from '../studio/vault-session.js';
 
 export interface ExpoConnectionDetails {
   userId: string;
@@ -26,17 +27,17 @@ export class EasConnectionService {
   ) {}
 
   getStoredExpoToken(): string | undefined {
-    return this.vaultManager.getCredential(this.getVaultPassphrase(), 'eas', 'expo_token');
+    return this.vaultManager.getCredential(resolveVaultUnlock(), 'eas', 'expo_token');
   }
 
   getStoredExpoUsername(): string | undefined {
-    const raw = this.vaultManager.getCredential(this.getVaultPassphrase(), 'eas', 'expo_username');
+    const raw = this.vaultManager.getCredential(resolveVaultUnlock(), 'eas', 'expo_username');
     const username = raw?.trim();
     return username || undefined;
   }
 
   getStoredExpoAccountNames(): string[] {
-    const raw = this.vaultManager.getCredential(this.getVaultPassphrase(), 'eas', 'expo_accounts');
+    const raw = this.vaultManager.getCredential(resolveVaultUnlock(), 'eas', 'expo_accounts');
     if (!raw) return [];
     try {
       const parsed = JSON.parse(raw) as unknown;
@@ -53,11 +54,11 @@ export class EasConnectionService {
     if (typeof token !== 'string' || token.trim().length === 0) {
       throw new Error('Expo token is required.');
     }
-    this.vaultManager.setCredential(this.getVaultPassphrase(), 'eas', 'expo_token', token.trim());
+    this.vaultManager.setCredential(resolveVaultUnlock(), 'eas', 'expo_token', token.trim());
   }
 
   storeExpoConnectionDetails(details: ExpoConnectionDetails): void {
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     this.vaultManager.setCredential(passphrase, 'eas', 'expo_user_id', details.userId);
     this.vaultManager.setCredential(passphrase, 'eas', 'expo_username', details.username);
     this.vaultManager.setCredential(passphrase, 'eas', 'expo_accounts', JSON.stringify(details.accountNames));
@@ -70,7 +71,7 @@ export class EasConnectionService {
   }
 
   deleteStoredExpoConnectionDetails(): void {
-    const passphrase = this.getVaultPassphrase();
+    const passphrase = resolveVaultUnlock();
     this.vaultManager.deleteCredential(passphrase, 'eas', 'expo_user_id');
     this.vaultManager.deleteCredential(passphrase, 'eas', 'expo_username');
     this.vaultManager.deleteCredential(passphrase, 'eas', 'expo_accounts');
@@ -78,7 +79,7 @@ export class EasConnectionService {
   }
 
   deleteStoredExpoToken(): boolean {
-    return this.vaultManager.deleteCredential(this.getVaultPassphrase(), 'eas', 'expo_token');
+    return this.vaultManager.deleteCredential(resolveVaultUnlock(), 'eas', 'expo_token');
   }
 
   async fetchExpoConnectionDetails(token: string): Promise<ExpoConnectionDetails> {
@@ -206,13 +207,4 @@ export class EasConnectionService {
     };
   }
 
-  private getVaultPassphrase(): string {
-    const passphrase = process.env['STUDIO_VAULT_PASSPHRASE']?.trim();
-    if (!passphrase) {
-      throw new Error(
-        'STUDIO_VAULT_PASSPHRASE is required to use Studio credential storage for EAS tokens.',
-      );
-    }
-    return passphrase;
-  }
 }

@@ -16,13 +16,18 @@ export const llmAnthropicPlugin: PluginDefinition = {
   label: 'Anthropic Claude',
   description:
     'Connect an Anthropic API key. Stores it encrypted in the project vault and verifies Claude model access by listing available models.',
+  integrationId: 'llm',
   provider: 'llm',
   requiredModules: [],
   optionalModules: [],
   includedInTemplates: [],
   steps: LLM_ANTHROPIC_STEPS,
   teardownSteps: LLM_ANTHROPIC_TEARDOWN_STEPS,
-  userActions: [USER_ACTIONS.find((a) => a.key === 'user:provide-anthropic-api-key')!],
+  userActions: USER_ACTIONS.filter(
+    (a) =>
+      a.key === 'user:provide-anthropic-api-key' ||
+      a.key === 'user:share-anthropic-integration-prompt',
+  ),
   displayMeta: {
     icon: 'BrainCircuit',
     colors: {

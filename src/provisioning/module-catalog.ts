@@ -274,7 +274,7 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     optionalModules: [],
     stepKeys: [],
     teardownStepKeys: ['llm:revoke-openai-credentials'],
-    userActionKeys: ['user:provide-openai-api-key'],
+    userActionKeys: ['user:provide-openai-api-key', 'user:share-openai-integration-prompt'],
   },
   'llm-anthropic': {
     id: 'llm-anthropic',
@@ -285,7 +285,7 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     optionalModules: [],
     stepKeys: [],
     teardownStepKeys: ['llm:revoke-anthropic-credentials'],
-    userActionKeys: ['user:provide-anthropic-api-key'],
+    userActionKeys: ['user:provide-anthropic-api-key', 'user:share-anthropic-integration-prompt'],
   },
   'llm-gemini': {
     id: 'llm-gemini',
@@ -296,7 +296,7 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     optionalModules: [],
     stepKeys: [],
     teardownStepKeys: ['llm:revoke-gemini-credentials'],
-    userActionKeys: ['user:provide-gemini-api-key'],
+    userActionKeys: ['user:provide-gemini-api-key', 'user:share-gemini-integration-prompt'],
   },
   'llm-custom': {
     id: 'llm-custom',
@@ -307,7 +307,7 @@ export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
     optionalModules: [],
     stepKeys: [],
     teardownStepKeys: ['llm:revoke-custom-credentials'],
-    userActionKeys: ['user:provide-custom-llm-credentials'],
+    userActionKeys: ['user:provide-custom-llm-credentials', 'user:share-custom-llm-integration-prompt'],
   },
 };
 

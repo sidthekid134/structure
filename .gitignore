@@ -29,3 +29,23 @@ build/
 .DS_Store
 .vscode/
 .idea/
+
+# pkg CLI binaries (local builds)
+binaries/
+
+# pkg-fetch cache (Node binaries pulled from yao-pkg/pkg-fetch releases)
+.pkg-cache/
+
+# Updater signing — never commit private keys
+*.key
+*.key.pub
+release/*.json
+release/*.sig
+!release/latest.template.json
+
+# Local secrets / developer-specific identifiers
+.secrets
+
+# pnpm artifacts (project uses npm)
+pnpm-lock.yaml
+pnpm-workspace.yaml

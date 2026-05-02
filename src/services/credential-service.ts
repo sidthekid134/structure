@@ -15,7 +15,7 @@ import * as crypto from 'crypto';
 import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
-import { encrypt, decrypt, deriveKey } from '../encryption.js';
+import { encrypt, decrypt } from '../encryption.js';
 import { CredentialError } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -75,14 +75,14 @@ export interface CredentialSummary {
 
 export class CredentialService {
   private readonly db: Database.Database;
-  private readonly masterPassphrase: string;
+  private readonly deriveRowSecretKey: (purpose: string) => Buffer;
 
-  constructor(storeDir: string, masterPassphrase: string) {
+  constructor(storeDir: string, deriveRowSecretKey: (purpose: string) => Buffer) {
     fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
     const dbPath = path.join(storeDir, 'project-credentials.db');
     this.db = new Database(dbPath);
     try { fs.chmodSync(dbPath, 0o600); } catch { /* best-effort */ }
-    this.masterPassphrase = masterPassphrase;
+    this.deriveRowSecretKey = deriveRowSecretKey;
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initSchema();
@@ -122,12 +122,12 @@ export class CredentialService {
   // ---------------------------------------------------------------------------
 
   private encryptValue(value: string, credentialId: string): string {
-    const key = deriveKey(this.masterPassphrase, `credential:${credentialId}`);
+    const key = this.deriveRowSecretKey(`credential:${credentialId}`);
     return encrypt(value, key);
   }
 
   private decryptValue(encrypted: string, credentialId: string): string {
-    const key = deriveKey(this.masterPassphrase, `credential:${credentialId}`);
+    const key = this.deriveRowSecretKey(`credential:${credentialId}`);
     return decrypt(encrypted, key);
   }
 

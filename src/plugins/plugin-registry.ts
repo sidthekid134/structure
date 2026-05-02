@@ -17,6 +17,8 @@ import type {
   FunctionGroupDefinition,
   PluginRegistrationContext,
 } from './plugin-types.js';
+import type { IntegrationDefinition } from './integration-types.js';
+import { BUILTIN_INTEGRATIONS } from './builtin-integrations.js';
 import type {
   ProvisioningStepNode,
   UserActionNode,
@@ -182,6 +184,64 @@ function defaultUserActionActions(
 
 export class PluginRegistry {
   private readonly plugins = new Map<string, PluginDefinition>();
+  private readonly integrations = new Map<string, IntegrationDefinition>();
+
+  constructor() {
+    for (const integration of BUILTIN_INTEGRATIONS) {
+      this.integrations.set(integration.id, integration);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Integration registration & queries
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register a third-party integration. Built-in integrations are registered
+   * automatically in the constructor.
+   */
+  registerIntegration(integration: IntegrationDefinition): void {
+    if (this.integrations.has(integration.id)) {
+      console.warn(`[PluginRegistry] Integration "${integration.id}" already registered. Skipping.`);
+      return;
+    }
+    this.integrations.set(integration.id, integration);
+  }
+
+  getIntegration(id: string): IntegrationDefinition | undefined {
+    return this.integrations.get(id);
+  }
+
+  getIntegrations(): IntegrationDefinition[] {
+    return Array.from(this.integrations.values()).sort((a, b) => a.order - b.order);
+  }
+
+  /**
+   * Resolve the integration id for a plugin. Falls back to `provider` when the
+   * plugin doesn't declare an `integrationId` (kept for backward compatibility
+   * with third-party plugins that haven't migrated).
+   */
+  resolveIntegrationId(plugin: PluginDefinition): string {
+    return plugin.integrationId ?? plugin.provider;
+  }
+
+  getPluginsForIntegration(integrationId: string): PluginDefinition[] {
+    return this.getAllPlugins().filter((p) => this.resolveIntegrationId(p) === integrationId);
+  }
+
+  getStepsForIntegration(integrationId: string): ProvisioningStepNode[] {
+    const out: ProvisioningStepNode[] = [];
+    const seen = new Set<string>();
+    for (const plugin of this.getPluginsForIntegration(integrationId)) {
+      for (const step of plugin.steps) {
+        if (!seen.has(step.key)) {
+          out.push(step);
+          seen.add(step.key);
+        }
+      }
+    }
+    return out;
+  }
 
   // ---------------------------------------------------------------------------
   // Registration
@@ -710,6 +770,7 @@ export class PluginRegistry {
         id: string;
         label: string;
         description: string;
+        integrationId: string;
         provider: string;
         version: string;
         functionGroupId?: string;
@@ -724,6 +785,7 @@ export class PluginRegistry {
         id: plugin.id,
         label: plugin.label,
         description: plugin.description,
+        integrationId: this.resolveIntegrationId(plugin),
         provider: plugin.provider,
         version: plugin.version,
         functionGroupId: plugin.functionGroup?.id,
@@ -743,6 +805,11 @@ export class PluginRegistry {
       };
     });
 
+    const integrations = this.getIntegrations().map((integration) => ({
+      ...integration,
+      pluginIds: this.getPluginsForIntegration(integration.id).map((p) => p.id),
+    }));
+
     const journeyPhases = this.computeJourneyPhaseOrder().map((id) => ({
       id,
       title: JOURNEY_PHASE_TITLE[id] ?? id,
@@ -750,6 +817,7 @@ export class PluginRegistry {
 
     return {
       modules,
+      integrations,
       functionGroups: this.getFunctionGroups(),
       templates: this.getProjectTemplates(),
       providers: providerList,

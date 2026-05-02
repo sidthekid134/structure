@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { AnimatePresence } from 'framer-motion';
-import { INTEGRATION_CONFIGS } from './constants';
+import { useIntegrationCatalog } from './useIntegrationCatalog';
 import { usePluginCatalog } from './usePluginCatalog';
-import { api, bundleIdFromAppDomain, formatDate, isValidAppHostname, providerToBackendKey, slugify } from './helpers';
+import { api, authedWebSocket, bundleIdFromAppDomain, formatDate, isValidAppHostname, providerToBackendKey, slugify } from './helpers';
 import {
   CreateProjectModal,
   DEFAULT_ENVIRONMENTS,
@@ -16,6 +17,8 @@ import { IntegrationModal } from './IntegrationModal';
 import { MainHeader } from './MainHeader';
 import { OrgOverview } from './OrgOverview';
 import { ProjectDetailView, type ProjectSubtab } from './ProjectDetailView';
+import { ProjectMigrationImportModal } from './ProjectMigrationImportModal';
+import { PasskeyAuthGate } from './PasskeyAuthGate';
 import { RegistryView } from './RegistryView';
 import { Sidebar } from './Sidebar';
 import { Toast } from './Toast';
@@ -27,16 +30,18 @@ import type {
   IntegrationConfig,
   IntegrationDependencyProviderStatus,
   IntegrationStatusRecord,
+  InstanceVaultSyncStatus,
   OrganizationProfile,
   ProjectDetail,
   ProjectSummary,
+  ProjectMigrationBundle,
   ProviderId,
   RegistryPlugin,
   StudioView,
 } from './types';
 
 const DEFAULT_PROJECT_SUBTAB: ProjectSubtab = 'modules';
-const PROJECT_SUBTABS: readonly ProjectSubtab[] = ['modules', 'setup', 'dashboard', 'llm', 'settings'];
+const PROJECT_SUBTABS: readonly ProjectSubtab[] = ['modules', 'setup', 'dashboard', 'settings'];
 const PROJECT_SCOPED_VIEWS: readonly StudioView[] = [
   'project',
   'project-setup',
@@ -85,6 +90,125 @@ const buildStudioHashRoute = (view: StudioView, activeProjectId: string | null, 
   return '#/overview';
 };
 
+const PASSKEY_TEST_STORAGE_KEY = 'studio:test-passkey';
+
+/**
+ * The daemon mints an HttpOnly session via CLI handoff (`#handoff=…`) or,
+ * on loopback only, `POST /api/auth/dev-session` so reloading the tab does
+ * not require passkey sign-in. Use `?passkey=1` to exercise real WebAuthn instead.
+ */
+function syncPasskeyTestPreferenceFromUrl(): {
+  exercisePasskey: boolean;
+  /** True only when `?passkey=1` was just applied — caller should drop dev session cookie once. */
+  logoutDevSessionOnce: boolean;
+} {
+  try {
+    const url = new URL(window.location.href);
+    const p = url.searchParams.get('passkey');
+    if (p === '1') {
+      sessionStorage.setItem(PASSKEY_TEST_STORAGE_KEY, '1');
+      url.searchParams.delete('passkey');
+      window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+      return { exercisePasskey: true, logoutDevSessionOnce: true };
+    }
+    if (p === '0') {
+      sessionStorage.removeItem(PASSKEY_TEST_STORAGE_KEY);
+      url.searchParams.delete('passkey');
+      window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+      return { exercisePasskey: false, logoutDevSessionOnce: false };
+    }
+    const exercisePasskey = sessionStorage.getItem(PASSKEY_TEST_STORAGE_KEY) === '1';
+    return { exercisePasskey, logoutDevSessionOnce: false };
+  } catch {
+    return { exercisePasskey: false, logoutDevSessionOnce: false };
+  }
+}
+
+type AuthBarrierState =
+  | 'loading'
+  | 'none'
+  | 'register'
+  | 'passkey'
+  | 'vaultUnlock'
+  | 'vaultIncompatible';
+
+async function refreshAuthBarrierState(
+  setAuthBarrier: Dispatch<SetStateAction<AuthBarrierState>>,
+  setVaultIncompatibleMessage: Dispatch<SetStateAction<string | null>>,
+): Promise<'none' | 'register' | 'passkey' | 'vaultUnlock' | 'vaultIncompatible'> {
+  try {
+    const ver = (await fetch('/api/version', { credentials: 'include' }).then((r) => r.json())) as {
+      needsRegistration?: boolean;
+      needsVaultKeySetup?: boolean;
+      hasCredentials?: boolean;
+      canDecryptVault?: boolean;
+    };
+    const canDecryptVault = Boolean(ver.canDecryptVault ?? ver.hasCredentials);
+    const needsVaultKeySetup = Boolean(ver.needsVaultKeySetup ?? ver.needsRegistration ?? !canDecryptVault);
+    const sess = (await fetch('/api/auth/session', { credentials: 'include' }).then((r) => r.json())) as {
+      authenticated?: boolean;
+    };
+
+    // Loopback dev-session can be "authenticated" without vault crypto material — still require
+    // first-time vault setup before treating the session as signed-in for vault access.
+    if (sess.authenticated && needsVaultKeySetup) {
+      setVaultIncompatibleMessage(null);
+      setAuthBarrier('register');
+      return 'register';
+    }
+
+    if (sess.authenticated) {
+      try {
+        const vaultRes = await fetch('/api/vault/status', { credentials: 'include' });
+        if (!vaultRes.ok) {
+          const body = (await vaultRes.json().catch(() => ({}))) as { error?: string; code?: string };
+          if (vaultRes.status === 503 || body.code === 'VAULT_LAYOUT_UNSUPPORTED') {
+            setVaultIncompatibleMessage(
+              body.error ?? 'This Studio data directory is not compatible with this version.',
+            );
+            setAuthBarrier('vaultIncompatible');
+            return 'vaultIncompatible';
+          }
+        } else {
+          const vault = (await vaultRes.json()) as {
+            sealed?: boolean;
+            vaultKeyMode?: string;
+          };
+          // Any dek-v1 sealed session needs passkey unlock — do not require vaultExists (path checks
+          // can disagree with the vault file on disk during migration or partial state).
+          if (vault.vaultKeyMode === 'dek-v1' && vault.sealed) {
+            setVaultIncompatibleMessage(null);
+            setAuthBarrier('vaultUnlock');
+            return 'vaultUnlock';
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      setVaultIncompatibleMessage(null);
+      setAuthBarrier('none');
+      return 'none';
+    }
+    if (canDecryptVault) {
+      setVaultIncompatibleMessage(null);
+      setAuthBarrier('passkey');
+      return 'passkey';
+    }
+    if (needsVaultKeySetup) {
+      setVaultIncompatibleMessage(null);
+      setAuthBarrier('register');
+      return 'register';
+    }
+    setVaultIncompatibleMessage(null);
+    setAuthBarrier('none');
+    return 'none';
+  } catch {
+    setVaultIncompatibleMessage(null);
+    setAuthBarrier('none');
+    return 'none';
+  }
+}
+
 export default function PlatformStudio() {
   const initialRoute = useMemo(() => parseStudioHashRoute(window.location.hash), []);
   const [isDark, setIsDark] = useState(() => {
@@ -99,6 +223,11 @@ export default function PlatformStudio() {
 
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showMigrationImport, setShowMigrationImport] = useState(false);
+  const [authBarrier, setAuthBarrier] = useState<AuthBarrierState>('loading');
+  const [vaultIncompatibleMessage, setVaultIncompatibleMessage] = useState<string | null>(null);
+  const [apiBootstrapDone, setApiBootstrapDone] = useState(false);
+  const [isMigrationImporting, setIsMigrationImporting] = useState(false);
   const [wsStatus, setWsStatus] = useState<'offline' | 'connecting' | 'live' | 'error'>('offline');
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
   const [createForm, setCreateForm] = useState<CreateProjectForm>({
@@ -120,7 +249,8 @@ export default function PlatformStudio() {
     cloudflare: false,
   });
   const [activeIntegration, setActiveIntegration] = useState<ProviderId | null>(null);
-  const { catalog: pluginCatalog } = usePluginCatalog();
+  const { catalog: pluginCatalog } = usePluginCatalog(apiBootstrapDone);
+  const integrationConfigs = useIntegrationCatalog();
   const [firebaseDetails, setFirebaseDetails] = useState<FirebaseConnectionDetails | null>(null);
   const [appleDetails, setAppleDetails] = useState<{
     team_id?: string;
@@ -138,6 +268,14 @@ export default function PlatformStudio() {
     const status = (entry as IntegrationStatusRecord).status;
     return status === 'configured';
   };
+  useEffect(() => {
+    const onVaultSealed = () => {
+      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage);
+    };
+    window.addEventListener('studio:vault-sealed', onVaultSealed);
+    return () => window.removeEventListener('studio:vault-sealed', onVaultSealed);
+  }, []);
+
   const hasConfiguredIntegration = (
     integrations: Record<string, unknown> | Record<string, IntegrationStatusRecord> | undefined,
     keys: string[],
@@ -447,11 +585,11 @@ export default function PlatformStudio() {
       plugin.providerId === 'apple' ||
       plugin.providerId === 'cloudflare'
     ) {
-      return INTEGRATION_CONFIGS.find((c) => c.id === plugin.providerId) ?? null;
+      return integrationConfigs?.find((c) => c.id === plugin.providerId) ?? null;
     }
     return null;
   };
-  const activeIntegrationConfig = activeIntegration ? INTEGRATION_CONFIGS.find((c) => c.id === activeIntegration) ?? null : null;
+  const activeIntegrationConfig = activeIntegration ? (integrationConfigs?.find((c) => c.id === activeIntegration) ?? null) : null;
   const navigateStudio = useCallback(
     (next: {
       view?: StudioView;
@@ -516,12 +654,6 @@ export default function PlatformStudio() {
   }, [connections.size]);
 
   useEffect(() => {
-    void refreshProjects();
-    // refreshProjects is intentionally invoked on initial mount only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
     void refreshConnectedProviders().catch((error: Error) => notify(error.message, 'error'));
     void refreshIntegrationDependencyStatus().catch((error: Error) => notify(error.message, 'error'));
     // refreshConnectedProviders should re-run only when selected project context changes.
@@ -539,6 +671,69 @@ export default function PlatformStudio() {
     }
     void refreshProjectDetail(activeProjectId).catch((error: Error) => notify(error.message, 'error'));
   }, [activeProjectId]);
+
+  useEffect(() => {
+    void (async () => {
+      const hash = window.location.hash;
+      const m = /handoff=([^&]+)/.exec(hash);
+      if (m) {
+        const tok = decodeURIComponent(m[1]!);
+        await fetch('/api/auth/handoff', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: tok }),
+        });
+        const cleaned = hash
+          .replace(/[&?]handoff=[^&]*/, '')
+          .replace(/^#[&?]/, '#')
+          .replace(/^#$/, '');
+        window.history.replaceState(
+          null,
+          '',
+          window.location.pathname + window.location.search + (cleaned === '#' ? '' : cleaned),
+        );
+      } else {
+        // `vite build --watch` (dev:full) sets import.meta.env.PROD — do not key off Vite's DEV flag.
+        const { exercisePasskey, logoutDevSessionOnce } = syncPasskeyTestPreferenceFromUrl();
+        if (logoutDevSessionOnce) {
+          await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+        }
+        if (!exercisePasskey) {
+          try {
+            await fetch('/api/auth/dev-session', { method: 'POST', credentials: 'include' });
+          } catch {
+            /* ignore — barrier refresh still decides auth state */
+          }
+        }
+      }
+      const gate = await refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage);
+      if (gate === 'none') {
+        await refreshProjects().catch((error: Error) => notify(error.message, 'error'));
+      }
+    })()
+      .catch(() => {
+        setVaultIncompatibleMessage(null);
+        setAuthBarrier('none');
+      })
+      .finally(() => {
+        setApiBootstrapDone(true);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onNeedAuth = (): void => {
+      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage).then((gate) => {
+        if (gate === 'none') {
+          void refreshProjects().catch((error: Error) => notify(error.message, 'error'));
+        }
+      });
+    };
+    window.addEventListener('studio:need-auth', onNeedAuth);
+    return () => window.removeEventListener('studio:need-auth', onNeedAuth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function notify(text: string, tone: 'ok' | 'error' = 'ok'): void {
     setToast({ text, tone });
@@ -581,20 +776,30 @@ export default function PlatformStudio() {
       }
       for (const runId of runningIds) {
         if (next.has(runId)) continue;
-        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        const ws = new WebSocket(`${protocol}://${window.location.host}/ws/provisioning/${encodeURIComponent(runId)}`);
         setWsStatus('connecting');
-        ws.onopen = () => setWsStatus('live');
-        ws.onerror = () => setWsStatus('error');
-        ws.onclose = () => {
+        // Async: resolve token, then connect. We optimistically reserve the
+        // map slot by using a sentinel WebSocket that gets replaced once the
+        // real one is constructed. If that races, the cleanup loop above
+        // handles it on the next plan refresh.
+        void authedWebSocket(`/ws/provisioning/${encodeURIComponent(runId)}`).then((ws) => {
+          ws.onopen = () => setWsStatus('live');
+          ws.onerror = () => setWsStatus('error');
+          ws.onclose = () => {
+            setConnections((old) => {
+              const copy = new Map(old);
+              copy.delete(runId);
+              if (copy.size === 0) setWsStatus('offline');
+              return copy;
+            });
+          };
           setConnections((old) => {
             const copy = new Map(old);
-            copy.delete(runId);
-            if (copy.size === 0) setWsStatus('offline');
+            copy.set(runId, ws);
             return copy;
           });
-        };
-        next.set(runId, ws);
+        }).catch(() => {
+          setWsStatus('error');
+        });
       }
       return next;
     });
@@ -682,6 +887,41 @@ export default function PlatformStudio() {
     notify('Project deleted. Infrastructure teardown skipped.', 'ok');
   }
 
+  async function importProjectMigration(bundle: ProjectMigrationBundle, passphrase?: string): Promise<void> {
+    setIsMigrationImporting(true);
+    try {
+      const result = await api<{
+        projectId: string;
+        projectName: string;
+        importedRuns: number;
+        instanceVaultSync?: InstanceVaultSyncStatus;
+      }>('/api/projects/migration/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bundle, passphrase }),
+      });
+      await refreshProjects();
+      await refreshProjectDetail(result.projectId);
+      navigateStudio({
+        view: 'project',
+        activeProjectId: result.projectId,
+        projectSubtab: DEFAULT_PROJECT_SUBTAB,
+      });
+      setShowMigrationImport(false);
+      notify(`Imported ${result.projectName} (${result.importedRuns} runs).`, 'ok');
+      if (result.instanceVaultSync?.pending) {
+        notify(
+          result.instanceVaultSync.vaultSealed
+            ? 'Unlock the vault to review imported GitHub / Expo / Apple credentials for this project.'
+            : 'This import includes organization credentials that differ from this Studio — open the project banner to sync or dismiss.',
+          'ok',
+        );
+      }
+    } finally {
+      setIsMigrationImporting(false);
+    }
+  }
+
   const moduleCount = useMemo(() => Object.keys(projectDetail?.integrations || {}).length, [projectDetail]);
   const wsTone =
     wsStatus === 'live'
@@ -694,12 +934,53 @@ export default function PlatformStudio() {
 
   return (
     <div className={`flex h-screen w-screen overflow-hidden ${isDark ? 'dark' : ''}`}>
+      {authBarrier === 'loading' ? (
+        <div className="fixed inset-0 z-[68] bg-background/90 flex items-center justify-center text-sm text-muted-foreground">
+          Checking session…
+        </div>
+      ) : null}
+      {authBarrier === 'vaultIncompatible' ? (
+        <div className="fixed inset-0 z-[69] bg-background/95 flex items-center justify-center p-8">
+          <div className="max-w-lg rounded-2xl border border-destructive/30 bg-card p-6 shadow-xl space-y-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-6 h-6 text-destructive shrink-0 mt-0.5" />
+              <div className="space-y-2">
+                <h2 className="text-lg font-semibold">Studio data needs reset</h2>
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                  {vaultIncompatibleMessage ??
+                    'This install’s encrypted store is not compatible with the current passkey-only vault model.'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  From the repo root, run <code className="rounded bg-muted px-1.5 py-0.5">npm run reset:data</code> to
+                  wipe local Studio data, then restart the daemon and register a passkey again.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {(authBarrier === 'register' || authBarrier === 'passkey' || authBarrier === 'vaultUnlock') && (
+        <PasskeyAuthGate
+          mode={authBarrier === 'register' ? 'register' : 'unlock'}
+          lockReason={authBarrier === 'vaultUnlock' ? 'vault-sealed' : 'default'}
+          allowAlternateFlow={authBarrier !== 'vaultUnlock'}
+          onInstallReset={() => {
+            void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage);
+          }}
+          onComplete={() => {
+            setVaultIncompatibleMessage(null);
+            setAuthBarrier('none');
+            void refreshProjects().catch((error: Error) => notify(error.message, 'error'));
+          }}
+        />
+      )}
       <div className="flex h-full w-full bg-background text-foreground overflow-hidden">
         <Sidebar
           projects={projects}
           activeProjectId={activeProjectId}
           view={view}
           onShowCreate={() => setShowCreate(true)}
+          onShowImport={() => setShowMigrationImport(true)}
           onViewChange={(nextView) => navigateStudio({ view: nextView })}
           onSelectProject={(projectId) => {
             navigateStudio({
@@ -711,7 +992,7 @@ export default function PlatformStudio() {
 
         <main className="flex-1 overflow-y-auto bg-muted/20">
           <MainHeader
-            title={view === 'registry' ? 'Plugin Registry' : view === 'overview' ? 'Organization' : projectDetail?.project.name || 'Studio Core'}
+            title={view === 'registry' ? 'Plugin Registry' : view === 'overview' ? 'Organization' : projectDetail?.project.name || 'Studio Pro'}
             subtitle={
               view === 'registry'
                 ? pluginCatalog
@@ -775,6 +1056,11 @@ export default function PlatformStudio() {
                 onDeleteProject={() => {
                   void deleteProject().catch((error: Error) => notify(error.message, 'error'));
                 }}
+                onRefreshProjectDetail={async () => {
+                  if (activeProjectId) {
+                    await refreshProjectDetail(activeProjectId);
+                  }
+                }}
                 projectPlugins={(() => {
                   const int = projectDetail.integrations || {};
                   const keys = Object.keys(int);
@@ -799,12 +1085,9 @@ export default function PlatformStudio() {
                 activeProjectId={activeProjectId}
                 onOpenIntegration={setActiveIntegration}
                 onOpenProjectPlugin={(pluginId) => {
-                  // Plugin id → matching project subtab. Any of the four LLM
-                  // sibling plugins (`llm-openai`, `llm-anthropic`,
-                  // `llm-gemini`, `llm-custom`) jumps to the shared "AI / LLM"
-                  // tab; future per-plugin panels can extend this map without
-                  // touching RegistryView.
-                  const subtab: ProjectSubtab | null = pluginId.startsWith('llm-') ? 'llm' : null;
+                  // Plugin id → matching project subtab. LLM plugins now route
+                  // to Setup where their credential gates run.
+                  const subtab: ProjectSubtab | null = pluginId.startsWith('llm-') ? 'setup' : null;
                   if (!subtab || !activeProjectId) return false;
                   navigateStudio({
                     view: 'project',
@@ -842,6 +1125,13 @@ export default function PlatformStudio() {
             setCreateForm({ ...next, slug, domain: domainNorm });
           }}
           onCreate={() => void createProject().catch((error: Error) => notify(error.message, 'error'))}
+        />
+
+        <ProjectMigrationImportModal
+          show={showMigrationImport}
+          isImporting={isMigrationImporting}
+          onClose={() => setShowMigrationImport(false)}
+          onImport={importProjectMigration}
         />
 
         {toast && <Toast text={toast.text} tone={toast.tone} />}
