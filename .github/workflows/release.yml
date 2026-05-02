@@ -133,7 +133,11 @@ jobs:
           </plist>
           EOF
 
-          # ── entitlements (Node.js JIT + unsigned memory required) ──────────
+          # ── entitlements ──────────────────────────────────────────────────
+          # allow-jit + allow-unsigned-executable-memory: required for V8/Node.js
+          # disable-library-validation: required for pkg-extracted native addons
+          #   (.node files are extracted unsigned to ~/.cache/pkg; without this,
+          #   hardened runtime rejects dlopen due to Team ID mismatch)
           ENTITLEMENTS="$RUNNER_TEMP/entitlements.plist"
           cat > "$ENTITLEMENTS" << 'ENTEOF'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -142,6 +146,7 @@ jobs:
           <dict>
             <key>com.apple.security.cs.allow-jit</key><true/>
             <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+            <key>com.apple.security.cs.disable-library-validation</key><true/>
           </dict>
           </plist>
           ENTEOF
