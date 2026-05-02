@@ -114,11 +114,16 @@ jobs:
           rm -f $RUNNER_TEMP/cert.p12 $RUNNER_TEMP/notary.p8 $RUNNER_TEMP/notarize.zip
           security delete-keychain "$KEYCHAIN_PATH"
 
+      - name: Package as tarball (preserves execute bit)
+        run: |
+          chmod +x binaries/${{ matrix.artifact_name }}
+          tar -czf binaries/${{ matrix.artifact_name }}.tar.gz -C binaries ${{ matrix.artifact_name }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: binaries/${{ matrix.artifact_name }}
+          path: binaries/${{ matrix.artifact_name }}.tar.gz
 
   publish:
     needs: build
@@ -132,7 +137,7 @@ jobs:
       - name: Stage binaries for release
         run: |
           mkdir -p upload
-          find release-assets -type f \( -name 'studio-pro-*' -o -name 'studio-pro-*.exe' \) -exec cp {} upload/ \;
+          find release-assets -type f -name 'studio-pro-*.tar.gz' -exec cp {} upload/ \;
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -30,9 +30,9 @@ Download the latest release for your platform from the [GitHub Releases page](ht
 > **Intel Mac users:** Apple Silicon binaries run transparently under Rosetta 2 on Intel Macs, or build from source (see below).
 
 ```bash
-# macOS / Linux — make executable and run
-chmod +x studio-pro-macos
-./studio-pro-macos
+# macOS / Linux — extract and run (execute bit is preserved in the tarball)
+tar xzf studio-pro-aarch64-apple-darwin.tar.gz
+./studio-pro-aarch64-apple-darwin
 ```
 
 Studio opens in your browser at `http://localhost:3737`. On first run, register a passkey (Touch ID or security key) to seal the vault. All subsequent access requires the passkey — there are no recovery codes.
