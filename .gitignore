@@ -49,3 +49,6 @@ release/*.sig
 # pnpm artifacts (project uses npm)
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# Claude Code worktrees / session state
+.claude/worktrees/

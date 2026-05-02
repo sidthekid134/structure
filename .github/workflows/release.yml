@@ -40,8 +40,11 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install backend dependencies
         run: npm ci
+
+      - name: Install studio-ui dependencies
+        run: npm --prefix studio-ui ci
 
       - name: Embed bundled OAuth credentials
         env:
