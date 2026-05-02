@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   startAuthentication,
   startRegistration,
@@ -10,6 +10,8 @@ import { materializePrfEvalBinaryBuffers, encodePrfClientExtensionResultsForTran
 
 /** Must match `RESET_LOCAL_STUDIO_INSTALL_CONFIRM` in `src/studio/auth-webauthn-router.ts`. */
 const RESET_LOCAL_STUDIO_INSTALL_CONFIRM = 'RESET_LOCAL_STUDIO_INSTALL_FOR_NEW_PASSKEY';
+
+const ERASE_HOLD_MS = 5000;
 
 const PASSKEY_RECOVERY_CODES = new Set([
   'PASSKEY_NOT_REGISTERED',
@@ -38,6 +40,11 @@ export function PasskeyAuthGate({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showErasePanel, setShowErasePanel] = useState(false);
+  const [eraseHolding, setEraseHolding] = useState(false);
+  const [eraseProgress, setEraseProgress] = useState(0);
+  const eraseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const eraseStartRef = useRef<number>(0);
   /** From `/api/version` — true when this data dir has vault + wrappers + WebAuthn metadata to attempt decrypt. */
   const [vaultDecryptable, setVaultDecryptable] = useState<boolean | null>(null);
   const [webauthnUserNameHint, setWebauthnUserNameHint] = useState<string | null>(null);
@@ -74,6 +81,53 @@ export function PasskeyAuthGate({
   const serverSuggestedMode: GateMode = vaultDecryptable ? 'unlock' : 'register';
   const activeMode: GateMode =
     manualOverride ?? (vaultDecryptable === null ? mode : serverSuggestedMode);
+
+  useEffect(() => {
+    return () => {
+      if (eraseTimerRef.current) clearInterval(eraseTimerRef.current);
+    };
+  }, []);
+
+  function clearEraseHold(): void {
+    if (eraseTimerRef.current) {
+      clearInterval(eraseTimerRef.current);
+      eraseTimerRef.current = null;
+    }
+    setEraseHolding(false);
+    setEraseProgress(0);
+  }
+
+  function startEraseHold(): void {
+    setError(null);
+    setEraseHolding(true);
+    eraseStartRef.current = Date.now();
+    eraseTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - eraseStartRef.current;
+      const progress = Math.min(1, elapsed / ERASE_HOLD_MS);
+      setEraseProgress(progress);
+      if (elapsed >= ERASE_HOLD_MS) {
+        clearEraseHold();
+        void (async () => {
+          try {
+            const res = await fetch('/api/vault/destroy', {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ confirm: 'DESTROY_ALL_STUDIO_DATA' }),
+            });
+            if (res.ok) {
+              window.location.href = '/';
+            } else {
+              const body = (await res.json().catch(() => ({}))) as { error?: string };
+              setError(body.error ?? `Erase failed (${res.status}).`);
+            }
+          } catch (e) {
+            setError((e as Error).message);
+          }
+        })();
+      }
+    }, 50);
+  }
 
   const runRegister = useCallback(async () => {
     setBusy(true);
@@ -370,6 +424,49 @@ export function PasskeyAuthGate({
                 New folder — set up encrypted vault first
               </button>
             )}
+          </div>
+        ) : null}
+        {activeMode === 'unlock' ? (
+          <div className="pt-1 border-t border-border/40">
+            <button
+              type="button"
+              className="text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+              onClick={() => {
+                setShowErasePanel((v) => !v);
+                setEraseProgress(0);
+                setEraseHolding(false);
+              }}
+            >
+              {showErasePanel ? 'Hide' : "Don't have your passkey anymore?"}
+            </button>
+            {showErasePanel ? (
+              <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/5 p-4 space-y-3">
+                <p className="text-xs text-red-600 dark:text-red-400 leading-relaxed">
+                  <strong>Permanently erases</strong> your vault, credentials, and projects on this machine. Use this only
+                  if you've lost your passkey and need to start fresh.
+                </p>
+                <button
+                  type="button"
+                  className="relative w-full overflow-hidden rounded-lg border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-700 dark:text-red-400 select-none"
+                  onPointerDown={startEraseHold}
+                  onPointerUp={clearEraseHold}
+                  onPointerLeave={clearEraseHold}
+                  onPointerCancel={clearEraseHold}
+                >
+                  <span className="relative z-[1]">
+                    {eraseHolding
+                      ? `Hold… ${Math.ceil((1 - eraseProgress) * (ERASE_HOLD_MS / 1000))}s`
+                      : 'Hold to erase vault'}
+                  </span>
+                  {eraseHolding ? (
+                    <span
+                      className="absolute inset-0 bg-red-500/20 origin-left"
+                      style={{ transform: `scaleX(${eraseProgress})` }}
+                    />
+                  ) : null}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
