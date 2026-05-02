@@ -23,9 +23,11 @@ Download the latest release for your platform from the [GitHub Releases page](ht
 
 | Platform | Binary |
 |---|---|
-| macOS (arm64/x86_64) | `studio-pro-macos` |
-| Linux (x86_64) | `studio-pro-linux` |
-| Windows (x86_64) | `studio-pro-windows.exe` |
+| macOS (Apple Silicon) | `studio-pro-aarch64-apple-darwin` |
+| Linux x86_64 | `studio-pro-x86_64-unknown-linux-gnu` |
+| Linux arm64 | `studio-pro-aarch64-unknown-linux-gnu` |
+
+> **Intel Mac users:** Apple Silicon binaries run transparently under Rosetta 2 on Intel Macs, or build from source (see below).
 
 ```bash
 # macOS / Linux — make executable and run
