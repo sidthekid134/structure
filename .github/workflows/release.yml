@@ -111,29 +111,27 @@ jobs:
             iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
           fi
 
-          # Write Info.plist (LSUIElement=true → no Dock icon; app is a background server)
+          # Write Info.plist
           SHORT_VER="${VERSION#v}"
-          node -e "
-            const fs = require('fs');
-            const plist = \`<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
-          <plist version=\"1.0\">
+          cat > "$APP/Contents/Info.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
           <dict>
             <key>CFBundleName</key><string>Studio Pro</string>
             <key>CFBundleDisplayName</key><string>Studio Pro</string>
             <key>CFBundleIdentifier</key><string>com.sidmoparthi.studio-pro</string>
             <key>CFBundleExecutable</key><string>studio-pro</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleVersion</key><string>${process.env.SHORT_VER}</string>
-            <key>CFBundleShortVersionString</key><string>${process.env.SHORT_VER}</string>
+            <key>CFBundleVersion</key><string>${SHORT_VER}</string>
+            <key>CFBundleShortVersionString</key><string>${SHORT_VER}</string>
             <key>CFBundleIconFile</key><string>AppIcon</string>
             <key>LSMinimumSystemVersion</key><string>12.0</string>
             <key>NSHighResolutionCapable</key><true/>
-            <key>LSUIElement</key><true/>
+            <key>LSUIElement</key><false/>
           </dict>
-          </plist>\`;
-            fs.writeFileSync(process.env.APP + '/Contents/Info.plist', plist);
-          "
+          </plist>
+          EOF
 
           # ── sign .app ─────────────────────────────────────────────────────
           codesign --sign "$IDENTITY" \
