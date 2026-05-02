@@ -110,9 +110,6 @@ jobs:
             --issuer "$NOTARIZATION_KEY_ISSUER_ID" \
             --wait
 
-          # Staple the notarization ticket to the binary so it passes Gatekeeper offline
-          xcrun stapler staple "$BINARY"
-
           # Clean up
           rm -f $RUNNER_TEMP/cert.p12 $RUNNER_TEMP/notary.p8 $RUNNER_TEMP/notarize.zip
           security delete-keychain "$KEYCHAIN_PATH"
