@@ -19,13 +19,13 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            pkg_target: node20-macos-arm64
+            pkg_target: node22-macos-arm64
             artifact_name: studio-pro-aarch64-apple-darwin
           - os: ubuntu-latest
-            pkg_target: node20-linux-x64
+            pkg_target: node22-linux-x64
             artifact_name: studio-pro-x86_64-unknown-linux-gnu
           - os: ubuntu-latest
-            pkg_target: node20-linux-arm64
+            pkg_target: node22-linux-arm64
             artifact_name: studio-pro-aarch64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}
@@ -36,7 +36,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install backend dependencies
@@ -64,7 +64,7 @@ jobs:
 
       - name: Package CLI (single binary)
         env:
-          STUDIO_PKG_NODE: node20
+          STUDIO_PKG_NODE: node22
         run: node scripts/build-cli.js --target=${{ matrix.pkg_target }}
 
       # ── macOS: .app bundle → signed DMG → notarized → stapled ──────────────
