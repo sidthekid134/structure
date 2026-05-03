@@ -60,9 +60,11 @@ export function createLifecycleRouter(opts: LifecycleRouterOptions): Router {
     } catch {
       usersFile = null;
     }
+    const installDecryptable = installCanDecryptVault(opts.storeDir, opts.vaultPath, usersFile);
     const devAutoUnlock = isDevVaultAutoUnlockEnabled(process.env)
+      && installDecryptable
       && canUseDevAutoUnlockForStore(opts.storeDir);
-    const canDecryptVault = devAutoUnlock || installCanDecryptVault(opts.storeDir, opts.vaultPath, usersFile);
+    const canDecryptVault = installDecryptable;
     const needsVaultKeySetup = !canDecryptVault;
     res.json({
       app: 'studio-pro',

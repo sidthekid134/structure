@@ -31,7 +31,24 @@ import { SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, mintSession, revokeSes
 import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
 import { deriveDevVaultDek, isDevVaultAutoUnlockEnabled } from './dev-vault.js';
 
-const RP_NAME = 'Studio Pro';
+function profileLabelFromEnv(env: NodeJS.ProcessEnv): 'Dev' | 'Prod' {
+  const raw = env['STUDIO_PROFILE']?.trim().toLowerCase() ?? '';
+  if (raw === 'dev' || raw === 'development') return 'Dev';
+  return 'Prod';
+}
+
+function webauthnNaming(env: NodeJS.ProcessEnv): {
+  rpName: string;
+  userName: string;
+  userDisplayName: string;
+} {
+  const label = profileLabelFromEnv(env);
+  return {
+    rpName: `Studio Core ${label}`,
+    userName: `studio-core-${label.toLowerCase()}`,
+    userDisplayName: `Studio Core ${label}`,
+  };
+}
 
 /** Body.confirm for `POST /api/auth/reset-local-data` (must match client). */
 const RESET_LOCAL_STUDIO_INSTALL_CONFIRM = 'RESET_LOCAL_STUDIO_INSTALL_FOR_NEW_PASSKEY';
@@ -208,6 +225,7 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
   const router = Router();
   const session = getVaultSession();
   const devAutoUnlockEnabled = isDevVaultAutoUnlockEnabled(process.env);
+  const naming = webauthnNaming(process.env);
 
   router.post('/auth/register/options', async (req: Request, res: Response) => {
     sweepMaps();
@@ -241,10 +259,10 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
     const prfSalt = crypto.randomBytes(32);
 
     const options = await generateRegistrationOptions({
-      rpName: RP_NAME,
+      rpName: naming.rpName,
       rpID: rpId,
-      userName: 'studio-local-user',
-      userDisplayName: 'Studio Pro User',
+      userName: naming.userName,
+      userDisplayName: naming.userDisplayName,
       userID: userIDbytes,
       authenticatorSelection: {
         // `required` is stricter than SimpleWebAuthn defaults and can exclude some platform
@@ -351,7 +369,7 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
       const users: UsersFile = {
         version: 1,
         userID: state.userIDB64,
-        userName: 'studio-local-user',
+        userName: naming.userName,
         credentials: [stored],
       };
       saveUsers(storeDir, users);
@@ -533,7 +551,7 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
     const users: UsersFile = {
       version: 1,
       userID: pending.userIDB64,
-      userName: 'studio-local-user',
+      userName: naming.userName,
       credentials: [stored],
     };
     saveUsers(pending.storeDir, users);
