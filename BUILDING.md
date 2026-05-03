@@ -41,7 +41,9 @@ GCP OAuth is optional — all other integrations (EAS, GitHub, Apple, etc.) work
 npm run dev:full
 ```
 
-Runs `tsc-watch` on the backend and Vite watch on `studio-ui`, emitting the UI into `src/studio/static/`. Open the URL logged by the server (default `http://localhost:3737`; the UI redirects `127.0.0.1` to `localhost` for WebAuthn).
+Runs `tsc-watch` on the backend and Vite watch on `studio-ui`, emitting the UI into `src/studio/static/`.
+The dev script now sets `STUDIO_PROFILE=dev` and `STUDIO_PORT=3738` so local source dev does not collide with a production install on the same machine.
+Open the URL logged by the server (default `http://localhost:3738`; the UI redirects `127.0.0.1` to `localhost` for WebAuthn).
 
 ## Production build (Node)
 

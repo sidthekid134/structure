@@ -17,7 +17,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import envPaths from 'env-paths';
 import { WebSocketServer } from 'ws';
 import { EventLog } from '../orchestration/event-log.js';
 import { createApiRouter } from './api.js';
@@ -28,6 +27,7 @@ import { createWebAuthnRouter } from './auth-webauthn-router.js';
 import { createLifecycleRouter } from './lifecycle-router.js';
 import { VaultManager } from '../vault.js';
 import { getVaultSession, VaultSealedError } from './vault-session.js';
+import { resolveStudioStoreDir } from './store-dir.js';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -92,8 +92,7 @@ export class StudioServer {
   constructor(private readonly options: StudioServerOptions = {}) {
     const storeDir =
       options.storeDir ??
-      process.env['STUDIO_STORE_DIR'] ??
-      envPaths('studio-pro', { suffix: '' }).data;
+      resolveStudioStoreDir(process.env);
 
     // Lock down newly-created files: vault, token, event log, secret stores
     // all become 0600 / 0700 by default. Defense-in-depth against another
@@ -527,6 +526,8 @@ function isLoopbackAddress(host: string): boolean {
 //   STUDIO_HOST          Bind host (always 127.0.0.1 unless explicitly
 //                        overridden via STUDIO_ALLOW_PUBLIC_BIND=1).
 //   STUDIO_STORE_DIR     Persistent state directory (vault, token, SQLite).
+//   STUDIO_PROFILE       Optional profile suffix for OS app-data isolation
+//                        (e.g. "dev" => studio-pro-dev data dir).
 //   STUDIO_PORT_FILE     If set, daemon writes the chosen port here.
 //   STUDIO_SERVE_UI_FROM_SOURCE `1` serves UI from src/studio/static + live reload.
 //

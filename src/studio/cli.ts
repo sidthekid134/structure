@@ -26,20 +26,34 @@ import { StudioServer } from './server.js';
 import { registerPendingHandoffToken } from './auth.js';
 import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
 
+const LOCK_FILE_NAME = '.studio-pro.lock';
+const PORT_FILE_NAME = '.studio-pro.port';
+
 function defaultStoreDir(): string {
-  return process.env['STUDIO_STORE_DIR'] ?? envPaths('studio-pro', { suffix: '' }).data;
+  const explicit = process.env['STUDIO_STORE_DIR'];
+  if (explicit) return explicit;
+  const profile = process.env['STUDIO_PROFILE']?.trim();
+  const appName = profile ? `studio-pro-${profile}` : 'studio-pro';
+  return envPaths(appName, { suffix: '' }).data;
 }
 
-function acquireLock(storeDir: string): void {
-  const lockPath = path.join(storeDir, '.studio-pro.lock');
+function lockFilePath(storeDir: string): string {
+  return path.join(storeDir, LOCK_FILE_NAME);
+}
+
+function portFilePath(storeDir: string): string {
+  return path.join(storeDir, PORT_FILE_NAME);
+}
+
+function acquireLock(storeDir: string): { acquired: true } | { acquired: false; pid: number } {
+  const lockPath = lockFilePath(storeDir);
   if (fs.existsSync(lockPath)) {
     const raw = fs.readFileSync(lockPath, 'utf8').trim();
     const oldPid = parseInt(raw, 10);
     if (Number.isFinite(oldPid)) {
       try {
         process.kill(oldPid, 0);
-        console.error(`studio-pro: another instance is running (pid ${oldPid}).`);
-        process.exit(1);
+        return { acquired: false, pid: oldPid };
       } catch (e: unknown) {
         const err = e as NodeJS.ErrnoException;
         if (err.code !== 'ESRCH') throw e;
@@ -52,11 +66,34 @@ function acquireLock(storeDir: string): void {
     }
   }
   fs.writeFileSync(lockPath, `${process.pid}\n`, { mode: 0o600 });
+  return { acquired: true };
 }
 
 function releaseLock(storeDir: string): void {
   try {
-    fs.unlinkSync(path.join(storeDir, '.studio-pro.lock'));
+    fs.unlinkSync(lockFilePath(storeDir));
+  } catch {
+    /* ignore */
+  }
+}
+
+function writePortFile(storeDir: string, port: number): void {
+  fs.writeFileSync(portFilePath(storeDir), `${port}\n`, { mode: 0o600 });
+}
+
+function readPortFile(storeDir: string): number | null {
+  try {
+    const raw = fs.readFileSync(portFilePath(storeDir), 'utf8').trim();
+    const port = parseInt(raw, 10);
+    return Number.isFinite(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearPortFile(storeDir: string): void {
+  try {
+    fs.unlinkSync(portFilePath(storeDir));
   } catch {
     /* ignore */
   }
@@ -75,20 +112,38 @@ function openUrl(url: string): void {
 async function cmdStart(): Promise<void> {
   const storeDir = defaultStoreDir();
   fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
-  acquireLock(storeDir);
-  const handoff = crypto.randomBytes(24).toString('base64url');
-  registerPendingHandoffToken(handoff);
   const rawPort = process.env['STUDIO_PORT'];
   const parsedPort = rawPort !== undefined ? parseInt(rawPort, 10) : NaN;
+  const lock = acquireLock(storeDir);
+  if (!lock.acquired) {
+    const runningPort = readPortFile(storeDir) ?? (Number.isFinite(parsedPort) ? parsedPort : 3737);
+    const runningUrl = `http://localhost:${runningPort}/`;
+    console.error(`studio-pro: another instance is running (pid ${lock.pid}).`);
+    console.log(`Studio Pro: ${runningUrl}`);
+    if (process.env['STUDIO_NO_OPEN'] !== '1') {
+      openUrl(runningUrl);
+    }
+    return;
+  }
+
+  const handoff = crypto.randomBytes(24).toString('base64url');
+  registerPendingHandoffToken(handoff);
   const studio = new StudioServer({
     storeDir,
     host: process.env['STUDIO_HOST'] ?? '127.0.0.1',
     port: Number.isFinite(parsedPort) ? parsedPort : 3737,
   });
-  await studio.listen();
+  try {
+    await studio.listen();
+  } catch (e) {
+    clearPortFile(storeDir);
+    releaseLock(storeDir);
+    throw e;
+  }
   const addr = studio.server.address();
   const boundPort =
     typeof addr === 'object' && addr !== null && 'port' in addr ? (addr as import('net').AddressInfo).port : 3737;
+  writePortFile(storeDir, boundPort);
   const url = `http://localhost:${boundPort}/#handoff=${encodeURIComponent(handoff)}`;
   console.log(`Studio Pro: ${url}`);
   if (process.env['STUDIO_NO_OPEN'] !== '1') {
@@ -97,6 +152,7 @@ async function cmdStart(): Promise<void> {
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.once(sig, () => {
       studio.close().finally(() => {
+        clearPortFile(storeDir);
         releaseLock(storeDir);
         process.exit(0);
       });

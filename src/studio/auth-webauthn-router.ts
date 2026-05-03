@@ -29,6 +29,7 @@ import {
 import { writeVaultMeta } from './vault-meta.js';
 import { SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, mintSession, revokeSession } from './auth.js';
 import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
+import { deriveDevVaultDek, isDevVaultAutoUnlockEnabled } from './dev-vault.js';
 
 const RP_NAME = 'Studio Pro';
 
@@ -206,6 +207,7 @@ function prfAuthOutput(res: { clientExtensionResults?: unknown }): string | unde
 export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManager): Router {
   const router = Router();
   const session = getVaultSession();
+  const devAutoUnlockEnabled = isDevVaultAutoUnlockEnabled(process.env);
 
   router.post('/auth/register/options', async (req: Request, res: Response) => {
     sweepMaps();
@@ -325,7 +327,7 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
     const cred = verified.registrationInfo.credential;
     const credentialID = cred.id;
     const pubB64 = Buffer.from(cred.publicKey).toString('base64');
-    const dek = crypto.randomBytes(32);
+    const dek = devAutoUnlockEnabled ? deriveDevVaultDek(storeDir) : crypto.randomBytes(32);
 
     if (prfOut) {
       upsertWrappedDek(storeDir, credentialID, prfOut, dek);
@@ -710,8 +712,24 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
 
     assertionChallenges.delete(assertionToken);
 
-    vaultManager.loadVaultFromMasterKey(dek);
-    session.setVaultDEK(dek);
+    let effectiveDek = dek;
+    if (devAutoUnlockEnabled) {
+      const devDek = deriveDevVaultDek(storeDir);
+      if (!devDek.equals(dek)) {
+        try {
+          const data = vaultManager.loadVaultFromMasterKey(dek);
+          vaultManager.saveVaultFromMasterKey(devDek, data);
+          upsertWrappedDek(storeDir, stored.credentialID, prfOut, devDek);
+          effectiveDek = devDek;
+        } catch (e) {
+          res.status(500).json({ error: (e as Error).message });
+          return;
+        }
+      }
+    }
+
+    vaultManager.loadVaultFromMasterKey(effectiveDek);
+    session.setVaultDEK(effectiveDek);
 
     const expires = Date.now() + SESSION_COOKIE_MAX_AGE_SEC * 1000;
     mintCookie(res);

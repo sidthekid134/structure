@@ -16,6 +16,11 @@ import { loadUsers, type UsersFile } from './users-store.js';
 import { effectiveVaultKeyMode } from './vault-meta.js';
 import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
 import { loadKeyWrappers } from './key-wrappers.js';
+import {
+  canUseDevAutoUnlockForStore,
+  ensureDevVaultMeta,
+  isDevVaultAutoUnlockEnabled,
+} from './dev-vault.js';
 
 function installCanDecryptVault(
   storeDir: string,
@@ -55,12 +60,15 @@ export function createLifecycleRouter(opts: LifecycleRouterOptions): Router {
     } catch {
       usersFile = null;
     }
-    const canDecryptVault = installCanDecryptVault(opts.storeDir, opts.vaultPath, usersFile);
+    const devAutoUnlock = isDevVaultAutoUnlockEnabled(process.env)
+      && canUseDevAutoUnlockForStore(opts.storeDir);
+    const canDecryptVault = devAutoUnlock || installCanDecryptVault(opts.storeDir, opts.vaultPath, usersFile);
     const needsVaultKeySetup = !canDecryptVault;
     res.json({
       app: 'studio-pro',
       appVersion: opts.appVersion ?? process.env['npm_package_version'] ?? 'dev',
       platformCoreVersion: PLATFORM_CORE_VERSION,
+      studioProfile: process.env['STUDIO_PROFILE']?.trim() || 'default',
       apiVersion: 1,
       pid: process.pid,
       startedAt: process.uptime() * 1000,
@@ -68,6 +76,8 @@ export function createLifecycleRouter(opts: LifecycleRouterOptions): Router {
       vaultExists: opts.vaultPath ? fs.existsSync(opts.vaultPath) : null,
       /** True when this install has an encrypted vault and the on-disk material to derive the DEK (vault + key wrappers + WebAuthn metadata). */
       canDecryptVault,
+      /** Local dev-only mode: encrypted vault with deterministic auto-unlock DEK. */
+      devAutoUnlock,
       /** First-time flow: no decryptable vault yet (create vault + WebAuthn binding). */
       needsVaultKeySetup,
       /** @deprecated Use needsVaultKeySetup */
@@ -88,6 +98,9 @@ export function createLifecycleRouter(opts: LifecycleRouterOptions): Router {
     res.setHeader('Cache-Control', 'no-store');
     let vaultKeyMode: string;
     try {
+      if (isDevVaultAutoUnlockEnabled(process.env) && canUseDevAutoUnlockForStore(opts.storeDir)) {
+        ensureDevVaultMeta(opts.storeDir);
+      }
       vaultKeyMode = effectiveVaultKeyMode(opts.storeDir);
     } catch (e) {
       res.status(503).json({

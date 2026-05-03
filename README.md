@@ -51,7 +51,7 @@ npm run ui:install
 npm run dev:full
 ```
 
-Open `http://localhost:3737`. In development mode, a dev session is created automatically so you are not prompted for a passkey on every reload. To test passkey registration, open `http://localhost:3737?passkey=1` once.
+Open `http://localhost:3738`. The development scripts set `STUDIO_PROFILE=dev` + `STUDIO_PORT=3738` by default so your local source workflow stays isolated from a production install on the same machine. In development mode, a dev session is created automatically so you are not prompted for a passkey on every reload. To test passkey registration, open `http://localhost:3738?passkey=1` once.
 
 See [BUILDING.md](./BUILDING.md) for building the CLI binary locally.
 
@@ -77,6 +77,7 @@ Full details: [docs/security.md](./docs/security.md) · [docs/privacy.md](./docs
 | Variable | Default | Purpose |
 |---|---|---|
 | `STUDIO_STORE_DIR` | OS app data dir for `studio-pro` | Override data directory |
+| `STUDIO_PROFILE` | unset | Isolate app data per profile (for example `dev` -> app data dir for `studio-pro-dev`) |
 | `STUDIO_PORT` | `3737` | Listen port |
 | `STUDIO_HOST` | `127.0.0.1` | Bind address |
 | `STUDIO_SERVE_UI_FROM_SOURCE` | unset | `1` serves dashboard from source (dev only) |

@@ -13,6 +13,12 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getVaultSession } from './vault-session.js';
+import {
+  canUseDevAutoUnlockForStore,
+  deriveDevVaultDek,
+  ensureDevVaultMeta,
+  isDevVaultAutoUnlockEnabled,
+} from './dev-vault.js';
 
 const TOKEN_FILE_NAME = 'api-token';
 const TOKEN_BYTES = 32;
@@ -283,6 +289,18 @@ export function createAuthMiddlewares(opts: AuthOptions): {
       res.status(404).json({ error: 'Not found.' });
       return;
     }
+
+    if (
+      !isTest &&
+      isDevVaultAutoUnlockEnabled(process.env) &&
+      canUseDevAutoUnlockForStore(opts.storeDir)
+    ) {
+      // Keep vault encrypted at rest in dev, but auto-install a deterministic
+      // DEK so local workflows do not require passkey unlock ceremonies.
+      ensureDevVaultMeta(opts.storeDir);
+      getVaultSession().setVaultDEK(deriveDevVaultDek(opts.storeDir));
+    }
+
     const sid = mintSession();
     appendCookie(res, SESSION_COOKIE_NAME, sid, SESSION_COOKIE_MAX_AGE_SEC);
     res.json({ ok: true });
