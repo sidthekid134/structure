@@ -88,6 +88,9 @@ const SESSION_BYPASS_PATHS = new Set<string>([
   '/auth/register/verify',
   '/auth/assert/options',
   '/auth/assert/verify',
+  // Vault destroy is used from the auth gate when the user has lost their
+  // passkey and needs to wipe local data without an active session.
+  '/vault/destroy',
 ]);
 
 export interface AuthOptions {

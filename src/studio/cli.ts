@@ -8,6 +8,15 @@
 // disables the dev-session shortcut in src/studio/auth.ts.
 process.env['NODE_ENV'] ??= 'production';
 
+// gaxios (used by google-auth-library) checks `typeof window !== 'undefined'`
+// to choose between window.fetch and a dynamic `import('node-fetch')`. In the
+// pkg bundle, node-fetch (ESM-only v3) is absent; Node.js 22 has a built-in
+// fetch. Satisfy the check so gaxios uses native fetch and never attempts the
+// dynamic import.
+if (typeof globalThis.fetch !== 'undefined' && typeof (globalThis as Record<string, unknown>)['window'] === 'undefined') {
+  (globalThis as Record<string, unknown>)['window'] = { fetch: globalThis.fetch.bind(globalThis) };
+}
+
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
