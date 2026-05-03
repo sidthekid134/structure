@@ -34,6 +34,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free disk space (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          sudo rm -rf /Library/Developer/CoreSimulator/Runtimes/ || true
+          sudo rm -rf /Applications/Xcode_*.app || true
+          df -h
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
