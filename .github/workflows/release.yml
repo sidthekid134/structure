@@ -67,6 +67,23 @@ jobs:
           STUDIO_PKG_NODE: node22
         run: node scripts/build-cli.js --target=${{ matrix.pkg_target }}
 
+      - name: Free disk space before DMG (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          du -sh node_modules studio-ui/node_modules .pkg-cache 2>/dev/null || true
+
+          # DMG creation/notarization only needs the built binary + source files
+          # used for icon conversion. Drop heavy build caches and dependencies.
+          rm -rf node_modules
+          rm -rf studio-ui/node_modules
+          rm -rf .pkg-cache
+          rm -rf "$HOME/.npm/_cacache"
+
+          echo "Disk usage after cleanup:"
+          df -h
+
       # ── macOS: .app bundle → signed DMG → notarized → stapled ──────────────
       - name: Build signed DMG (macOS only)
         if: runner.os == 'macOS'
@@ -173,6 +190,8 @@ jobs:
             -ov \
             -format UDZO \
             "$DMG_PATH"
+
+          rm -rf "$DMG_STAGING"
 
           # ── sign DMG ──────────────────────────────────────────────────────
           codesign --sign "$IDENTITY" --timestamp "$DMG_PATH"
