@@ -178,20 +178,35 @@ jobs:
             "$APP"
 
           # ── create DMG ────────────────────────────────────────────────────
+          # Avoid intermittent ENOSPC on hosted macOS by creating a fixed-size
+          # HFS+ RW image first, then converting to compressed UDZO.
           DMG_STAGING="$RUNNER_TEMP/dmg_staging"
-          mkdir -p "$DMG_STAGING"
+          DMG_MOUNT="$RUNNER_TEMP/dmg_mount"
+          RW_DMG="$RUNNER_TEMP/Studio-Pro-${VERSION}-rw.dmg"
+          DMG_PATH="binaries/Studio-Pro-${VERSION}.dmg"
+          mkdir -p "$DMG_STAGING" "$DMG_MOUNT"
           cp -R "$APP" "$DMG_STAGING/"
           ln -s /Applications "$DMG_STAGING/Applications"
 
-          DMG_PATH="binaries/Studio-Pro-${VERSION}.dmg"
-          hdiutil create \
-            -volname "Studio Pro" \
-            -srcfolder "$DMG_STAGING" \
-            -ov \
-            -format UDZO \
-            "$DMG_PATH"
+          STAGING_KB=$(du -sk "$DMG_STAGING" | awk '{print $1}')
+          DMG_SIZE_MB=$(( (STAGING_KB / 1024) + 256 ))
+          echo "Creating RW DMG (${DMG_SIZE_MB}MB) from ${STAGING_KB}KB staging data"
 
-          rm -rf "$DMG_STAGING"
+          hdiutil create \
+            -size "${DMG_SIZE_MB}m" \
+            -fs HFS+ \
+            -volname "Studio Pro" \
+            -ov \
+            "$RW_DMG"
+
+          hdiutil attach "$RW_DMG" -mountpoint "$DMG_MOUNT" -nobrowse -noverify
+          cp -R "$DMG_STAGING/." "$DMG_MOUNT/"
+          sync
+          hdiutil detach "$DMG_MOUNT"
+
+          hdiutil convert "$RW_DMG" -format UDZO -ov -o "$DMG_PATH"
+
+          rm -rf "$DMG_STAGING" "$DMG_MOUNT" "$RW_DMG"
 
           # ── sign DMG ──────────────────────────────────────────────────────
           codesign --sign "$IDENTITY" --timestamp "$DMG_PATH"

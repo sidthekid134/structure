@@ -1,10 +1,38 @@
-import * as childProcess from 'child_process';
 import { VaultManager } from '../vault.js';
 import {
   ProjectManager,
   IntegrationConfigRecord,
 } from '../studio/project-manager.js';
 import { getVaultUnlock as resolveVaultUnlock } from '../studio/vault-session.js';
+
+const EXPO_GRAPHQL_URL =
+  process.env['EXPO_STAGING'] === '1' || process.env['EXPO_STAGING'] === 'true'
+    ? 'https://staging-api.expo.dev/graphql'
+    : 'https://api.expo.dev/graphql';
+
+const CURRENT_ACTOR_QUERY = `
+  query StudioEasConnectionCurrentActor {
+    meActor {
+      __typename
+      id
+      accounts {
+        id
+        name
+      }
+    }
+  }
+`;
+
+interface CurrentActorResponse {
+  data?: {
+    meActor?: {
+      __typename?: string | null;
+      id?: string | null;
+      accounts?: Array<{ id?: string | null; name?: string | null }> | null;
+    } | null;
+  };
+  errors?: Array<{ message?: string | null }> | null;
+}
 
 export interface ExpoConnectionDetails {
   userId: string;
@@ -83,54 +111,45 @@ export class EasConnectionService {
   }
 
   async fetchExpoConnectionDetails(token: string): Promise<ExpoConnectionDetails> {
-    const stdout = await new Promise<string>((resolve, reject) => {
-      childProcess.execFile(
-        'npx',
-        ['eas-cli', 'whoami', '--non-interactive'],
-        {
-          env: {
-            ...process.env,
-            EXPO_TOKEN: token,
-          },
-          timeout: 30_000,
-          maxBuffer: 1024 * 1024,
-        },
-        (error, out, stderr) => {
-          if (error) {
-            const details = stderr?.trim() || out?.trim() || error.message;
-            reject(new Error(`eas-cli whoami failed: ${details}`));
-            return;
-          }
-          resolve(out);
-        },
-      );
+    const response = await fetch(EXPO_GRAPHQL_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'User-Agent': 'StructureStudio/1.0 (EAS connection validation)',
+      },
+      body: JSON.stringify({ query: CURRENT_ACTOR_QUERY, variables: {} }),
     });
 
-    const lines = stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const username = lines.find(
-      (line) =>
-        line !== 'Accounts:' &&
-        !line.startsWith('★') &&
-        !line.startsWith('To upgrade') &&
-        !line.startsWith('Proceeding with outdated version'),
-    );
-    if (!username) {
-      throw new Error(`Unable to parse username from eas-cli output: ${stdout}`);
+    if (!response.ok) {
+      throw new Error(`Expo token validation failed: HTTP ${response.status} ${response.statusText}`);
     }
 
-    const accountNames = lines
-      .map((line) => {
-        const match = line.match(/^[•*-]\s*(.+?)\s+\(Role:/);
-        return match?.[1]?.trim() ?? null;
-      })
-      .filter((value): value is string => Boolean(value));
+    const payload = (await response.json()) as CurrentActorResponse;
+    if (payload.errors && payload.errors.length > 0) {
+      const message = payload.errors
+        .map((item) => item.message?.trim() ?? '')
+        .filter((item) => item.length > 0)
+        .join('; ');
+      throw new Error(`Expo token validation failed: ${message || 'Unknown GraphQL error'}`);
+    }
+
+    const actor = payload.data?.meActor;
+    if (!actor) {
+      throw new Error('Expo token validation failed: GraphQL response did not include meActor.');
+    }
+
+    const accountNames = (actor.accounts ?? [])
+      .map((entry) => entry.name?.trim() ?? '')
+      .filter((name) => name.length > 0);
+
+    const username = accountNames[0];
+    if (!username) {
+      throw new Error('Expo token validation failed: token has no accessible Expo accounts.');
+    }
 
     return {
-      // Use username as stable identifier in Studio since whoami output does not expose UUID.
-      userId: username,
+      userId: actor.id?.trim() || username,
       username,
       accountNames,
     };

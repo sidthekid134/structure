@@ -12,7 +12,6 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as childProcess from 'child_process';
 import { StudioServer } from '../studio/server';
 import { WsHandler } from '../studio/ws-handler';
 import { EventLog } from '../orchestration/event-log';
@@ -21,14 +20,6 @@ import { writeVaultMeta } from '../studio/vault-meta';
 import { getVaultSession } from '../studio/vault-session';
 import { GitHubConnectionService } from '../core/github-connection';
 import { WebSocketServer, WebSocket } from 'ws';
-
-jest.mock('child_process', () => {
-  const actual = jest.requireActual('child_process') as typeof import('child_process');
-  return {
-    ...actual,
-    execFile: jest.fn(actual.execFile),
-  };
-});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -355,34 +346,20 @@ describe('StudioServer', () => {
   });
 
   it('stores EAS token and syncs org integration', async () => {
-    const execFileMock = childProcess.execFile as unknown as jest.Mock;
-    const actualExecFile = jest.requireActual('child_process').execFile as typeof childProcess.execFile;
-    execFileMock.mockImplementation(
-      (
-        _file: string,
-        _args: readonly string[],
-        _options: childProcess.ExecFileOptions,
-        callback?: (
-          error: childProcess.ExecFileException | null,
-          stdout: string,
-          stderr: string,
-        ) => void,
-      ) => {
-        callback?.(
-          null,
-          [
-            'sidmoparthi',
-            '',
-            'Accounts:',
-            '• sidmoparthi (Role: Owner)',
-            '• bite-food-journal (Role: Owner)',
-            '',
-          ].join('\n'),
-          '',
-        );
-        return {} as childProcess.ChildProcess;
-      },
-    );
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          meActor: {
+            id: 'expo-user-id-123',
+            accounts: [
+              { id: 'account-1', name: 'sidmoparthi' },
+              { id: 'account-2', name: 'bite-food-journal' },
+            ],
+          },
+        },
+      }),
+    } as Response);
 
     try {
       const connection = await postJsonWithStatus(
@@ -406,7 +383,7 @@ describe('StudioServer', () => {
       const passphrase = testVaultDek;
       expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBe('test-token');
       expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBe('sidmoparthi');
-      expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBe('sidmoparthi');
+      expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBe('expo-user-id-123');
       expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBe(
         JSON.stringify(['sidmoparthi', 'bite-food-journal']),
       );
@@ -415,38 +392,22 @@ describe('StudioServer', () => {
       expect(vaultRaw).not.toContain('test-token');
       expect(vaultRaw).not.toContain('sidmoparthi');
     } finally {
-      execFileMock.mockImplementation(actualExecFile);
+      fetchSpy.mockRestore();
     }
   });
 
   it('disables EAS connection and clears connection metadata', async () => {
-    const execFileMock = childProcess.execFile as unknown as jest.Mock;
-    const actualExecFile = jest.requireActual('child_process').execFile as typeof childProcess.execFile;
-    execFileMock.mockImplementation(
-      (
-        _file: string,
-        _args: readonly string[],
-        _options: childProcess.ExecFileOptions,
-        callback?: (
-          error: childProcess.ExecFileException | null,
-          stdout: string,
-          stderr: string,
-        ) => void,
-      ) => {
-        callback?.(
-          null,
-          [
-            'sidmoparthi',
-            '',
-            'Accounts:',
-            '• sidmoparthi (Role: Owner)',
-            '',
-          ].join('\n'),
-          '',
-        );
-        return {} as childProcess.ChildProcess;
-      },
-    );
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: {
+          meActor: {
+            id: 'expo-user-id-123',
+            accounts: [{ id: 'account-1', name: 'sidmoparthi' }],
+          },
+        },
+      }),
+    } as Response);
 
     try {
       await postJsonWithStatus(
@@ -475,7 +436,7 @@ describe('StudioServer', () => {
       expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBeUndefined();
       expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBeUndefined();
     } finally {
-      execFileMock.mockImplementation(actualExecFile);
+      fetchSpy.mockRestore();
     }
   });
 
