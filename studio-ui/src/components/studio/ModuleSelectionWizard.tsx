@@ -174,6 +174,27 @@ function templateIcon(templateId: ProjectTemplateId) {
   return Layers;
 }
 
+function templateBadge(templateId: ProjectTemplateId): { label: string; className: string } {
+  if (templateId === 'mobile-app') {
+    return {
+      label: 'Verified',
+      className:
+        'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    };
+  }
+  if (templateId === 'custom') {
+    return {
+      label: 'Experimental',
+      className:
+        'border-violet-500/35 bg-violet-500/10 text-violet-700 dark:text-violet-300',
+    };
+  }
+  return {
+    label: 'TBD',
+    className: 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+  };
+}
+
 /**
  * Compute the depth tier for each module in the DAG (0 = no deps, 1 =
  * depends on tier-0, etc.). Pure: takes the modules slice in.
@@ -466,6 +487,7 @@ export function ModuleSelectionWizard({
             const Icon = templateIcon(template.id);
             const active = selectedTemplateId === template.id;
             const count = template.id === 'custom' ? 0 : resolveDependencies(template.modules, modules).length;
+            const badge = templateBadge(template.id);
             return (
               <button
                 key={template.id}
@@ -495,7 +517,14 @@ export function ModuleSelectionWizard({
                     <span className="h-6 w-6 rounded-full border border-dashed border-border" aria-hidden />
                   )}
                 </div>
-                <p className="text-sm font-bold text-foreground">{template.label}</p>
+                <div className="mt-0.5 flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold text-foreground">{template.label}</p>
+                  <span
+                    className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${badge.className}`}
+                  >
+                    {badge.label}
+                  </span>
+                </div>
                 <p className="text-xs text-muted-foreground mt-1 leading-snug line-clamp-3">{template.description}</p>
                 <div className="mt-3 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
                   <LayoutGrid size={12} />
