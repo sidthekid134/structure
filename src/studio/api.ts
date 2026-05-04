@@ -4272,6 +4272,32 @@ export function createApiRouter(
           };
         }
 
+        if (nodeKey === 'user:provide-cloudflare-token') {
+          const cloudflareToken = resourcesProduced?.['cloudflare_token']?.trim();
+          if (!cloudflareToken) {
+            res.status(400).json({ error: 'Missing "cloudflare_token" in resourcesProduced.' });
+            return;
+          }
+          const cloudflareClient = new HttpCloudflareApiClient(cloudflareToken);
+          const verified = await cloudflareClient.verifyToken();
+          if (verified.status.toLowerCase() !== 'active') {
+            res.status(400).json({
+              error: `Cloudflare token is not active (status=${verified.status}).`,
+            });
+            return;
+          }
+          credentialService.storeCredential({
+            project_id: projectId,
+            credential_type: 'cloudflare_token',
+            value: cloudflareToken,
+            metadata: { scope: 'project', source: 'provisioning_plan_user_action_complete' },
+          });
+          normalizedResourcesProduced = {
+            ...(resourcesProduced ?? {}),
+            cloudflare_token: '[stored in vault]',
+          };
+        }
+
         // LLM credential-upload gates validate credentials immediately (live
         // list-models call) so there is no standalone "verify credentials" step.
         const llmUserActionToKind: Record<string, LlmKind> = {
