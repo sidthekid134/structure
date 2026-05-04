@@ -136,6 +136,7 @@ async function refreshAuthBarrierState(
   setAuthBarrier: Dispatch<SetStateAction<AuthBarrierState>>,
   setVaultIncompatibleMessage: Dispatch<SetStateAction<string | null>>,
   setStudioProfile: Dispatch<SetStateAction<string>>,
+  setAppVersion: Dispatch<SetStateAction<string>>,
 ): Promise<'none' | 'register' | 'passkey' | 'vaultUnlock' | 'vaultIncompatible'> {
   try {
     const ver = (await fetch('/api/version', { credentials: 'include' }).then((r) => r.json())) as {
@@ -144,8 +145,10 @@ async function refreshAuthBarrierState(
       hasCredentials?: boolean;
       canDecryptVault?: boolean;
       studioProfile?: string;
+      appVersion?: string;
     };
     setStudioProfile(typeof ver.studioProfile === 'string' && ver.studioProfile.trim() ? ver.studioProfile : 'default');
+    setAppVersion(typeof ver.appVersion === 'string' && ver.appVersion.trim() ? ver.appVersion : 'dev');
     const canDecryptVault = Boolean(ver.canDecryptVault ?? ver.hasCredentials);
     const needsVaultKeySetup = Boolean(ver.needsVaultKeySetup ?? ver.needsRegistration ?? !canDecryptVault);
     const sess = (await fetch('/api/auth/session', { credentials: 'include' }).then((r) => r.json())) as {
@@ -233,6 +236,7 @@ export default function PlatformStudio() {
   const [isMigrationImporting, setIsMigrationImporting] = useState(false);
   const [wsStatus, setWsStatus] = useState<'offline' | 'connecting' | 'live' | 'error'>('offline');
   const [studioProfile, setStudioProfile] = useState('default');
+  const [appVersion, setAppVersion] = useState('dev');
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
   const [createForm, setCreateForm] = useState<CreateProjectForm>({
     name: '',
@@ -274,7 +278,7 @@ export default function PlatformStudio() {
   };
   useEffect(() => {
     const onVaultSealed = () => {
-      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile);
+      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile, setAppVersion);
     };
     window.addEventListener('studio:vault-sealed', onVaultSealed);
     return () => window.removeEventListener('studio:vault-sealed', onVaultSealed);
@@ -711,7 +715,7 @@ export default function PlatformStudio() {
           }
         }
       }
-      const gate = await refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile);
+      const gate = await refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile, setAppVersion);
       if (gate === 'none') {
         await refreshProjects().catch((error: Error) => notify(error.message, 'error'));
       }
@@ -728,7 +732,7 @@ export default function PlatformStudio() {
 
   useEffect(() => {
     const onNeedAuth = (): void => {
-      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile).then((gate) => {
+      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile, setAppVersion).then((gate) => {
         if (gate === 'none') {
           void refreshProjects().catch((error: Error) => notify(error.message, 'error'));
         }
@@ -969,7 +973,7 @@ export default function PlatformStudio() {
           lockReason={authBarrier === 'vaultUnlock' ? 'vault-sealed' : 'default'}
           allowAlternateFlow={authBarrier !== 'vaultUnlock'}
           onInstallReset={() => {
-            void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile);
+            void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile, setAppVersion);
           }}
           onComplete={() => {
             setVaultIncompatibleMessage(null);
@@ -1014,6 +1018,7 @@ export default function PlatformStudio() {
             wsStatus={wsStatus}
             wsTone={wsTone}
             studioProfile={studioProfile}
+            appVersion={appVersion}
             onToggleDark={() => setIsDark((value) => !value)}
           />
 

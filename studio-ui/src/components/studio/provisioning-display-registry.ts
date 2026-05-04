@@ -24,6 +24,7 @@ const DEFAULT_SENSITIVE_KEYS = new Set([
   'service_account_json',
   'gcp_credentials',
   'github_token',
+  'cloudflare_token',
   'expo_token',
   'asc_api_key_p8',
   'apple_auth_key_p8_apns',

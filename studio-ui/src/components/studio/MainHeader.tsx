@@ -14,6 +14,7 @@ export function MainHeader({
   wsStatus,
   wsTone,
   studioProfile,
+  appVersion,
   onToggleDark,
 }: {
   title: string;
@@ -22,6 +23,7 @@ export function MainHeader({
   wsStatus: 'offline' | 'connecting' | 'live' | 'error';
   wsTone: string;
   studioProfile: string;
+  appVersion: string;
   onToggleDark: () => void;
 }) {
   const profileLabel = formatProfileLabel(studioProfile);
@@ -38,7 +40,9 @@ export function MainHeader({
         </button>
         <div className="flex items-center gap-2 text-xs text-muted-foreground" title={`websocket: ${wsStatus}`}>
           <span className={`w-2 h-2 rounded-full ${wsTone}`} />
-          {profileLabel}
+          <span>{profileLabel}</span>
+          <span className="text-muted-foreground/70">·</span>
+          <span className="font-mono">v{appVersion}</span>
         </div>
       </div>
     </header>
