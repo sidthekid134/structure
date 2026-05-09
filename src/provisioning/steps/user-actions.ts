@@ -219,6 +219,24 @@ export const USER_ACTIONS: UserActionNode[] = [
       },
     ],
   },
+  {
+    type: 'user-action',
+    key: 'user:share-cicd-integration-prompt',
+    label: 'Share CI/CD App Structure Prompt',
+    description:
+      'Generate and copy a project-aware CI/CD handoff prompt so your coding LLM can align repository structure, build/test commands, and deploy expectations with selected workflow targets.',
+    category: 'approval',
+    provider: 'github',
+    verification: { type: 'manual-confirm' },
+    dependencies: [{ nodeKey: 'github:deploy-workflows', required: true }],
+    produces: [
+      {
+        key: 'cicd_integration_prompt_shared',
+        label: 'CI/CD Integration Prompt Shared',
+        description: 'User confirmed the CI/CD app-structure prompt was shared with their project coding LLM.',
+      },
+    ],
+  },
   // -------------------------------------------------------------------------
   // LLM credential gates — one per kind. Each writes to a kind-specific
   // secret slot under provider 'llm' so multiple kinds can coexist on the

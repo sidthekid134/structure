@@ -1,17 +1,17 @@
 import type { PluginDefinition } from '../plugin-types.js';
-import { APPLE_STEPS, OAUTH_STEPS, USER_ACTIONS } from '../../provisioning/step-registry.js';
+import { APPLE_STEPS, CLOUDFLARE_STEPS, OAUTH_STEPS, USER_ACTIONS } from '../../provisioning/step-registry.js';
 
 export const oauthSocialPlugin: PluginDefinition = {
   id: 'oauth-social',
   version: '1.0.0',
-  label: 'Social OAuth & Deep Links',
+  label: 'Auth Callbacks & Integration Kit',
   description:
-    'Apple Sign-In credential creation + Firebase provider wiring, and deep link domain configuration for mobile auth.',
+    'Bind the custom callback domain into Firebase Auth, add Apple Sign-In on iOS targets, and generate the app integration handoff (web or native flavor).',
   integrationId: 'gcp',
   provider: 'oauth',
   requiredModules: ['firebase-auth'],
   optionalModules: ['cloudflare-domain', 'apple-signing'],
-  includedInTemplates: ['mobile-app'],
+  includedInTemplates: ['mobile-app', 'web-app'],
   steps: [
     // Apple-side preparation lives in APPLE_STEPS but is added here so it is
     // only included in projects that opt into social OAuth. Pairs with
@@ -19,6 +19,7 @@ export const oauthSocialPlugin: PluginDefinition = {
     // credentials.
     APPLE_STEPS.find((s) => s.key === 'apple:create-sign-in-key')!,
     OAUTH_STEPS.find((s) => s.key === 'oauth:configure-apple-sign-in')!,
+    CLOUDFLARE_STEPS.find((s) => s.key === 'cloudflare:configure-deep-link-routes')!,
     OAUTH_STEPS.find((s) => s.key === 'oauth:link-deep-link-domain')!,
     OAUTH_STEPS.find((s) => s.key === 'oauth:prepare-app-integration-kit')!,
   ],
@@ -35,6 +36,7 @@ export const oauthSocialPlugin: PluginDefinition = {
   },
   defaultJourneyPhase: 'oauth',
   journeyPhaseOverrides: {
+    'cloudflare:configure-deep-link-routes': 'deep_links',
     'oauth:link-deep-link-domain': 'deep_links',
   },
   resourceDisplay: {
@@ -85,7 +87,7 @@ export const oauthSocialPlugin: PluginDefinition = {
   functionGroup: {
     id: 'auth',
     label: 'Authentication',
-    description: 'Social sign-in and OAuth configuration',
+    description: 'Sign-in providers, callbacks, and auth integration',
     order: 5,
   },
 };

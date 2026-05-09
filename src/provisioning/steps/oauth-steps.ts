@@ -4,7 +4,7 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
   {
     type: 'step',
     key: 'oauth:enable-auth-providers',
-    label: 'Enable Firebase Auth Providers',
+    label: 'Enable Sign-In Providers',
     description: 'Enable Google, Apple, and/or GitHub sign-in in Firebase Authentication.',
     provider: 'oauth',
     environmentScope: 'global',
@@ -171,7 +171,7 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
   {
     type: 'step',
     key: 'oauth:configure-redirect-uris',
-    label: 'Configure OAuth Redirect URIs',
+    label: 'Configure Sign-In Redirect URIs',
     description: 'Set environment-specific redirect URIs for each OAuth provider.',
     provider: 'oauth',
     environmentScope: 'per-environment',
@@ -204,7 +204,7 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
   {
     type: 'step',
     key: 'oauth:link-deep-link-domain',
-    label: 'Link Auth Deep Link Domain',
+    label: 'Authorize Auth Callback Domain',
     description:
       'Configure Firebase Auth to use the Cloudflare domain for auth redirects.',
     provider: 'oauth',
@@ -218,17 +218,17 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
     produces: [
       {
         key: 'deep_link_base_url',
-        label: 'Deep Link Base URL',
+        label: 'Auth Callback Base URL',
         description: 'Canonical deep-link base URL used by auth return/deep-link routing.',
       },
       {
         key: 'oauth_authorized_domain_deep_link',
-        label: 'Deep Link Authorized Domain',
+        label: 'Authorized Callback Domain',
         description: 'Deep-link host verified in Firebase Auth authorized domains.',
       },
       {
         key: 'oauth_redirect_uri_deep_link',
-        label: 'Deep Link Redirect URI',
+        label: 'Auth Callback Redirect URI',
         description: 'Deep-link hosted OAuth callback URI.',
       },
     ],
@@ -237,7 +237,7 @@ export const OAUTH_STEPS: ProvisioningStepNode[] = [
   {
     type: 'step',
     key: 'oauth:prepare-app-integration-kit',
-    label: 'Prepare App Integration Kit',
+    label: 'Prepare App Auth Integration Kit',
     description:
       'Generate a downloadable auth integration kit and LLM-ready prompt for wiring these OAuth settings into your app repository.',
     provider: 'oauth',

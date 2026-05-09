@@ -18,6 +18,8 @@ import { EventLog } from '../orchestration/event-log';
 import { VaultManager } from '../vault';
 import { writeVaultMeta } from '../studio/vault-meta';
 import { getVaultSession } from '../studio/vault-session';
+import { CredentialService } from '../services/credential-service';
+import { deriveStudioRowKey } from '../studio/row-crypto';
 import { GitHubConnectionService } from '../core/github-connection';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -378,19 +380,13 @@ describe('StudioServer', () => {
       expect(organization.integrations.eas.status).toBe('configured');
       expect(organization.integrations.eas.config.token_source).toBe('credential_vault');
 
-      const vaultPath = path.join(storeDir, 'credentials.enc');
-      const vault = new VaultManager(vaultPath);
-      const passphrase = testVaultDek;
-      expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBe('test-token');
-      expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBe('sidmoparthi');
-      expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBe('expo-user-id-123');
-      expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBe(
+      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('expo_token')).toBe('test-token');
+      expect(creds.retrieveOrgCredential('expo_username')).toBe('sidmoparthi');
+      expect(creds.retrieveOrgCredential('expo_user_id')).toBe('expo-user-id-123');
+      expect(creds.retrieveOrgCredential('expo_accounts')).toBe(
         JSON.stringify(['sidmoparthi', 'bite-food-journal']),
       );
-
-      const vaultRaw = fs.readFileSync(vaultPath, 'utf8');
-      expect(vaultRaw).not.toContain('test-token');
-      expect(vaultRaw).not.toContain('sidmoparthi');
     } finally {
       fetchSpy.mockRestore();
     }
@@ -428,13 +424,11 @@ describe('StudioServer', () => {
       expect(organization.integrations.eas.status).toBe('pending');
       expect(organization.integrations.eas.config.expo_username).toBeUndefined();
 
-      const vaultPath = path.join(storeDir, 'credentials.enc');
-      const vault = new VaultManager(vaultPath);
-      const passphrase = testVaultDek;
-      expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBeUndefined();
+      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('expo_token')).toBeNull();
+      expect(creds.retrieveOrgCredential('expo_username')).toBeNull();
+      expect(creds.retrieveOrgCredential('expo_user_id')).toBeNull();
+      expect(creds.retrieveOrgCredential('expo_accounts')).toBeNull();
     } finally {
       fetchSpy.mockRestore();
     }
@@ -468,19 +462,13 @@ describe('StudioServer', () => {
       expect(organization.integrations.github.config.token_source).toBe('credential_vault');
       expect(organization.integrations.github.config.username).toBe('sidmoparthi');
 
-      const vaultPath = path.join(storeDir, 'credentials.enc');
-      const vault = new VaultManager(vaultPath);
-      const passphrase = testVaultDek;
-      expect(vault.getCredential(passphrase, 'github', 'token')).toBe('ghp_test_token_123');
-      expect(vault.getCredential(passphrase, 'github', 'username')).toBe('sidmoparthi');
-      expect(vault.getCredential(passphrase, 'github', 'user_id')).toBe('12345');
-      expect(vault.getCredential(passphrase, 'github', 'orgs')).toBe(
+      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('github_pat')).toBe('ghp_test_token_123');
+      expect(creds.retrieveOrgCredential('github_username')).toBe('sidmoparthi');
+      expect(creds.retrieveOrgCredential('github_user_id')).toBe('12345');
+      expect(creds.retrieveOrgCredential('github_orgs')).toBe(
         JSON.stringify(['acme-mobile', 'example-inc']),
       );
-
-      const vaultRaw = fs.readFileSync(vaultPath, 'utf8');
-      expect(vaultRaw).not.toContain('ghp_test_token_123');
-      expect(vaultRaw).not.toContain('sidmoparthi');
     } finally {
       spy.mockRestore();
     }
@@ -515,14 +503,12 @@ describe('StudioServer', () => {
       expect(organization.integrations.github.status).toBe('pending');
       expect(organization.integrations.github.config.username).toBeUndefined();
 
-      const vaultPath = path.join(storeDir, 'credentials.enc');
-      const vault = new VaultManager(vaultPath);
-      const passphrase = testVaultDek;
-      expect(vault.getCredential(passphrase, 'github', 'token')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'github', 'username')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'github', 'user_id')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'github', 'orgs')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'github', 'scopes')).toBeUndefined();
+      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('github_pat')).toBeNull();
+      expect(creds.retrieveOrgCredential('github_username')).toBeNull();
+      expect(creds.retrieveOrgCredential('github_user_id')).toBeNull();
+      expect(creds.retrieveOrgCredential('github_orgs')).toBeNull();
+      expect(creds.retrieveOrgCredential('github_scopes')).toBeNull();
     } finally {
       spy.mockRestore();
     }

@@ -17,6 +17,7 @@ export const REQUIRED_ENVIRONMENTS: string[] = ['preview', 'production'];
 export const DEFAULT_ENVIRONMENTS: string[] = [...REQUIRED_ENVIRONMENTS];
 export const DEFAULT_PLATFORMS: MobilePlatform[] = ['ios', 'android'];
 export const DEFAULT_MODULE_IDS: ModuleId[] = [
+  'gcp-project-foundation',
   'firebase-core',
   'firebase-auth',
   'firebase-firestore',
@@ -210,4 +211,3 @@ export function CreateProjectModal({
     </div>
   );
 }
-

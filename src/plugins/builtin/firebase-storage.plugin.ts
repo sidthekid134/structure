@@ -4,8 +4,8 @@ import { FIREBASE_STEPS, FIREBASE_TEARDOWN_STEPS } from '../../provisioning/step
 export const firebaseStoragePlugin: PluginDefinition = {
   id: 'firebase-storage',
   version: '1.0.0',
-  label: 'Cloud Storage',
-  description: 'Deploy storage rules for configured environments.',
+  label: 'File Storage',
+  description: 'Enable Firebase Storage and deploy file access rules.',
   integrationId: 'gcp',
   provider: 'firebase',
   requiredModules: ['firebase-core'],
@@ -31,7 +31,7 @@ export const firebaseStoragePlugin: PluginDefinition = {
   defaultJourneyPhase: 'cloud_firebase',
   functionGroup: {
     id: 'firebase',
-    label: 'Firebase & GCP',
+    label: 'Firebase & Cloud',
     description: 'Firebase services and Google Cloud infrastructure',
     order: 1,
   },

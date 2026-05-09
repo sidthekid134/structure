@@ -1,32 +1,20 @@
 import { useMemo } from 'react';
 import {
-  Apple,
-  Cloud,
-  CloudCog,
   Download,
   ExternalLink,
-  Flame,
-  Github,
-  Globe,
-  PlayCircle,
-  Smartphone,
-  Sparkles,
   Trash2,
-  type LucideIcon,
 } from 'lucide-react';
 import type { ProvisioningPlanResponse } from './types';
 import { collectUpstreamResources } from './provisioning-display-registry';
+import { ProviderLogo, providerBrandColor } from './ProviderLogo';
 
 interface QuickLink {
   id: string;
   label: string;
   subtitle?: string;
   href: string;
-  icon: LucideIcon;
-  /** Tailwind colour for icon + accent. */
-  accent: string;
-  /** Tailwind colour for the icon background tile. */
-  tile: string;
+  provider: string;
+  moduleId?: string;
 }
 
 /**
@@ -46,12 +34,11 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       .replace(/\/+$/, '');
     links.push({
       id: 'github-repo',
-      label: 'GitHub Repository',
+      label: 'Source Repository',
       subtitle: slug || githubRepo,
       href: githubRepo,
-      icon: Github,
-      accent: 'text-slate-900 dark:text-slate-100',
-      tile: 'bg-slate-900/10 dark:bg-slate-100/10',
+      provider: 'github',
+      moduleId: 'github-repo',
     });
   }
 
@@ -62,9 +49,8 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       label: 'Expo / EAS Project',
       subtitle: easProjectId,
       href: `https://expo.dev/projects/${easProjectId}`,
-      icon: Sparkles,
-      accent: 'text-indigo-600 dark:text-indigo-300',
-      tile: 'bg-indigo-500/10',
+      provider: 'eas',
+      moduleId: 'eas-builds',
     });
   }
 
@@ -75,9 +61,8 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       label: 'Firebase Console',
       subtitle: firebaseProjectId,
       href: `https://console.firebase.google.com/project/${firebaseProjectId}`,
-      icon: Flame,
-      accent: 'text-amber-600 dark:text-amber-300',
-      tile: 'bg-amber-500/10',
+      provider: 'firebase',
+      moduleId: 'firebase-core',
     });
   }
 
@@ -88,9 +73,26 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       label: 'Google Cloud',
       subtitle: gcpProjectId,
       href: `https://console.cloud.google.com/home/dashboard?project=${gcpProjectId}`,
-      icon: CloudCog,
-      accent: 'text-blue-600 dark:text-blue-300',
-      tile: 'bg-blue-500/10',
+      provider: 'gcp',
+      moduleId: 'gcp-serverless-core',
+    });
+  }
+
+  const projectUiUrl = upstream.web_domain_url || upstream.cloudflare_app_url;
+  if (projectUiUrl) {
+    let appHost = upstream.cloudflare_app_domain;
+    try {
+      appHost = new URL(projectUiUrl).hostname || appHost;
+    } catch {
+      appHost = upstream.cloudflare_app_domain;
+    }
+    links.push({
+      id: 'project-ui',
+      label: 'Project UI',
+      subtitle: appHost || projectUiUrl,
+      href: projectUiUrl,
+      provider: upstream.cloudflare_app_url ? 'cloudflare' : 'gcp',
+      moduleId: upstream.cloudflare_app_url ? 'cloudflare-domain' : 'gcp-serverless-web',
     });
   }
 
@@ -102,9 +104,8 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       label: 'Cloudflare Dashboard',
       subtitle: domain ?? cloudflareZoneId,
       href: `https://dash.cloudflare.com/?zoneId=${cloudflareZoneId}`,
-      icon: Cloud,
-      accent: 'text-orange-600 dark:text-orange-300',
-      tile: 'bg-orange-500/10',
+      provider: 'cloudflare',
+      moduleId: 'cloudflare-domain',
     });
   } else if (upstream.domain_name) {
     links.push({
@@ -112,9 +113,8 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       label: 'Domain',
       subtitle: upstream.domain_name,
       href: `https://${upstream.domain_name}`,
-      icon: Globe,
-      accent: 'text-emerald-600 dark:text-emerald-300',
-      tile: 'bg-emerald-500/10',
+      provider: 'cloudflare',
+      moduleId: 'cloudflare-domain',
     });
   }
 
@@ -125,9 +125,8 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       label: 'App Store Connect',
       subtitle: ascAppId,
       href: `https://appstoreconnect.apple.com/apps/${ascAppId}/appstore`,
-      icon: Smartphone,
-      accent: 'text-zinc-700 dark:text-zinc-200',
-      tile: 'bg-zinc-700/10 dark:bg-zinc-200/10',
+      provider: 'apple',
+      moduleId: 'apple-signing',
     });
   }
 
@@ -138,9 +137,8 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       label: 'Apple Developer',
       subtitle: `Team ${appleTeamId}`,
       href: 'https://developer.apple.com/account',
-      icon: Apple,
-      accent: 'text-zinc-700 dark:text-zinc-200',
-      tile: 'bg-zinc-700/10 dark:bg-zinc-200/10',
+      provider: 'apple',
+      moduleId: 'apple-signing',
     });
   }
 
@@ -151,9 +149,8 @@ function deriveQuickLinks(upstream: Record<string, string>): QuickLink[] {
       label: 'Google Play Console',
       subtitle: playAppId,
       href: 'https://play.google.com/console',
-      icon: PlayCircle,
-      accent: 'text-green-600 dark:text-green-300',
-      tile: 'bg-green-500/10',
+      provider: 'google-play',
+      moduleId: 'google-play-publishing',
     });
   }
 
@@ -249,7 +246,7 @@ export function ProjectQuickLinks({
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {links.map((link) => {
-            const Icon = link.icon;
+            const brandColor = providerBrandColor(link.provider, link.moduleId, true);
             return (
               <a
                 key={link.id}
@@ -260,9 +257,10 @@ export function ProjectQuickLinks({
                 className={`group inline-flex items-center gap-2 rounded-md border border-border bg-background/60 px-2 transition-colors hover:border-primary/40 hover:bg-accent ${PILL_SIZE}`}
               >
                 <span
-                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${link.tile}`}
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded"
+                  style={{ backgroundColor: `${brandColor}1A`, color: brandColor }}
                 >
-                  <Icon size={12} className={link.accent} />
+                  <ProviderLogo provider={link.provider} moduleId={link.moduleId} size={12} />
                 </span>
                 <span className="min-w-0 flex-1 flex flex-col leading-tight">
                   <span className="text-[11px] font-bold text-foreground truncate">

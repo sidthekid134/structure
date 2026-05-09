@@ -1,11 +1,13 @@
 import * as https from 'https';
 import { IncomingHttpHeaders } from 'http';
-import { VaultManager } from '../vault.js';
+import {
+  CredentialService,
+  ORG_SENTINEL,
+} from '../services/credential-service.js';
 import {
   ProjectManager,
   IntegrationConfigRecord,
 } from '../studio/project-manager.js';
-import { getVaultUnlock as resolveVaultUnlock } from '../studio/vault-session.js';
 
 export interface GitHubConnectionDetails {
   userId: string;
@@ -32,46 +34,42 @@ const REQUIRED_SCOPES = ['repo', 'workflow'];
 
 export class GitHubConnectionService {
   constructor(
-    private readonly vaultManager: VaultManager,
+    private readonly credentialService: CredentialService,
     private readonly projectManager: ProjectManager,
   ) {}
 
   getStoredGitHubToken(): string | undefined {
-    return this.vaultManager.getCredential(resolveVaultUnlock(), 'github', 'token');
+    return this.credentialService.retrieveOrgCredential('github_pat') ?? undefined;
   }
 
   storeGitHubToken(token: string): void {
     if (typeof token !== 'string' || token.trim().length === 0) {
       throw new Error('GitHub token is required.');
     }
-    this.vaultManager.setCredential(resolveVaultUnlock(), 'github', 'token', token.trim());
+    this.credentialService.storeOrgCredential('github_pat', token.trim());
   }
 
   storeGitHubConnectionDetails(details: GitHubConnectionDetails): void {
-    const passphrase = resolveVaultUnlock();
-    this.vaultManager.setCredential(passphrase, 'github', 'user_id', details.userId);
-    this.vaultManager.setCredential(passphrase, 'github', 'username', details.username);
-    this.vaultManager.setCredential(passphrase, 'github', 'orgs', JSON.stringify(details.orgNames));
-    this.vaultManager.setCredential(passphrase, 'github', 'scopes', JSON.stringify(details.scopes));
-    this.vaultManager.setCredential(
-      passphrase,
-      'github',
-      'token_last_validated_at',
-      new Date().toISOString(),
-    );
+    this.credentialService.storeOrgCredential('github_user_id', details.userId);
+    this.credentialService.storeOrgCredential('github_username', details.username);
+    this.credentialService.storeOrgCredential('github_orgs', JSON.stringify(details.orgNames));
+    this.credentialService.storeOrgCredential('github_scopes', JSON.stringify(details.scopes));
+    this.credentialService.storeOrgCredential('github_validated_at', new Date().toISOString());
   }
 
   deleteStoredGitHubConnectionDetails(): void {
-    const passphrase = resolveVaultUnlock();
-    this.vaultManager.deleteCredential(passphrase, 'github', 'user_id');
-    this.vaultManager.deleteCredential(passphrase, 'github', 'username');
-    this.vaultManager.deleteCredential(passphrase, 'github', 'orgs');
-    this.vaultManager.deleteCredential(passphrase, 'github', 'scopes');
-    this.vaultManager.deleteCredential(passphrase, 'github', 'token_last_validated_at');
+    this.credentialService.deleteCredentialByType(ORG_SENTINEL, 'github_user_id');
+    this.credentialService.deleteCredentialByType(ORG_SENTINEL, 'github_username');
+    this.credentialService.deleteCredentialByType(ORG_SENTINEL, 'github_orgs');
+    this.credentialService.deleteCredentialByType(ORG_SENTINEL, 'github_scopes');
+    this.credentialService.deleteCredentialByType(ORG_SENTINEL, 'github_validated_at');
   }
 
   deleteStoredGitHubToken(): boolean {
-    return this.vaultManager.deleteCredential(resolveVaultUnlock(), 'github', 'token');
+    const summary = this.credentialService.getOrgCredentialSummary('github_pat');
+    if (!summary) return false;
+    this.credentialService.deleteCredential(summary.id);
+    return true;
   }
 
   async fetchGitHubConnectionDetails(token: string): Promise<GitHubConnectionDetails> {

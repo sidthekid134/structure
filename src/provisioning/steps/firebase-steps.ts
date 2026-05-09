@@ -7,7 +7,7 @@ export const FIREBASE_STEPS: ProvisioningStepNode[] = [
     label: 'Create GCP Project',
     description:
       'Sign in with Google (or use a service account key already in the vault), then create or link the GCP project for this app.',
-    provider: 'firebase',
+    provider: 'gcp',
     environmentScope: 'global',
     automationLevel: 'full',
     dependencies: [
@@ -391,9 +391,9 @@ export const FIREBASE_TEARDOWN_STEPS: ProvisioningStepNode[] = [
     direction: 'teardown',
     teardownOf: 'firebase:create-gcp-project',
     dependencies: [
-      { nodeKey: 'firebase:delete-storage-buckets', required: true },
-      { nodeKey: 'firebase:delete-firestore-db', required: true },
-      { nodeKey: 'firebase:disable-messaging', required: true },
+      { nodeKey: 'firebase:delete-storage-buckets', required: false },
+      { nodeKey: 'firebase:delete-firestore-db', required: false },
+      { nodeKey: 'firebase:disable-messaging', required: false },
     ],
     produces: [],
   },

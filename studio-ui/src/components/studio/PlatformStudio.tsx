@@ -255,6 +255,8 @@ export default function PlatformStudio() {
     github: false,
     apple: false,
     cloudflare: false,
+    'google-play': false,
+    llm: false,
   });
   const [activeIntegration, setActiveIntegration] = useState<ProviderId | null>(null);
   const { catalog: pluginCatalog } = usePluginCatalog(apiBootstrapDone);
@@ -337,6 +339,18 @@ export default function PlatformStudio() {
       }
     }
 
+    let llmConnected = false;
+    if (activeProjectId) {
+      try {
+        const llmStatus = await api<{ providers: Array<{ configured: boolean }> }>(
+          `/api/projects/${encodeURIComponent(activeProjectId)}/llm`,
+        );
+        llmConnected = llmStatus.providers.some((provider) => provider.configured);
+      } catch {
+        llmConnected = false;
+      }
+    }
+
     setConnectedProviders({
       firebase: firebaseConnected,
       expo:
@@ -351,6 +365,10 @@ export default function PlatformStudio() {
       cloudflare:
         hasConfiguredIntegration(organization.integrations, ['cloudflare']) ||
         hasConfiguredIntegration(projectIntegrations, ['cloudflare']),
+      'google-play':
+        hasConfiguredIntegration(organization.integrations, ['google-play']) ||
+        hasConfiguredIntegration(projectIntegrations, ['google-play']),
+      llm: llmConnected,
     });
 
     const appleRecord = organization.integrations?.['apple'] as IntegrationStatusRecord | undefined;
@@ -459,6 +477,49 @@ export default function PlatformStudio() {
       notify('Cloudflare integration connected', 'ok');
       return;
     }
+    if (providerId === 'google-play') {
+      const developerAccountId = fields['googlePlayDeveloperAccountId']?.trim();
+      if (!developerAccountId) {
+        throw new Error('Google Play Developer Account ID is required.');
+      }
+      await api('/api/organization/integrations/google-play', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'configured',
+          notes: 'Google Play integration configured.',
+          config: { developer_account_id: developerAccountId },
+          replaceConfig: true,
+        }),
+      });
+      await refreshConnectedProviders();
+      notify('Google Play integration connected', 'ok');
+      return;
+    }
+    if (providerId === 'llm') {
+      if (!activeProjectId) {
+        throw new Error('Select a project first to configure LLM integration.');
+      }
+      const kind = fields['llmKind']?.trim().toLowerCase();
+      const apiKey = fields['llmApiKey']?.trim();
+      const defaultModel = fields['llmDefaultModel']?.trim();
+      const baseUrl = fields['llmBaseUrl']?.trim();
+      if (!kind || !apiKey || !defaultModel) {
+        throw new Error('LLM kind, API key, and default model are required.');
+      }
+      await api(`/api/projects/${encodeURIComponent(activeProjectId)}/llm/${encodeURIComponent(kind)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: apiKey,
+          default_model: defaultModel,
+          ...(baseUrl ? { base_url: baseUrl } : {}),
+        }),
+      });
+      await refreshConnectedProviders();
+      notify('LLM integration connected', 'ok');
+      return;
+    }
     throw new Error(`${providerId} connect flow is not implemented yet.`);
   };
 
@@ -557,6 +618,39 @@ export default function PlatformStudio() {
       notify('Cloudflare integration disconnected', 'ok');
       return;
     }
+    if (providerId === 'google-play') {
+      await api('/api/organization/integrations/google-play', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'pending',
+          notes: '',
+          config: {},
+          replaceConfig: true,
+        }),
+      });
+      await refreshConnectedProviders();
+      notify('Google Play integration disconnected', 'ok');
+      return;
+    }
+    if (providerId === 'llm') {
+      if (!activeProjectId) {
+        throw new Error('Select a project first to disconnect LLM integration.');
+      }
+      const llmStatus = await api<{ providers: Array<{ kind: string; configured: boolean }> }>(
+        `/api/projects/${encodeURIComponent(activeProjectId)}/llm`,
+      );
+      for (const provider of llmStatus.providers) {
+        if (!provider.configured) continue;
+        await api(
+          `/api/projects/${encodeURIComponent(activeProjectId)}/llm/${encodeURIComponent(provider.kind)}`,
+          { method: 'DELETE' },
+        );
+      }
+      await refreshConnectedProviders();
+      notify('LLM integration disconnected', 'ok');
+      return;
+    }
     throw new Error(`${providerId} disconnect flow is not implemented yet.`);
   };
   const handleTriggerSetup = async (providerId: ProviderId): Promise<void> => {
@@ -583,6 +677,8 @@ export default function PlatformStudio() {
     if (plugin.providerId === 'github') return connectedProviders.github;
     if (plugin.providerId === 'apple') return connectedProviders.apple;
     if (plugin.providerId === 'cloudflare') return connectedProviders.cloudflare;
+    if (plugin.providerId === 'google-play') return connectedProviders['google-play'];
+    if (plugin.providerId === 'llm') return connectedProviders.llm;
     return false;
   };
   const getProviderConfig = (plugin: RegistryPlugin): IntegrationConfig | null => {
@@ -591,7 +687,9 @@ export default function PlatformStudio() {
       plugin.providerId === 'expo' ||
       plugin.providerId === 'github' ||
       plugin.providerId === 'apple' ||
-      plugin.providerId === 'cloudflare'
+      plugin.providerId === 'cloudflare' ||
+      plugin.providerId === 'google-play' ||
+      plugin.providerId === 'llm'
     ) {
       return integrationConfigs?.find((c) => c.id === plugin.providerId) ?? null;
     }

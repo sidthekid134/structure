@@ -21,6 +21,7 @@ export const PLATFORM_CORE_VERSION = '1.0';
 export type ProviderType = string & { readonly __brand?: 'ProviderType' };
 
 export const BUILTIN_PROVIDERS = [
+  'gcp',
   'firebase',
   'github',
   'eas',
@@ -38,6 +39,7 @@ export const PROVIDER_TYPES: readonly string[] = BUILTIN_PROVIDERS;
 
 /** @deprecated Use globalPluginRegistry.resolveProviderOrder() */
 export const PROVIDER_DEPENDENCY_ORDER: readonly string[] = [
+  'gcp',
   'firebase',
   'github',
   'eas',

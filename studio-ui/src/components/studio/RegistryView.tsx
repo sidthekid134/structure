@@ -14,6 +14,8 @@ function isPluginConnected(plugin: RegistryPlugin, connectedProviders: Connected
   if (plugin.providerId === 'github') return connectedProviders.github;
   if (plugin.providerId === 'apple') return connectedProviders.apple;
   if (plugin.providerId === 'cloudflare') return connectedProviders.cloudflare;
+  if (plugin.providerId === 'google-play') return connectedProviders['google-play'];
+  if (plugin.providerId === 'llm') return connectedProviders.llm;
   return false;
 }
 

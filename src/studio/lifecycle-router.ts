@@ -9,7 +9,6 @@
 
 import { Router } from 'express';
 import * as fs from 'fs';
-import { VaultManager } from '../vault.js';
 import { getVaultSession } from './vault-session.js';
 import { PLATFORM_CORE_VERSION } from '../providers/types.js';
 import { loadUsers, type UsersFile } from './users-store.js';
@@ -38,7 +37,6 @@ function installCanDecryptVault(
 }
 
 export interface LifecycleRouterOptions {
-  vaultManager: VaultManager;
   appVersion?: string;
   vaultPath?: string;
   storeDir: string;

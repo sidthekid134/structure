@@ -54,6 +54,30 @@ function requireAtLeastOne(
   return present.map((entry) => entry.value);
 }
 
+/**
+ * Which app surface(s) the integration kit targets. Drives prompt + README
+ * variant selection. `'native'` matches the original Expo/React Native flow,
+ * `'web'` produces a Firebase Web SDK-flavored handoff, and `'hybrid'` ships
+ * the native flow plus a web supplement.
+ */
+export type AuthIntegrationKitVariant = 'native' | 'web' | 'hybrid';
+
+function detectVariant(plan: ProvisioningPlan): AuthIntegrationKitVariant {
+  const selected = new Set(plan.selectedModules ?? []);
+  const isMobileTarget =
+    (plan.platforms?.length ?? 0) > 0 ||
+    selected.has('eas-builds') ||
+    selected.has('eas-submit') ||
+    selected.has('apple-signing') ||
+    selected.has('google-play-publishing');
+  const isWebTarget =
+    selected.has('gcp-serverless-web') || selected.has('gcp-serverless-fullstack');
+
+  if (isWebTarget && isMobileTarget) return 'hybrid';
+  if (isWebTarget) return 'web';
+  return 'native';
+}
+
 export function buildAuthIntegrationKitBundle(
   plan: ProvisioningPlan,
   projectModule: ProjectModule,
@@ -63,6 +87,7 @@ export function buildAuthIntegrationKitBundle(
   const slug = projectResourceSlug(project) || plan.projectId;
   const appName = project.name?.trim() || slug;
   const primaryDomain = projectPrimaryDomain(project);
+  const variant = detectVariant(plan);
   const missing: string[] = [];
 
   const firebaseProjectId = (
@@ -111,6 +136,9 @@ export function buildAuthIntegrationKitBundle(
       domain: primaryDomain,
       platforms: project.platforms ?? [],
     },
+    target: {
+      variant,
+    },
     firebase: {
       project_id: firebaseProjectId,
       ios_app_id: upstream['firebase_ios_app_id']?.trim() || null,
@@ -136,14 +164,30 @@ export function buildAuthIntegrationKitBundle(
     },
   };
 
+  const recommendedTargetsByVariant: Record<AuthIntegrationKitVariant, string[]> = {
+    native: [
+      'src/config/auth-config.json',
+      'app/config/auth-config.json',
+      'config/auth-config.json',
+    ],
+    web: [
+      'src/config/auth-config.json',
+      'src/lib/auth-config.json',
+      'app/config/auth-config.json',
+      'public/auth-config.json',
+    ],
+    hybrid: [
+      'src/config/auth-config.json',
+      'app/config/auth-config.json',
+      'packages/shared/config/auth-config.json',
+    ],
+  };
+
   const installMap = {
+    target: { variant },
     generated_files: {
       'auth-config.json': {
-        recommended_targets: [
-          'src/config/auth-config.json',
-          'app/config/auth-config.json',
-          'config/auth-config.json',
-        ],
+        recommended_targets: recommendedTargetsByVariant[variant],
         notes:
           'Pick exactly one location and keep it committed. Your app code should import this config as the single source of truth for auth identifiers.',
       },
@@ -166,7 +210,63 @@ export function buildAuthIntegrationKitBundle(
         '3) Google OAuth is not enabled in this plan; do not scaffold Google sign-in flows.',
       ];
 
-  const promptText = [
+  const promptText =
+    variant === 'web'
+      ? buildWebPromptText({ authConfig, googleAuthInPlan })
+      : buildNativePromptText({ authConfig, googlePromptLines, variant });
+
+  const folder = `${slug}-auth-integration-kit`;
+  const zipFileName = `${folder}.zip`;
+  const promptFileName = `${slug}-auth-llm-prompt.txt`;
+
+  const readmeText =
+    variant === 'web'
+      ? buildWebReadmeText(appName)
+      : buildNativeReadmeText(appName, variant);
+
+  return {
+    zipFileName,
+    promptFileName,
+    promptText,
+    files: [
+      {
+        path: `${folder}/auth-config.json`,
+        contents: `${JSON.stringify(authConfig, null, 2)}\n`,
+      },
+      {
+        path: `${folder}/install-map.json`,
+        contents: `${JSON.stringify(installMap, null, 2)}\n`,
+      },
+      {
+        path: `${folder}/llm-prompt.txt`,
+        contents: `${promptText}\n`,
+      },
+      {
+        path: `${folder}/README.txt`,
+        contents: readmeText,
+      },
+    ],
+  };
+}
+
+interface NativePromptInputs {
+  authConfig: unknown;
+  googlePromptLines: string[];
+  variant: AuthIntegrationKitVariant;
+}
+
+function buildNativePromptText({ authConfig, googlePromptLines, variant }: NativePromptInputs): string {
+  const hybridSupplement =
+    variant === 'hybrid'
+      ? [
+          '',
+          'Hybrid (web + native) supplement:',
+          '- This project also ships a web surface (Cloud Run frontend). After completing the native wiring above, also wire Firebase Web SDK auth in the web app using auth.google.web_client_id and auth.deep_link.base_url for redirect handling (signInWithRedirect / signInWithPopup).',
+          '- Use a single shared auth-config.json across native + web to avoid drift; if the repos are separate, copy the same generated file into each.',
+          '- Web callback path MUST resolve under auth.deep_link.base_url and may include `/__/auth/handler` when using Firebase hosted handler; otherwise wire your own redirect route.',
+        ]
+      : [];
+  return [
     'You are implementing production-ready authentication wiring for this app using ONLY the attached generated configuration.',
     '',
     'Primary objective:',
@@ -260,69 +360,163 @@ export function buildAuthIntegrationKitBundle(
     '- Provide a short change summary and explicit verification steps run.',
     '- Provide an explicit "Required env vars" list for keys that must be set locally/CI (for example FIREBASE_API_KEY when used by existing app config).',
     '- If required runtime config is missing (from auth-config.json or existing env/app config), stop and report the exact missing key(s) instead of guessing.',
+    ...hybridSupplement,
     '',
     'Configuration payload (copy exactly, no edits):',
     JSON.stringify(authConfig, null, 2),
   ].join('\n');
+}
 
-  const folder = `${slug}-auth-integration-kit`;
-  const zipFileName = `${folder}.zip`;
-  const promptFileName = `${slug}-auth-llm-prompt.txt`;
+interface WebPromptInputs {
+  authConfig: unknown;
+  googleAuthInPlan: boolean;
+}
 
-  return {
-    zipFileName,
-    promptFileName,
-    promptText,
-    files: [
-      {
-        path: `${folder}/auth-config.json`,
-        contents: `${JSON.stringify(authConfig, null, 2)}\n`,
-      },
-      {
-        path: `${folder}/install-map.json`,
-        contents: `${JSON.stringify(installMap, null, 2)}\n`,
-      },
-      {
-        path: `${folder}/llm-prompt.txt`,
-        contents: `${promptText}\n`,
-      },
-      {
-        path: `${folder}/README.txt`,
-        contents:
-          `Auth integration kit for "${appName}".\n\n` +
-          'Integration scope: Expo React Native apps using Firebase Auth + @react-native-google-signin/google-signin + Apple Sign-In.\n\n' +
-          'Required usage rules:\n' +
-          '- Treat auth-config.json as the single source of truth for all IDs/domains/URLs.\n' +
-          '- Do not normalize, rename, or reinterpret IDs/domains from auth-config.json.\n' +
-          '- Keep secrets out of source files; use existing env/secret patterns.\n' +
-          '- Apply only auth wiring changes; no unrelated refactors.\n\n' +
-          'Firebase data-store targeting:\n' +
-          '- If firebase.firestore_database_id is present in auth-config.json, use that exact Firestore database for user profile persistence.\n' +
-          '- Do not silently switch databases or default to another DB when firebase.firestore_database_id is provided.\n\n' +
-          'Critical Expo Google iOS plugin requirement:\n' +
-          "- In Expo app config, set plugins exactly as: [['@react-native-google-signin/google-signin', { iosUrlScheme: 'com.googleusercontent.apps.<IOS_CLIENT_ID_WITHOUT_SUFFIX>' }]].\n" +
-          '- Derive <IOS_CLIENT_ID_WITHOUT_SUFFIX> from auth.google.ios_client_id by removing `.apps.googleusercontent.com`, then prefixing with `com.googleusercontent.apps.`.\n' +
-          '- If native plugin config changes, you must run prebuild/rebuild before validating (for example `npx expo prebuild` then rebuild binaries).\n\n' +
-          'Fail-fast requirements (do not continue on failure):\n' +
-          '- If auth.google.enabled=true and iOS target is in scope but auth.google.ios_client_id is missing/null/empty: fail with exact key name.\n' +
-          '- If auth.google.enabled=true and web auth path is in scope but auth.google.web_client_id is missing/null/empty: fail with exact key name.\n' +
-          '- If auth.google.enabled=true and auth.google.android_client_id is missing/null/empty: continue by default (do not fail) unless existing repo code/env contract explicitly requires that exact key.\n' +
-          '- If Android package value from config is invalid (Java package rules, no hyphens), do not apply it; continue with existing valid android.package when available, otherwise fail with required correction path.\n' +
-          '- If deep-link callback alignment needs auth.deep_link.base_url or auth.deep_link.auth_landing_url and either key is missing/null/empty: fail with exact key name.\n\n' +
-          'Deep-link and callback alignment:\n' +
-          '- Align callback handling with auth.deep_link.base_url and auth.deep_link.auth_landing_url.\n' +
-          '- Include Firebase handler path `/__/auth/handler` where applicable.\n\n' +
-          'Must-pass validation checklist:\n' +
-          '- Expo config resolves expected Google plugin values (including derived iosUrlScheme).\n' +
-          '- iOS URL scheme exists in generated native config.\n' +
-          '- Google sign-in works on iOS without "missing URL schemes" runtime error.\n' +
-          '- Redirect/deep-link callback returns user to app flow (cold + warm start).\n' +
-          '- Typecheck/build passes for touched targets.\n' +
-          '- Only required files changed.\n\n' +
-          'Execution order:\n' +
-          '- Start with llm-prompt.txt in your app repository.\n' +
-          '- Re-download this kit whenever provisioning values change.\n',
-      },
-    ],
-  };
+function buildWebPromptText({ authConfig, googleAuthInPlan }: WebPromptInputs): string {
+  const googleLines = googleAuthInPlan
+    ? [
+        '3) Initialize Firebase Web SDK using existing config sources in the repo, then wire Google Sign-In with `GoogleAuthProvider` using auth.google.web_client_id from auth-config.json.',
+        '3a) Prefer `signInWithRedirect` for production deployments served from the configured custom domain; fall back to `signInWithPopup` only for local dev when the redirect host is unreachable.',
+        '3b) If auth.google.enabled=true and auth.google.web_client_id is missing/null/empty, STOP and report: `Missing required key auth.google.web_client_id for web Firebase Auth`.',
+      ]
+    : [
+        '3) Google OAuth is not enabled in this plan; do not scaffold Google sign-in flows.',
+      ];
+  return [
+    'You are implementing production-ready web authentication wiring for this app using ONLY the attached generated configuration.',
+    '',
+    'Primary objective:',
+    '- Integrate Firebase Auth in the web frontend (Firebase Web SDK / @firebase/auth), with redirect handling on the configured custom callback domain.',
+    '',
+    'Hard requirements (must follow exactly):',
+    '1) Read auth-config.json first and treat it as the single source of truth for all auth identifiers and URLs.',
+    '2) Use exact values from auth-config.json; do not invent, normalize, or rename IDs/domains.',
+    ...googleLines,
+    '4) If apple.enabled=true, wire Apple Sign-In on web using `OAuthProvider("apple.com")` with apple.service_id as the provider client identifier (not a domain). For mobile-only Apple SIWA setups this is typically not required on web.',
+    '5) Configure the redirect callback to land on auth.deep_link.base_url. When using Firebase hosted handler, the callback path MUST resolve under `<deep_link.base_url>/__/auth/handler`.',
+    '5a) When the web app owns the redirect route directly (no Firebase hosted handler), implement the route at the path implied by auth.deep_link.auth_landing_url and call `getRedirectResult(auth)` on mount before any protected-route gating.',
+    '5b) If deep-link callback values are required and either auth.deep_link.base_url or auth.deep_link.auth_landing_url is missing/null/empty, STOP and report the exact missing key.',
+    '6) Respect existing architecture and conventions in this repo (Next.js / Vite / Remix / etc.); do not introduce auth framework migrations or change routing strategy.',
+    '7) Update only files required for auth setup and correctness; avoid unrelated refactors.',
+    '8) Do not introduce new required Firebase base-config keys unless the repository already uses them and values are already available.',
+    '8a) If the repo already sources Firebase web config from env (for example `NEXT_PUBLIC_FIREBASE_*` / `VITE_FIREBASE_*`), keep that contract intact and wire OAuth values through the same convention.',
+    '9) Sign-in/sign-up integration must be idempotent: detect existing auth wiring and update it in place without duplicating providers, routes, or persistence writes.',
+    '10) If sign-in/sign-up flows already exist, wire Google/Apple auth into those existing flows end-to-end.',
+    '11) On first authenticated login, create a persistent app-level user profile record at the app-appropriate sign-up moment: after identity is verified and any required profile fields are collected, before first protected-route navigation that assumes the user exists.',
+    '11a) Firebase-first default: use Firestore users collection/document (or existing app user store abstraction if already present).',
+    '11a.1) If firebase.firestore_database_id is present, you MUST target that exact Firestore database ID for profile reads/writes; do not guess or switch to another database.',
+    '11a.2) If firebase.firestore_database_id is missing but Firestore profile persistence is required by the existing app flow, STOP and report: `Missing required key firebase.firestore_database_id for Firestore user profile persistence`.',
+    '12) Update the global auth state (existing store / context / hook) so successful sign-in survives refresh: rely on Firebase Auth persistence (default `browserLocalPersistence` for web) and rehydrate via `onAuthStateChanged` before protected-route gating.',
+    '12a) On app boot, await an initial `onAuthStateChanged` resolution (or equivalent suspense-friendly pattern) so logged-in users are not flashed through the signed-out flow.',
+    '12b) Ensure logout exists end-to-end: call `signOut(auth)` and clear app-side persisted user profile/session caches; route back to the signed-out flow.',
+    '13) If sign-in/sign-up UI screens do not exist, do not invent a large UI refactor by default. Implement provider/auth-state wiring plus minimal integration hooks and report exactly what UI is missing.',
+    '',
+    'Implementation checklist:',
+    '- Wire Firebase Auth initialization into the web entrypoint, reusing existing Firebase init if present.',
+    '- Implement Google sign-in using `signInWithRedirect` against the custom callback domain; ensure `getRedirectResult` is consumed on the landing route.',
+    '- Implement the redirect landing route under auth.deep_link.base_url and ensure it returns the user back into the in-app flow after success.',
+    '- Add Firebase auth state hydration and a session-aware route guard.',
+    '- Create the persistent user profile record (Firestore-first when firebase.firestore_database_id is present), reusing the existing user schema when one exists.',
+    '- Add an explicit logout path that clears persisted state and returns to the signed-out flow.',
+    '- Update env templates/docs (for example `.env.example`) for any newly required public auth env keys; do not leave required keys implicit.',
+    '- Keep secrets out of source files; rely on existing env/secret patterns.',
+    '',
+    'Must-pass validation checklist:',
+    '- `signInWithRedirect` initiates correctly and the redirect lands on the configured callback domain.',
+    '- `getRedirectResult` resolves a signed-in user on the landing route without throwing.',
+    '- Refresh/restart keeps users signed in via Firebase web persistence + `onAuthStateChanged` hydration; protected routes do not flash signed-out state.',
+    '- First authenticated login creates/updates the app user profile record in persistent store (Firestore against firebase.firestore_database_id when provided).',
+    '- Logout clears persisted auth/session state and transitions to the signed-out flow.',
+    '- Re-running integration is idempotent (no duplicate providers/routes/profile writes).',
+    '- Typecheck/build passes for all touched targets.',
+    '- Only required auth-integration files are changed; no unrelated refactors.',
+    '',
+    'Output expectations:',
+    '- Implement the changes directly in repository files.',
+    '- Provide a short change summary and explicit verification steps run.',
+    '- Provide an explicit "Required env vars" list for keys that must be set locally/CI.',
+    '- If required runtime config is missing (from auth-config.json or existing env/app config), stop and report the exact missing key(s) instead of guessing.',
+    '',
+    'Configuration payload (copy exactly, no edits):',
+    JSON.stringify(authConfig, null, 2),
+  ].join('\n');
+}
+
+function buildNativeReadmeText(appName: string, variant: AuthIntegrationKitVariant): string {
+  const hybridLine =
+    variant === 'hybrid'
+      ? 'Hybrid web + native: also wire Firebase Web SDK auth in the web app using auth.google.web_client_id and auth.deep_link.base_url; use the same auth-config.json across surfaces.\n\n'
+      : '';
+  return (
+    `Auth integration kit for "${appName}".\n\n` +
+    'Integration scope: Expo React Native apps using Firebase Auth + @react-native-google-signin/google-signin + Apple Sign-In.\n\n' +
+    hybridLine +
+    'Required usage rules:\n' +
+    '- Treat auth-config.json as the single source of truth for all IDs/domains/URLs.\n' +
+    '- Do not normalize, rename, or reinterpret IDs/domains from auth-config.json.\n' +
+    '- Keep secrets out of source files; use existing env/secret patterns.\n' +
+    '- Apply only auth wiring changes; no unrelated refactors.\n\n' +
+    'Firebase data-store targeting:\n' +
+    '- If firebase.firestore_database_id is present in auth-config.json, use that exact Firestore database for user profile persistence.\n' +
+    '- Do not silently switch databases or default to another DB when firebase.firestore_database_id is provided.\n\n' +
+    'Critical Expo Google iOS plugin requirement:\n' +
+    "- In Expo app config, set plugins exactly as: [['@react-native-google-signin/google-signin', { iosUrlScheme: 'com.googleusercontent.apps.<IOS_CLIENT_ID_WITHOUT_SUFFIX>' }]].\n" +
+    '- Derive <IOS_CLIENT_ID_WITHOUT_SUFFIX> from auth.google.ios_client_id by removing `.apps.googleusercontent.com`, then prefixing with `com.googleusercontent.apps.`.\n' +
+    '- If native plugin config changes, you must run prebuild/rebuild before validating (for example `npx expo prebuild` then rebuild binaries).\n\n' +
+    'Fail-fast requirements (do not continue on failure):\n' +
+    '- If auth.google.enabled=true and iOS target is in scope but auth.google.ios_client_id is missing/null/empty: fail with exact key name.\n' +
+    '- If auth.google.enabled=true and web auth path is in scope but auth.google.web_client_id is missing/null/empty: fail with exact key name.\n' +
+    '- If auth.google.enabled=true and auth.google.android_client_id is missing/null/empty: continue by default (do not fail) unless existing repo code/env contract explicitly requires that exact key.\n' +
+    '- If Android package value from config is invalid (Java package rules, no hyphens), do not apply it; continue with existing valid android.package when available, otherwise fail with required correction path.\n' +
+    '- If deep-link callback alignment needs auth.deep_link.base_url or auth.deep_link.auth_landing_url and either key is missing/null/empty: fail with exact key name.\n\n' +
+    'Deep-link and callback alignment:\n' +
+    '- Align callback handling with auth.deep_link.base_url and auth.deep_link.auth_landing_url.\n' +
+    '- Include Firebase handler path `/__/auth/handler` where applicable.\n\n' +
+    'Must-pass validation checklist:\n' +
+    '- Expo config resolves expected Google plugin values (including derived iosUrlScheme).\n' +
+    '- iOS URL scheme exists in generated native config.\n' +
+    '- Google sign-in works on iOS without "missing URL schemes" runtime error.\n' +
+    '- Redirect/deep-link callback returns user to app flow (cold + warm start).\n' +
+    '- Typecheck/build passes for touched targets.\n' +
+    '- Only required files changed.\n\n' +
+    'Execution order:\n' +
+    '- Start with llm-prompt.txt in your app repository.\n' +
+    '- Re-download this kit whenever provisioning values change.\n'
+  );
+}
+
+function buildWebReadmeText(appName: string): string {
+  return (
+    `Auth integration kit for "${appName}" (web variant).\n\n` +
+    'Integration scope: web frontends using the Firebase Web SDK (@firebase/auth) with redirect-based Google Sign-In on the configured custom callback domain. Apple Sign-In on web is wired only when apple.enabled=true.\n\n' +
+    'Required usage rules:\n' +
+    '- Treat auth-config.json as the single source of truth for all IDs/domains/URLs.\n' +
+    '- Do not normalize, rename, or reinterpret IDs/domains from auth-config.json.\n' +
+    '- Keep secrets out of source files; use existing env/secret patterns (for example NEXT_PUBLIC_* or VITE_*).\n' +
+    '- Apply only auth wiring changes; no unrelated refactors.\n\n' +
+    'Firebase data-store targeting:\n' +
+    '- If firebase.firestore_database_id is present in auth-config.json, use that exact Firestore database for user profile persistence.\n' +
+    '- Do not silently switch databases or default to another DB when firebase.firestore_database_id is provided.\n\n' +
+    'Web redirect flow:\n' +
+    '- Use `signInWithRedirect` against the configured custom callback domain in production.\n' +
+    '- Implement the landing route under auth.deep_link.base_url (or `<base_url>/__/auth/handler` when using the Firebase hosted handler) and consume `getRedirectResult(auth)` on mount before any protected-route gating.\n' +
+    '- Use `signInWithPopup` only as a local-dev fallback when the redirect host is unreachable.\n\n' +
+    'Fail-fast requirements (do not continue on failure):\n' +
+    '- If auth.google.enabled=true and auth.google.web_client_id is missing/null/empty: fail with exact key name.\n' +
+    '- If deep-link callback alignment needs auth.deep_link.base_url or auth.deep_link.auth_landing_url and either is missing/null/empty: fail with exact key name.\n\n' +
+    'Auth state & session:\n' +
+    '- Rely on Firebase Auth web persistence (default `browserLocalPersistence`).\n' +
+    '- Hydrate via `onAuthStateChanged` on app boot before protected-route gating so logged-in users do not flash through the signed-out flow.\n' +
+    '- Logout: call `signOut(auth)` and clear any app-side cached user profile/session before returning to the signed-out flow.\n\n' +
+    'Must-pass validation checklist:\n' +
+    '- `signInWithRedirect` lands on the configured callback domain and `getRedirectResult` resolves a user on the landing route.\n' +
+    '- Refresh/restart keeps users signed in via Firebase web persistence + `onAuthStateChanged` hydration.\n' +
+    '- First authenticated login creates the app user profile record (Firestore-first when firebase.firestore_database_id is present).\n' +
+    '- Logout clears persisted auth/session and routes to the signed-out flow.\n' +
+    '- Typecheck/build passes for touched targets.\n' +
+    '- Only required files changed.\n\n' +
+    'Execution order:\n' +
+    '- Start with llm-prompt.txt in your web repository.\n' +
+    '- Re-download this kit whenever provisioning values change.\n'
+  );
 }

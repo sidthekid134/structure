@@ -101,7 +101,7 @@ Example plugins:
 | `llm-anthropic` | `llm` | Anthropic API key |
 | `llm-gemini` | `llm` | Google Gemini API key |
 | `llm-custom` | `llm` | Custom LLM endpoint |
-| `oauth-social` | `gcp` | Social sign-in (Google, Apple) |
+| `oauth-social` | `gcp` | Auth callbacks & integration kit (custom callback domain + Apple SIWA on iOS targets + native/web handoff) |
 
 Plugins are registered in tier order (tier 0 first, then tiers that depend on them) in `src/plugins/builtin/index.ts` via `registerBuiltinPlugins()`.
 

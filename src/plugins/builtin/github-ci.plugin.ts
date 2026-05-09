@@ -1,6 +1,6 @@
 import type { PluginDefinition } from '../plugin-types.js';
 import type { ProvisioningStepNode } from '../../provisioning/graph.types.js';
-import { GITHUB_STEPS, GITHUB_TEARDOWN_STEPS } from '../../provisioning/step-registry.js';
+import { GITHUB_STEPS, GITHUB_TEARDOWN_STEPS, USER_ACTIONS } from '../../provisioning/step-registry.js';
 
 // github:inject-secrets is implemented by both the GitHub adapter
 // (orchestrated full runs) and a StepHandler (targeted runs / reset delete path).
@@ -13,7 +13,7 @@ const injectSecretsStep: ProvisioningStepNode = {
   key: 'github:inject-secrets',
   label: 'Inject Environment Secrets',
   description:
-    'Store FIREBASE_SERVICE_ACCOUNT as a GitHub Actions environment-level secret in every project environment (preview, production, …). EXPO_TOKEN is written separately at the repository level by `eas:store-token-in-github` so it acts as a shared fallback for every workflow job.',
+    'Store project environment secrets in GitHub Actions environments. FIREBASE_SERVICE_ACCOUNT is included only when the Google Cloud project key exists. EXPO_TOKEN is written separately at the repository level by `eas:store-token-in-github` so it acts as a shared fallback for every workflow job.',
   provider: 'github',
   environmentScope: 'global',
   automationLevel: 'full',
@@ -28,11 +28,11 @@ const injectSecretsStep: ProvisioningStepNode = {
 export const githubCiPlugin: PluginDefinition = {
   id: 'github-ci',
   version: '1.0.0',
-  label: 'GitHub CI/CD',
-  description: 'Deploy workflows and environment secrets.',
+  label: 'CI/CD Workflows',
+  description: 'Install GitHub Actions workflows, deployment environments, and environment secrets.',
   integrationId: 'github',
   provider: 'github',
-  requiredModules: ['github-repo', 'firebase-core'],
+  requiredModules: ['github-repo'],
   optionalModules: ['eas-builds'],
   includedInTemplates: ['mobile-app', 'web-app', 'api-backend'],
   steps: [
@@ -42,7 +42,9 @@ export const githubCiPlugin: PluginDefinition = {
   teardownSteps: [
     GITHUB_TEARDOWN_STEPS.find((s) => s.key === 'github:delete-workflows')!,
   ],
-  userActions: [],
+  userActions: [
+    USER_ACTIONS.find((a) => a.key === 'user:share-cicd-integration-prompt')!,
+  ],
   displayMeta: {
     icon: 'GitBranch',
     colors: {
@@ -62,6 +64,9 @@ export const githubCiPlugin: PluginDefinition = {
     ],
     'github:deploy-workflows': [
       { label: 'Actions', hrefTemplate: '{upstream.github_repo_url}/actions' },
+    ],
+    'user:share-cicd-integration-prompt': [
+      { label: 'Repository Actions', hrefTemplate: '{upstream.github_repo_url}/actions' },
     ],
   },
   functionGroup: {

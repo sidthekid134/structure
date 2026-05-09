@@ -24,9 +24,11 @@ import { resolveCloudflareDomainTarget } from '../core/cloudflare-domain-target.
 // ---------------------------------------------------------------------------
 
 export interface DnsRecord {
+  id?: string;
   type: 'A' | 'CNAME' | 'TXT';
   name: string;
   content: string;
+  proxied?: boolean;
 }
 
 export interface CloudflareApiClient {
@@ -36,9 +38,11 @@ export interface CloudflareApiClient {
   createZone(domain: string): Promise<string>;
   addDnsRecord(zoneId: string, record: DnsRecord): Promise<string>;
   getDnsRecords(zoneId: string): Promise<DnsRecord[]>;
+  deleteDnsRecord(zoneId: string, recordId: string): Promise<void>;
   setPageRule(zoneId: string, url: string, action: string): Promise<string>;
   getPageRules(zoneId: string): Promise<Array<{ url: string; action: string }>>;
   setSslMode(zoneId: string, mode: CloudflareManifestConfig['ssl_mode']): Promise<void>;
+  upsertOriginHostHeaderRule(zoneId: string, matchHost: string, originHost: string): Promise<void>;
 }
 
 export interface CloudflareZoneSummary {
@@ -47,6 +51,15 @@ export interface CloudflareZoneSummary {
   status: string;
   nameServers: string[];
   accountId?: string;
+}
+
+interface EnsureDnsRecordOutcome {
+  created: boolean;
+  skipped: boolean;
+  reason: string;
+  recordType?: DnsRecord['type'];
+  recordHost?: string;
+  recordContent?: string;
 }
 
 interface CloudflareEnvelope<T> {
@@ -92,6 +105,12 @@ export class StubCloudflareApiClient implements CloudflareApiClient {
     );
   }
 
+  async deleteDnsRecord(_zoneId: string, _recordId: string): Promise<void> {
+    throw new Error(
+      'StubCloudflareApiClient cannot delete DNS records. Configure CloudflareAdapter with a real Cloudflare API client.',
+    );
+  }
+
   async setPageRule(_zoneId: string, _url: string, _action: string): Promise<string> {
     throw new Error(
       'StubCloudflareApiClient cannot set page rules. Configure CloudflareAdapter with a real Cloudflare API client.',
@@ -109,6 +128,12 @@ export class StubCloudflareApiClient implements CloudflareApiClient {
   async setSslMode(_zoneId: string, _mode: CloudflareManifestConfig['ssl_mode']): Promise<void> {
     throw new Error(
       'StubCloudflareApiClient cannot set SSL mode. Configure CloudflareAdapter with a real Cloudflare API client.',
+    );
+  }
+
+  async upsertOriginHostHeaderRule(_zoneId: string, _matchHost: string, _originHost: string): Promise<void> {
+    throw new Error(
+      'StubCloudflareApiClient cannot set origin rules. Configure CloudflareAdapter with a real Cloudflare API client.',
     );
   }
 }
@@ -181,22 +206,30 @@ export class HttpCloudflareApiClient implements CloudflareApiClient {
       name: record.name,
       content: record.content,
       ttl: 1,
-      ...(record.type === 'TXT' ? {} : { proxied: true }),
+      ...(record.type === 'TXT' ? {} : { proxied: record.proxied ?? true }),
     });
     return response.result.id;
   }
 
   async getDnsRecords(zoneId: string): Promise<DnsRecord[]> {
     const response = await this.request<Array<{
+      id: string;
       type: 'A' | 'CNAME' | 'TXT';
       name: string;
       content: string;
+      proxied?: boolean;
     }>>('GET', `/zones/${encodeURIComponent(zoneId)}/dns_records`);
     return response.result.map((r) => ({
+      id: r.id,
       type: r.type,
       name: r.name,
       content: r.content,
+      proxied: r.proxied,
     }));
+  }
+
+  async deleteDnsRecord(zoneId: string, recordId: string): Promise<void> {
+    await this.request<{ id: string }>('DELETE', `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`);
   }
 
   async setPageRule(zoneId: string, url: string, action: string): Promise<string> {
@@ -237,8 +270,28 @@ export class HttpCloudflareApiClient implements CloudflareApiClient {
     });
   }
 
+  async upsertOriginHostHeaderRule(zoneId: string, matchHost: string, originHost: string): Promise<void> {
+    const phase = 'http_request_origin';
+    const path = `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${phase}/entrypoint`;
+    let existing: Array<{ id?: string; expression?: string; action?: string; action_parameters?: Record<string, unknown> }> = [];
+    try {
+      const current = await this.request<{ rules?: typeof existing }>('GET', path);
+      existing = current.result.rules ?? [];
+    } catch {
+      // Zone may have no entrypoint ruleset yet — start fresh.
+    }
+    const expression = `(http.host eq "${matchHost}")`;
+    const filtered = existing.filter((r) => r.expression !== expression);
+    filtered.push({
+      expression,
+      action: 'route',
+      action_parameters: { host_header: originHost },
+    });
+    await this.request('PUT', path, { rules: filtered });
+  }
+
   private async request<T>(
-    method: 'GET' | 'POST' | 'PATCH',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT',
     path: string,
     body?: unknown,
   ): Promise<CloudflareEnvelope<T>> {
@@ -332,7 +385,7 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
     zoneId: string,
     target: { appDomain: string; zoneDomain: string; domainMode: 'zone-root' | 'subdomain'; dnsRecordName: string },
     opts: { createIfMissing: boolean },
-  ): Promise<{ created: boolean; skipped: boolean; reason: string }> {
+  ): Promise<EnsureDnsRecordOutcome> {
     // Apex-host mode: the app host is the zone itself. This step is a no-op
     // because Studio does not have enough context to safely create/replace the
     // apex A/AAAA/CNAME target (origin-specific).
@@ -361,10 +414,22 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
         created: false,
         skipped: true,
         reason: `DNS record already exists: ${desiredNameFqdn} ${desiredType} ${desiredContent}.`,
+        recordType: desiredType,
+        recordHost: desiredNameFqdn,
+        recordContent: desiredContent,
       };
     }
 
     if (existing.length > 0) {
+      // An A record means the domain is bound to a load balancer by a later step (e.g. web:bind-domain-ssl).
+      // That takes precedence over the placeholder CNAME — treat it as already handled.
+      if (existing.every((r) => r.type === 'A')) {
+        return {
+          created: false,
+          skipped: true,
+          reason: `DNS record for "${target.appDomain}" is an A record managed by the load balancer binding step; skipping CNAME creation.`,
+        };
+      }
       const conflictSummary = existing
         .map((r) => `${r.type} ${r.name} -> ${r.content}`)
         .join('; ');
@@ -393,6 +458,9 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
       created: true,
       skipped: false,
       reason: `Created DNS record ${desiredNameFqdn} ${desiredType} ${desiredContent}.`,
+      recordType: desiredType,
+      recordHost: desiredNameFqdn,
+      recordContent: desiredContent,
     };
   }
 
@@ -538,6 +606,14 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
             cloudflare_zone_domain: target.zoneDomain,
             cloudflare_app_domain: target.appDomain,
             cloudflare_domain_mode: target.domainMode,
+            ...(dnsOutcome.recordType === 'CNAME'
+              ? {
+                  cloudflare_dns_record_type: dnsOutcome.recordType,
+                  cloudflare_dns_record_host: dnsOutcome.recordHost ?? target.appDomain,
+                  cloudflare_dns_record_content: dnsOutcome.recordContent ?? target.zoneDomain,
+                  cloudflare_app_url: `https://${target.appDomain}`,
+                }
+              : {}),
           },
           userPrompt:
             dnsOutcome.reason,
@@ -625,6 +701,7 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
       }
       case 'cloudflare:configure-dns':
       {
+        let dnsOutcome: EnsureDnsRecordOutcome;
         if (!zoneId) {
           return {
             status: 'failed',
@@ -633,7 +710,7 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
           };
         }
         try {
-          await this.ensureDnsRecordForAppHost(zoneId, target, {
+          dnsOutcome = await this.ensureDnsRecordForAppHost(zoneId, target, {
             createIfMissing: false,
           });
         } catch (err) {
@@ -650,6 +727,14 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
             cloudflare_zone_domain: target.zoneDomain,
             cloudflare_app_domain: target.appDomain,
             cloudflare_domain_mode: target.domainMode,
+            ...(dnsOutcome.recordType === 'CNAME'
+              ? {
+                  cloudflare_dns_record_type: dnsOutcome.recordType,
+                  cloudflare_dns_record_host: dnsOutcome.recordHost ?? target.appDomain,
+                  cloudflare_dns_record_content: dnsOutcome.recordContent ?? target.zoneDomain,
+                  cloudflare_app_url: `https://${target.appDomain}`,
+                }
+              : {}),
           },
         };
       }

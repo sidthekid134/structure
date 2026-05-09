@@ -4,7 +4,7 @@ import { FIREBASE_STEPS, FIREBASE_TEARDOWN_STEPS } from '../../provisioning/step
 export const firebaseFirestorePlugin: PluginDefinition = {
   id: 'firebase-firestore',
   version: '1.0.0',
-  label: 'Firestore',
+  label: 'App Database',
   description: 'Create a Firestore database and deploy security rules.',
   integrationId: 'gcp',
   provider: 'firebase',
@@ -53,7 +53,7 @@ export const firebaseFirestorePlugin: PluginDefinition = {
   },
   functionGroup: {
     id: 'firebase',
-    label: 'Firebase & GCP',
+    label: 'Firebase & Cloud',
     description: 'Firebase services and Google Cloud infrastructure',
     order: 1,
   },

@@ -14,11 +14,11 @@ import {
 import type { Environment } from '../providers/types.js';
 
 function readGitHubToken(context: StepHandlerContext): string | undefined {
-  return context.vaultManager.getCredential(context.passphrase, 'github', 'token')?.trim();
+  return context.credentialService.retrieveOrgCredential('github_pat')?.trim() || undefined;
 }
 
 function readExpoToken(context: StepHandlerContext): string | undefined {
-  return context.vaultManager.getCredential(context.passphrase, 'eas', 'expo_token')?.trim();
+  return context.credentialService.retrieveOrgCredential('expo_token')?.trim() || undefined;
 }
 
 /**
@@ -430,10 +430,9 @@ const injectGitHubEnvironmentSecretsHandler: StepHandler = {
     const injected: string[] = [];
     const scrubbed: string[] = [];
 
-    const serviceAccountJson = await context.vaultManager.getCredential(
-      context.passphrase,
-      'firebase',
-      `${context.projectId}/service_account_json`,
+    const serviceAccountJson = context.credentialService.retrieveCredential(
+      context.projectId,
+      'gcp_service_account_json',
     );
 
     // Make sure each target env exists before writing secrets to it.
@@ -678,11 +677,11 @@ const writeEasJsonHandler: StepHandler = {
       const submitInfo: EasJsonSubmitInfo = {
         ascAppId:
           context.upstreamArtifacts['asc_app_id']?.trim() ||
-          context.vaultManager.getCredential(context.passphrase, 'firebase', `${context.projectId}/asc_app_id`)?.trim() ||
+          context.credentialService.retrieveCredential(context.projectId, 'apple_asc_app_id')?.trim() ||
           undefined,
         appleTeamId:
           context.upstreamArtifacts['apple_team_id']?.trim() ||
-          context.vaultManager.getCredential(context.passphrase, 'firebase', `${context.projectId}/apple_team_id`)?.trim() ||
+          context.credentialService.retrieveCredential(context.projectId, 'apple_team_id')?.trim() ||
           undefined,
         appleId: context.upstreamArtifacts['apple_id']?.trim() || undefined,
       };

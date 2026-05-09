@@ -10,7 +10,7 @@ export const firebaseMessagingPlugin: PluginDefinition = {
   id: 'firebase-messaging',
   version: '1.0.0',
   label: 'Push Notifications',
-  description: 'Configure FCM/APNs and mobile signing integration.',
+  description: 'Configure FCM, APNs, and mobile push credentials.',
   integrationId: 'gcp',
   provider: 'firebase',
   requiredModules: ['firebase-core'],
@@ -38,7 +38,7 @@ export const firebaseMessagingPlugin: PluginDefinition = {
   defaultJourneyPhase: 'cloud_firebase',
   functionGroup: {
     id: 'firebase',
-    label: 'Firebase & GCP',
+    label: 'Firebase & Cloud',
     description: 'Firebase services and Google Cloud infrastructure',
     order: 1,
   },

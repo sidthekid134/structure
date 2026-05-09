@@ -44,17 +44,15 @@ import type {
  * an integration card.
  */
 const BACKEND_TO_UI_PROVIDER_ID: Record<string, ProviderId | 'studio' | 'other'> = {
+  gcp: 'firebase',
   firebase: 'firebase',
   github: 'github',
   eas: 'expo',
   apple: 'apple',
   cloudflare: 'cloudflare',
-  // No first-party integration card — show as "other" so the registry card
-  // falls back to "View Plugin Contract" instead of showing a connect button
-  // that would point at a non-existent flow.
+  'google-play': 'google-play',
+  llm: 'llm',
   oauth: 'other',
-  llm: 'other',
-  'google-play': 'other',
 };
 
 function mapProviderId(backendProvider: string): ProviderId | 'studio' | 'other' {

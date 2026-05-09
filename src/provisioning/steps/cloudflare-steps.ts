@@ -62,6 +62,17 @@ export const CLOUDFLARE_STEPS: ProvisioningStepNode[] = [
         label: 'DNS Record Name',
         description: 'Record name inside the Cloudflare zone (e.g. @ or app)',
       },
+      {
+        key: 'cloudflare_dns_record_type',
+        label: 'DNS Record Type',
+        description: 'Type of DNS record configured for the app host.',
+      },
+      {
+        key: 'cloudflare_app_url',
+        label: 'Project UI URL',
+        description: 'HTTPS URL for the project UI when a CNAME points at the app host.',
+        presentation: { primaryLinkFromValue: true },
+      },
     ],
     estimatedDurationMs: 3000,
   },
@@ -122,7 +133,7 @@ export const CLOUDFLARE_STEPS: ProvisioningStepNode[] = [
   {
     type: 'step',
     key: 'cloudflare:configure-deep-link-routes',
-    label: 'Configure Deep Link Routes',
+    label: 'Host App Link and Auth Callback Routes',
     description: 'Set up Cloudflare Workers or Page Rules for deep link routing.',
     provider: 'cloudflare',
     environmentScope: 'per-environment',

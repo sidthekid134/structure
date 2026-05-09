@@ -577,6 +577,28 @@ export class HttpGitHubApiClient implements GitHubApiClient {
 const MANAGED_WORKFLOW_FILENAMES: readonly string[] = [
   'build.yml',
   'deploy.yml',
+  'web-build.yml',
+  'web-deploy.yml',
+  'api-build.yml',
+  'api-deploy.yml',
+  'web-react-build.yml',
+  'web-react-deploy.yml',
+  'web-nextjs-build.yml',
+  'web-nextjs-deploy.yml',
+  'api-node-build.yml',
+  'api-node-deploy.yml',
+  'api-flask-build.yml',
+  'api-flask-deploy.yml',
+  'web-gcp-react-build.yml',
+  'web-gcp-react-deploy.yml',
+  'web-gcp-nextjs-build.yml',
+  'web-gcp-nextjs-deploy.yml',
+  'web-gcp-react-delivery.yml',
+  'web-gcp-nextjs-delivery.yml',
+  'api-gcp-node-build.yml',
+  'api-gcp-node-deploy.yml',
+  'api-gcp-flask-build.yml',
+  'api-gcp-flask-deploy.yml',
   'expo-testflight.yml',
 ];
 
@@ -611,6 +633,585 @@ function buildWorkflowTemplate(template: string, environments: Environment[]): s
     environments.find((e) => e !== 'production') ?? productionEnv;
   const envExpression = `\${{ github.ref == 'refs/heads/main' && '${productionEnv}' || '${nonProdEnv}' }}`;
   switch (template) {
+    case 'web-build':
+    case 'web-react-build':
+      return `name: Web Build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run build
+`;
+    case 'web-deploy':
+    case 'web-react-deploy':
+      return `name: Web Deploy
+on:
+  push:
+    branches: [main, develop]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run deploy
+    env:
+      FIREBASE_SERVICE_ACCOUNT: \${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+`;
+    case 'web-nextjs-build':
+      return `name: Next.js Build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run build
+`;
+    case 'web-nextjs-deploy':
+      return `name: Next.js Deploy
+on:
+  push:
+    branches: [main, develop]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run deploy
+    env:
+      FIREBASE_SERVICE_ACCOUNT: \${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+`;
+    case 'web-gcp-react-build':
+      return `name: Web (React) Build for Cloud Run
+on: [push, pull_request]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run build
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-react:\${{ github.sha }}"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+      - run: |
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+`;
+    case 'web-gcp-react-deploy':
+      return `name: Web (React) Deploy to Cloud Run
+on:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: \${{ vars.WEB_CLOUD_RUN_SERVICE }}
+          image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-react:\${{ github.sha }}"
+          region: \${{ vars.GCP_REGION }}
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure()
+    needs: [deploy]
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: |
+          PREV=$(gcloud run revisions list \
+            --service "\${{ vars.WEB_CLOUD_RUN_SERVICE }}" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --sort-by=~metadata.creationTimestamp \
+            --format='value(metadata.name)' \
+            --limit=2 | tail -1)
+          if [ -z "$PREV" ]; then
+            echo "No previous revision available for rollback"; exit 1;
+          fi
+          gcloud run services update-traffic "\${{ vars.WEB_CLOUD_RUN_SERVICE }}" \
+            --to-revisions="$PREV=100" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --quiet
+`;
+    case 'web-gcp-nextjs-build':
+      return `name: Web (Next.js) Build for Cloud Run
+on: [push, pull_request]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run build
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-nextjs:\${{ github.sha }}"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+      - run: |
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+`;
+    case 'web-gcp-nextjs-deploy':
+      return `name: Web (Next.js) Deploy to Cloud Run
+on:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: \${{ vars.WEB_CLOUD_RUN_SERVICE }}
+          image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-nextjs:\${{ github.sha }}"
+          region: \${{ vars.GCP_REGION }}
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure()
+    needs: [deploy]
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: |
+          PREV=$(gcloud run revisions list \
+            --service "\${{ vars.WEB_CLOUD_RUN_SERVICE }}" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --sort-by=~metadata.creationTimestamp \
+            --format='value(metadata.name)' \
+            --limit=2 | tail -1)
+          if [ -z "$PREV" ]; then
+            echo "No previous revision available for rollback"; exit 1;
+          fi
+          gcloud run services update-traffic "\${{ vars.WEB_CLOUD_RUN_SERVICE }}" \
+            --to-revisions="$PREV=100" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --quiet
+`;
+    case 'web-gcp-react-delivery':
+      return `name: Web (React) Delivery to Cloud Run
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run build
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-react:\${{ github.sha }}"
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+  deploy:
+    if: github.event_name == 'push'
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: \${{ vars.WEB_CLOUD_RUN_SERVICE }}
+          image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-react:\${{ github.sha }}"
+          region: \${{ vars.GCP_REGION }}
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure() && github.event_name == 'push'
+    needs: [deploy]
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: |
+          PREV=$(gcloud run revisions list \
+            --service "\${{ vars.WEB_CLOUD_RUN_SERVICE }}" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --sort-by=~metadata.creationTimestamp \
+            --format='value(metadata.name)' \
+            --limit=2 | tail -1)
+          if [ -z "$PREV" ]; then
+            echo "No previous revision available for rollback"; exit 1;
+          fi
+          gcloud run services update-traffic "\${{ vars.WEB_CLOUD_RUN_SERVICE }}" \
+            --to-revisions="$PREV=100" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --quiet
+`;
+    case 'web-gcp-nextjs-delivery':
+      return `name: Web (Next.js) Delivery to Cloud Run
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run build
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-nextjs:\${{ github.sha }}"
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+  deploy:
+    if: github.event_name == 'push'
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: \${{ vars.WEB_CLOUD_RUN_SERVICE }}
+          image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-nextjs:\${{ github.sha }}"
+          region: \${{ vars.GCP_REGION }}
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure() && github.event_name == 'push'
+    needs: [deploy]
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: |
+          PREV=$(gcloud run revisions list \
+            --service "\${{ vars.WEB_CLOUD_RUN_SERVICE }}" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --sort-by=~metadata.creationTimestamp \
+            --format='value(metadata.name)' \
+            --limit=2 | tail -1)
+          if [ -z "$PREV" ]; then
+            echo "No previous revision available for rollback"; exit 1;
+          fi
+          gcloud run services update-traffic "\${{ vars.WEB_CLOUD_RUN_SERVICE }}" \
+            --to-revisions="$PREV=100" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --quiet
+`;
+    case 'api-build':
+    case 'api-node-build':
+      return `name: API Build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run test --if-present
+      - run: npm run build --if-present
+`;
+    case 'api-deploy':
+    case 'api-node-deploy':
+      return `name: API Deploy
+on:
+  push:
+    branches: [main, develop]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run deploy
+    env:
+      FIREBASE_SERVICE_ACCOUNT: \${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+`;
+    case 'api-flask-build':
+      return `name: Flask API Build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Run tests
+        run: |
+          if [ -d tests ]; then python -m pytest; else echo "No tests directory found; skipping."; fi
+`;
+    case 'api-flask-deploy':
+      return `name: Flask API Deploy
+on:
+  push:
+    branches: [main, develop]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Deploy
+        run: |
+          if [ -f scripts/deploy.sh ]; then bash scripts/deploy.sh; else echo "Expected scripts/deploy.sh for Flask deploy."; exit 1; fi
+    env:
+      FIREBASE_SERVICE_ACCOUNT: \${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+`;
+    case 'api-gcp-node-build':
+      return `name: API (Node/Express) Build for Cloud Run
+on: [push, pull_request]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run test --if-present
+      - run: npm run build --if-present
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-node:\${{ github.sha }}"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+      - run: |
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+`;
+    case 'api-gcp-node-deploy':
+      return `name: API (Node/Express) Deploy to Cloud Run
+on:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: \${{ vars.API_CLOUD_RUN_SERVICE }}
+          image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-node:\${{ github.sha }}"
+          region: \${{ vars.GCP_REGION }}
+`;
+    case 'api-gcp-flask-build':
+      return `name: API (Flask) Build for Cloud Run
+on: [push, pull_request]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Run tests
+        run: |
+          if [ -d tests ]; then python -m pytest; else echo "No tests directory found; skipping."; fi
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-flask:\${{ github.sha }}"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+      - run: |
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+`;
+    case 'api-gcp-flask-deploy':
+      return `name: API (Flask) Deploy to Cloud Run
+on:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: \${{ vars.API_CLOUD_RUN_SERVICE }}
+          image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-flask:\${{ github.sha }}"
+          region: \${{ vars.GCP_REGION }}
+`;
     case 'build':
       return `name: Build
 on: [push, pull_request]

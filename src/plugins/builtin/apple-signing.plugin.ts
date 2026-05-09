@@ -5,8 +5,8 @@ import { APPLE_SIGNING_FLOW } from '../../flows/apple-signing.flow.js';
 export const appleSigningPlugin: PluginDefinition = {
   id: 'apple-signing',
   version: '1.0.0',
-  label: 'Apple Signing',
-  description: 'Apple Developer, App ID, signing certificates, provisioning profiles, and ASC API key.',
+  label: 'iOS Signing & App Store',
+  description: 'Configure Apple Developer app IDs, APNs, App Store Connect, TestFlight, and EAS iOS credentials.',
   integrationId: 'apple',
   provider: 'apple',
   providerMeta: {

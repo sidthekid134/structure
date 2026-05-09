@@ -55,7 +55,7 @@ export interface CollectionResult {
 // Labels and descriptions for credential types
 // ---------------------------------------------------------------------------
 
-const CREDENTIAL_INFO: Record<CredentialType, Omit<MissingCredentialInfo, 'type'>> = {
+const CREDENTIAL_INFO: Partial<Record<CredentialType, Omit<MissingCredentialInfo, 'type'>>> = {
   github_pat: {
     label: 'GitHub Personal Access Token',
     description: 'Required for creating repos, configuring branch protection, and managing GitHub Actions secrets.',
@@ -177,10 +177,12 @@ export class CredentialCollectionOrchestrator {
 
     const blockedSteps = this.getBlockedSteps(projectId, missing);
 
-    const missingInfo: MissingCredentialInfo[] = missing.map((type) => ({
-      type,
-      ...CREDENTIAL_INFO[type],
-    }));
+    const missingInfo: MissingCredentialInfo[] = missing
+      .filter((type) => CREDENTIAL_INFO[type] != null)
+      .map((type) => ({
+        type,
+        ...(CREDENTIAL_INFO[type] as Omit<MissingCredentialInfo, 'type'>),
+      }));
 
     return {
       missing_types: missing,
@@ -206,11 +208,11 @@ export class CredentialCollectionOrchestrator {
 
     const missingInfo = missing.map((type) => ({
       type,
-      label: CREDENTIAL_INFO[type].label,
+      label: CREDENTIAL_INFO[type]?.label ?? type,
     }));
 
     throw new OrchestrationError(
-      `Cannot execute step "${stepType}": missing credentials — ${missing.map((t) => CREDENTIAL_INFO[t].label).join(', ')}.`,
+      `Cannot execute step "${stepType}": missing credentials — ${missing.map((t) => CREDENTIAL_INFO[t]?.label ?? t).join(', ')}.`,
       'MISSING_CREDENTIALS',
       {
         project_id: projectId,

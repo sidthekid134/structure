@@ -209,14 +209,13 @@ export class StudioServer {
     this.app.use(
       '/api',
       createLifecycleRouter({
-        vaultManager: this.vaultManager,
         vaultPath: path.join(storeDir, 'credentials.enc'),
         storeDir,
       }),
     );
 
     // ── Main feature API ──────────────────────────────────────────────────
-    this.app.use('/api', createApiRouter(this.eventLog, this.wsHandler, storeDir, this.serveUiFromSource));
+    this.app.use('/api', createApiRouter(this.eventLog, this.wsHandler, storeDir, this.serveUiFromSource, this.vaultManager));
 
     this.app.use((err: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
       if (err instanceof VaultSealedError) {

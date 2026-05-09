@@ -3,32 +3,11 @@ import type { MobilePlatform } from './graph.types.js';
 import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 
 /**
- * Open branded string — built-in modules plus any plugin-contributed ones.
- * Use BuiltinModuleId for exhaustive checks against the built-in set.
+ * Open branded string — module ids are validated at registration time, not
+ * via a literal-union type. The plugin registry is the source of truth for
+ * which ids are valid.
  */
 export type ModuleId = string & { readonly __brand?: 'ModuleId' };
-
-export const BUILTIN_MODULE_IDS = [
-  'firebase-core',
-  'firebase-auth',
-  'firebase-firestore',
-  'firebase-storage',
-  'firebase-messaging',
-  'github-repo',
-  'github-ci',
-  'eas-builds',
-  'eas-submit',
-  'apple-signing',
-  'google-play-publishing',
-  'cloudflare-domain',
-  'oauth-social',
-  'llm-openai',
-  'llm-anthropic',
-  'llm-gemini',
-  'llm-custom',
-] as const;
-
-export type BuiltinModuleId = (typeof BUILTIN_MODULE_IDS)[number];
 
 export interface ModuleDefinition {
   id: ModuleId;
@@ -65,11 +44,13 @@ export function platformMaskAllows(
   return nodePlatforms.some((platform) => projectPlatforms.includes(platform));
 }
 
-/** Open string — built-in templates plus plugin-contributed ones. */
+/**
+ * Open string — template ids are validated at registration time. Built-in
+ * template metadata is registered via `registerProjectTemplate()` from
+ * `registerBuiltinPlugins()`; module membership is derived from each
+ * plugin's `includedInTemplates` field.
+ */
 export type ProjectTemplateId = string & { readonly __brand?: 'ProjectTemplateId' };
-
-export const BUILTIN_TEMPLATE_IDS = ['mobile-app', 'web-app', 'api-backend', 'custom'] as const;
-export type BuiltinProjectTemplateId = (typeof BUILTIN_TEMPLATE_IDS)[number];
 
 export interface ProjectTemplate {
   id: ProjectTemplateId;
@@ -78,295 +59,58 @@ export interface ProjectTemplate {
   modules: ModuleId[];
 }
 
-export const MODULE_CATALOG: Readonly<Record<string, ModuleDefinition>> = {
-  'firebase-core': {
-    id: 'firebase-core',
-    label: 'GCP Core',
-    description: 'Create the GCP/Firebase project and provisioner identity.',
-    provider: 'firebase',
-    requiredModules: [],
-    optionalModules: ['firebase-auth', 'firebase-firestore', 'firebase-storage', 'firebase-messaging'],
-    stepKeys: [
-      'firebase:create-gcp-project',
-      'firebase:enable-firebase',
-      'firebase:create-provisioner-sa',
-      'firebase:bind-provisioner-iam',
-      'firebase:generate-sa-key',
-      'firebase:register-ios-app',
-      'firebase:register-android-app',
-    ],
-    teardownStepKeys: ['firebase:delete-gcp-project'],
-    userActionKeys: ['user:setup-gcp-billing'],
-  },
-  'firebase-auth': {
-    id: 'firebase-auth',
-    label: 'Firebase Auth',
-    description: 'Enable auth providers and configure redirect domains.',
-    provider: 'oauth',
-    requiredModules: ['firebase-core'],
-    optionalModules: ['oauth-social'],
-    stepKeys: [
-      'firebase:enable-auth',
-      'oauth:enable-auth-providers',
-      'oauth:enable-google-sign-in',
-      'oauth:register-oauth-client-web',
-      'oauth:register-oauth-client-ios',
-      'oauth:register-oauth-client-android',
-      'oauth:configure-redirect-uris',
-    ],
-    teardownStepKeys: ['oauth:disable-auth-providers'],
-  },
-  'firebase-firestore': {
-    id: 'firebase-firestore',
-    label: 'Firestore',
-    description: 'Create a Firestore database and deploy security rules.',
-    provider: 'firebase',
-    requiredModules: ['firebase-core'],
-    optionalModules: [],
-    stepKeys: ['firebase:create-firestore-db', 'firebase:configure-firestore-rules'],
-    teardownStepKeys: ['firebase:delete-firestore-db'],
-  },
-  'firebase-storage': {
-    id: 'firebase-storage',
-    label: 'Cloud Storage',
-    description: 'Deploy storage rules for configured environments.',
-    provider: 'firebase',
-    requiredModules: ['firebase-core'],
-    optionalModules: [],
-    stepKeys: ['firebase:enable-storage', 'firebase:configure-storage-rules'],
-    teardownStepKeys: ['firebase:delete-storage-buckets'],
-  },
-  'firebase-messaging': {
-    id: 'firebase-messaging',
-    label: 'Push Notifications',
-    description: 'Configure FCM/APNs and mobile signing integration.',
-    provider: 'firebase',
-    requiredModules: ['firebase-core'],
-    optionalModules: ['apple-signing', 'google-play-publishing'],
-    stepKeys: ['firebase:enable-fcm', 'apple:upload-apns-to-firebase', 'google-play:add-fingerprints-to-firebase'],
-    teardownStepKeys: ['firebase:disable-messaging'],
-  },
-  'github-repo': {
-    id: 'github-repo',
-    label: 'GitHub Repository',
-    description: 'Create the repository and core integration metadata.',
-    provider: 'github',
-    requiredModules: [],
-    optionalModules: ['github-ci'],
-    stepKeys: ['github:create-repository', 'github:create-environments'],
-    teardownStepKeys: ['github:delete-repository'],
-    userActionKeys: ['user:provide-github-pat'],
-  },
-  'github-ci': {
-    id: 'github-ci',
-    label: 'GitHub CI/CD',
-    description: 'Deploy workflows and environment secrets.',
-    provider: 'github',
-    requiredModules: ['github-repo', 'firebase-core'],
-    optionalModules: ['eas-builds'],
-    stepKeys: ['github:inject-secrets', 'github:deploy-workflows'],
-    teardownStepKeys: ['github:delete-workflows', 'github:delete-environments'],
-  },
-  'eas-builds': {
-    id: 'eas-builds',
-    label: 'EAS Builds',
-    description: 'Register project with EAS and configure build profiles.',
-    provider: 'eas',
-    requiredModules: ['github-repo'],
-    optionalModules: ['eas-submit'],
-    stepKeys: [
-      'eas:create-project',
-      'eas:configure-build-profiles',
-      'eas:sync-runtime-env',
-      'eas:sync-llm-secrets',
-      'eas:store-token-in-github',
-      'eas:write-eas-json',
-    ],
-    teardownStepKeys: ['eas:delete-project'],
-    userActionKeys: ['user:provide-expo-token', 'user:install-expo-github-app'],
-  },
-  'eas-submit': {
-    id: 'eas-submit',
-    label: 'EAS Submit',
-    description: 'Configure Apple and Android app submission from EAS.',
-    provider: 'eas',
-    requiredModules: ['eas-builds'],
-    optionalModules: ['apple-signing', 'google-play-publishing'],
-    stepKeys: ['eas:configure-submit-apple', 'eas:configure-submit-android'],
-    teardownStepKeys: ['eas:remove-submit-targets'],
-  },
-  'apple-signing': {
-    id: 'apple-signing',
-    label: 'Apple Signing',
-    description: 'Provision Apple app IDs, profiles, and submission credentials.',
-    provider: 'apple',
-    requiredModules: [],
-    optionalModules: ['eas-submit'],
-    stepKeys: [
-      'apple:register-app-id',
-      'apple:generate-apns-key',
-      'apple:create-app-store-listing',
-      'apple:configure-testflight-group',
-      'apple:store-signing-in-eas',
-    ],
-    teardownStepKeys: ['apple:remove-app-store-listing', 'apple:revoke-signing-assets'],
-    userActionKeys: ['user:enroll-apple-developer'],
-    platforms: ['ios'],
-  },
-  'google-play-publishing': {
-    id: 'google-play-publishing',
-    label: 'Google Play Publishing',
-    description: 'Set up Play app, signing, and service account automation.',
-    provider: 'google-play',
-    requiredModules: ['firebase-core'],
-    optionalModules: ['eas-submit'],
-    stepKeys: [
-      'google-play:create-app-listing',
-      'google-play:create-service-account',
-      'google-play:setup-internal-testing',
-      'google-play:configure-app-signing',
-      'google-play:extract-fingerprints',
-    ],
-    teardownStepKeys: ['google-play:remove-app-listing', 'google-play:revoke-service-account'],
-    userActionKeys: ['user:enroll-google-play', 'user:upload-initial-aab'],
-    platforms: ['android'],
-  },
-  'cloudflare-domain': {
-    id: 'cloudflare-domain',
-    label: 'Cloudflare Domain',
-    description: 'Configure DNS, SSL, and deep-link route hosting.',
-    provider: 'cloudflare',
-    requiredModules: [],
-    optionalModules: ['oauth-social'],
-    stepKeys: [
-      'cloudflare:add-domain-zone',
-      'cloudflare:configure-dns',
-      'cloudflare:configure-ssl',
-      'cloudflare:configure-deep-link-routes',
-      'cloudflare:setup-apple-app-site-association',
-      'cloudflare:setup-android-asset-links',
-    ],
-    teardownStepKeys: ['cloudflare:remove-domain-zone'],
-    userActionKeys: ['user:provide-cloudflare-token', 'user:confirm-dns-nameservers'],
-  },
-  'oauth-social': {
-    id: 'oauth-social',
-    label: 'OAuth Social Login',
-    description: 'Configure Google/Apple sign-in flows with deep-link support.',
-    provider: 'oauth',
-    requiredModules: ['firebase-auth', 'cloudflare-domain'],
-    optionalModules: ['apple-signing'],
-    stepKeys: [
-      'apple:create-sign-in-key',
-      'oauth:configure-apple-sign-in',
-      'oauth:link-deep-link-domain',
-      'oauth:prepare-app-integration-kit',
-    ],
-    teardownStepKeys: ['oauth:delete-oauth-clients'],
-    userActionKeys: ['user:verify-auth-integration-kit'],
-  },
-  'llm-openai': {
-    id: 'llm-openai',
-    label: 'OpenAI',
-    description: 'Connect OpenAI credentials and verify available models.',
-    provider: 'llm',
-    requiredModules: [],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: ['llm:revoke-openai-credentials'],
-    userActionKeys: ['user:provide-openai-api-key', 'user:share-openai-integration-prompt'],
-  },
-  'llm-anthropic': {
-    id: 'llm-anthropic',
-    label: 'Anthropic Claude',
-    description: 'Connect Anthropic credentials and verify available Claude models.',
-    provider: 'llm',
-    requiredModules: [],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: ['llm:revoke-anthropic-credentials'],
-    userActionKeys: ['user:provide-anthropic-api-key', 'user:share-anthropic-integration-prompt'],
-  },
-  'llm-gemini': {
-    id: 'llm-gemini',
-    label: 'Google Gemini',
-    description: 'Connect Google Gemini credentials and verify available models.',
-    provider: 'llm',
-    requiredModules: [],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: ['llm:revoke-gemini-credentials'],
-    userActionKeys: ['user:provide-gemini-api-key', 'user:share-gemini-integration-prompt'],
-  },
-  'llm-custom': {
-    id: 'llm-custom',
-    label: 'Custom OpenAI-Compatible',
-    description: 'Connect custom endpoint credentials and verify available models.',
-    provider: 'llm',
-    requiredModules: [],
-    optionalModules: [],
-    stepKeys: [],
-    teardownStepKeys: ['llm:revoke-custom-credentials'],
-    userActionKeys: ['user:provide-custom-llm-credentials', 'user:share-custom-llm-integration-prompt'],
-  },
-};
+// ---------------------------------------------------------------------------
+// Lazy bootstrap — guarantee the plugin registry is populated before any
+// catalog/template query reads from it. The bootstrap call is wrapped in a
+// dynamic import to break the cycle between this file and the plugin
+// registration entry point.
+// ---------------------------------------------------------------------------
 
-export const PROJECT_TEMPLATES: Readonly<Record<string, ProjectTemplate>> = {
-  'mobile-app': {
-    id: 'mobile-app',
-    label: 'Mobile App',
-    description: 'Cross-platform mobile template with build and store automation.',
-    modules: [
-      'firebase-core',
-      'firebase-auth',
-      'firebase-firestore',
-      'firebase-storage',
-      'firebase-messaging',
-      'github-repo',
-      'github-ci',
-      'eas-builds',
-      'eas-submit',
-      'apple-signing',
-      'google-play-publishing',
-      'cloudflare-domain',
-      'oauth-social',
-    ],
-  },
-  'web-app': {
-    id: 'web-app',
-    label: 'Web App',
-    description: 'Web-focused app with auth, data, CI, and managed DNS.',
-    modules: [
-      'firebase-core',
-      'firebase-auth',
-      'firebase-firestore',
-      'firebase-storage',
-      'github-repo',
-      'github-ci',
-      'cloudflare-domain',
-      'oauth-social',
-    ],
-  },
-  'api-backend': {
-    id: 'api-backend',
-    label: 'API Backend',
-    description: 'Backend infrastructure with data, auth, and CI foundations.',
-    modules: ['firebase-core', 'firebase-auth', 'firebase-firestore', 'github-repo', 'github-ci'],
-  },
-  custom: {
-    id: 'custom',
-    label: 'Custom',
-    description: 'Start from scratch and choose modules manually.',
-    modules: [],
-  },
-};
+let _bootstrapAttempted = false;
+function ensurePluginRegistryBootstrapped(): void {
+  if (_bootstrapAttempted) return;
+  _bootstrapAttempted = true;
+  if (globalPluginRegistry.hasPlugin('firebase-core')) return;
+  // Synchronous require avoids the cycle; the builtin barrel only re-exports
+  // plugin objects + the bootstrap function.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = require('../plugins/builtin/index.js') as {
+    registerBuiltinPlugins: () => void;
+  };
+  mod.registerBuiltinPlugins();
+}
 
-export const DEFAULT_MODULE_IDS: ModuleId[] = PROJECT_TEMPLATES['mobile-app'].modules;
+/**
+ * Returns the effective module catalog from the plugin registry. Lazily
+ * bootstraps the built-in plugins if they haven't been registered yet so
+ * callers don't have to remember the init order.
+ */
+export function getEffectiveModuleCatalog(): Readonly<Record<string, ModuleDefinition>> {
+  ensurePluginRegistryBootstrapped();
+  return globalPluginRegistry.getModuleCatalog();
+}
+
+/**
+ * Returns the effective project templates from the plugin registry. Lazily
+ * bootstraps the built-in plugins if they haven't been registered yet.
+ */
+export function getEffectiveProjectTemplates(): Readonly<Record<string, ProjectTemplate>> {
+  ensurePluginRegistryBootstrapped();
+  return globalPluginRegistry.getProjectTemplates();
+}
+
+/**
+ * Default module set used when creating a new project without specifying a
+ * template — derived from the registry's `mobile-app` template.
+ */
+export function getDefaultModuleIds(): ModuleId[] {
+  const templates = getEffectiveProjectTemplates();
+  return [...(templates['mobile-app']?.modules ?? [])];
+}
 
 /**
  * Resolve module dependencies topologically.
- * Accepts an optional catalog override — when omitted uses MODULE_CATALOG.
- * The plugin registry passes its own merged catalog here.
+ * Accepts an optional catalog override — when omitted uses the registry catalog.
  */
 export function resolveModuleDependencies(
   moduleIds: ModuleId[],
@@ -440,43 +184,4 @@ export function getTeardownStepKeysForModules(
     }
   }
   return Array.from(stepKeys);
-}
-
-// ---------------------------------------------------------------------------
-// Dynamic catalog — reads from plugin registry when bootstrapped
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the effective module catalog.
- * After registerBuiltinPlugins() runs, derives from the plugin registry.
- * Falls back to the static MODULE_CATALOG before bootstrap.
- */
-export function getEffectiveModuleCatalog(): Readonly<Record<string, ModuleDefinition>> {
-  if (globalPluginRegistry.hasPlugin('firebase-core')) {
-    return globalPluginRegistry.getModuleCatalog();
-  }
-  return MODULE_CATALOG;
-}
-
-/**
- * Returns the effective project templates.
- * After registerBuiltinPlugins() runs, derives from the plugin registry.
- * Falls back to the static PROJECT_TEMPLATES before bootstrap.
- */
-export function getEffectiveProjectTemplates(): Readonly<Record<string, ProjectTemplate>> {
-  if (globalPluginRegistry.hasPlugin('firebase-core')) {
-    const regTemplates = globalPluginRegistry.getProjectTemplates();
-    // Merge with static templates for label/description (static has more detail)
-    const merged: Record<string, ProjectTemplate> = { ...PROJECT_TEMPLATES };
-    for (const [id, tmpl] of Object.entries(regTemplates)) {
-      if (!merged[id]) {
-        merged[id] = tmpl;
-      } else {
-        // Registry has the computed module list; static has label/desc
-        merged[id] = { ...merged[id]!, modules: tmpl.modules };
-      }
-    }
-    return merged;
-  }
-  return PROJECT_TEMPLATES;
 }

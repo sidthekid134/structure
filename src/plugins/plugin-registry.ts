@@ -182,14 +182,39 @@ function defaultUserActionActions(
 // PluginRegistry class
 // ---------------------------------------------------------------------------
 
+/**
+ * Metadata for a project template — the label/description shown in the
+ * template picker. The actual module list is derived from each plugin's
+ * `includedInTemplates` array, so this only carries human-readable copy.
+ */
+export interface ProjectTemplateMetadata {
+  id: string;
+  label: string;
+  description: string;
+}
+
 export class PluginRegistry {
   private readonly plugins = new Map<string, PluginDefinition>();
   private readonly integrations = new Map<string, IntegrationDefinition>();
+  private readonly templateMetadata = new Map<string, ProjectTemplateMetadata>();
 
   constructor() {
     for (const integration of BUILTIN_INTEGRATIONS) {
       this.integrations.set(integration.id, integration);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Project template metadata (label + description). The module list is
+  // derived from `includedInTemplates`; only human-readable copy lives here.
+  // ---------------------------------------------------------------------------
+
+  registerProjectTemplate(meta: ProjectTemplateMetadata): void {
+    this.templateMetadata.set(meta.id, meta);
+  }
+
+  getProjectTemplateMetadata(id: string): ProjectTemplateMetadata | undefined {
+    return this.templateMetadata.get(id);
   }
 
   // ---------------------------------------------------------------------------
@@ -352,7 +377,17 @@ export class PluginRegistry {
 
   getProjectTemplates(): Record<string, ProjectTemplate> {
     const templates: Record<string, ProjectTemplate> = {};
-    // Collect plugins grouped by their includedInTemplates
+    // Seed templates with registered metadata so labels/descriptions are
+    // present even for templates whose member plugins haven't loaded yet
+    // (e.g. the synthetic "custom" template that has no plugins).
+    for (const meta of this.templateMetadata.values()) {
+      templates[meta.id] = {
+        id: meta.id,
+        label: meta.label,
+        description: meta.description,
+        modules: [],
+      };
+    }
     for (const plugin of this.getAllPlugins()) {
       for (const templateId of plugin.includedInTemplates ?? []) {
         if (!templates[templateId]) {
@@ -776,6 +811,8 @@ export class PluginRegistry {
         functionGroupId?: string;
         requiredModules: string[];
         optionalModules: string[];
+        moduleHints?: PluginDefinition['moduleHints'];
+        platforms?: PluginDefinition['platforms'];
         displayMeta?: PluginDisplayMeta;
       }
     > = {};
@@ -791,6 +828,8 @@ export class PluginRegistry {
         functionGroupId: plugin.functionGroup?.id,
         requiredModules: plugin.requiredModules,
         optionalModules: plugin.optionalModules,
+        moduleHints: plugin.moduleHints,
+        platforms: plugin.platforms,
         displayMeta: plugin.displayMeta,
       };
     }

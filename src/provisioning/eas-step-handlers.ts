@@ -33,20 +33,17 @@ function selectedLlmModuleIdsFromPlan(context: StepHandlerContext): string[] | u
 
 function llmResolveCredentialOpts(
   context: StepHandlerContext,
-): Pick<ProjectLlmRuntimeEnvResolveInput, 'readVault' | 'retrieveProjectCredential'> {
-  const cs = context.credentialService;
+): Pick<ProjectLlmRuntimeEnvResolveInput, 'retrieveProjectCredential'> {
   return {
-    readVault: (providerId, key) => context.vaultManager.getCredential(context.passphrase, providerId, key),
-    retrieveProjectCredential: cs
-      ? (type: CredentialType) => cs.retrieveCredential(context.projectId, type)
-      : undefined,
+    retrieveProjectCredential: (type: CredentialType) =>
+      context.credentialService.retrieveCredential(context.projectId, type),
   };
 }
 
 const STUDIO_EAS_ENV_MARKER = 'STUDIO_EAS_ENV';
 
 function readExpoToken(context: StepHandlerContext): string | undefined {
-  return context.vaultManager.getCredential(context.passphrase, 'eas', 'expo_token');
+  return context.credentialService.retrieveOrgCredential('expo_token') ?? undefined;
 }
 
 function easProjectSlug(context: StepHandlerContext): string {
@@ -194,7 +191,6 @@ function runtimeEnvMap(
   return resolveProjectRuntimeEnvValues({
     projectId: context.projectId,
     upstream: context.upstreamArtifacts,
-    readVault: (providerId, key) => context.vaultManager.getCredential(context.passphrase, providerId, key),
     firebaseApiKeyOverride: firebaseApiKey,
     includesIos: platforms.includes('ios'),
     includesAndroid: platforms.includes('android'),

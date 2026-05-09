@@ -9,7 +9,7 @@
 import * as http from 'http';
 import * as url from 'url';
 import * as crypto from 'crypto';
-import type { VaultManager } from '../vault.js';
+import type { CredentialService } from '../services/credential-service.js';
 import { createOperationLogger } from '../logger.js';
 
 const log = createOperationLogger('oauth-manager');
@@ -50,10 +50,10 @@ export interface OAuthProvider {
   exchangeCode(code: string, redirectUri: string, codeVerifier?: string): Promise<OAuthTokens>;
   validateToken(accessToken: string): Promise<TokenValidation>;
 
-  storeRefreshToken(vaultManager: VaultManager, vaultKey: Buffer, projectId: string, refreshToken: string): void;
-  getStoredRefreshToken(vaultManager: VaultManager, vaultKey: Buffer, projectId: string): string | null;
-  getAccessToken(vaultManager: VaultManager, vaultKey: Buffer, projectId: string): Promise<string | null>;
-  revokeStoredTokens(vaultManager: VaultManager, vaultKey: Buffer, projectId: string): void;
+  storeRefreshToken(credentialService: CredentialService, projectId: string, refreshToken: string): void;
+  getStoredRefreshToken(credentialService: CredentialService, projectId: string): string | null;
+  getAccessToken(credentialService: CredentialService, projectId: string): Promise<string | null>;
+  revokeStoredTokens(credentialService: CredentialService, projectId: string): void;
 
   /**
    * Optional hook called after successful token exchange. Providers can use this to
@@ -63,8 +63,7 @@ export interface OAuthProvider {
   onAuthComplete?(
     accessToken: string,
     projectId: string,
-    vaultManager: VaultManager,
-    vaultKey: Buffer,
+    credentialService: CredentialService,
   ): Promise<Record<string, unknown>>;
 }
 
@@ -136,8 +135,7 @@ export class OAuthManager {
   private readonly cleanupTimer: NodeJS.Timeout;
 
   constructor(
-    private readonly vaultManager: VaultManager,
-    private readonly getVaultKey: () => Buffer,
+    private readonly credentialService: CredentialService,
   ) {
     this.cleanupTimer = setInterval(() => this.cleanupExpired(), 5 * 60 * 1000);
     this.cleanupTimer.unref?.();
@@ -225,8 +223,7 @@ export class OAuthManager {
 
   hasToken(provider: OAuthProvider, projectId: string): boolean {
     try {
-      const vaultKey = this.getVaultKey();
-      const t = provider.getStoredRefreshToken(this.vaultManager, vaultKey, projectId);
+      const t = provider.getStoredRefreshToken(this.credentialService, projectId);
       return Boolean(t?.trim());
     } catch {
       return false;
@@ -235,8 +232,7 @@ export class OAuthManager {
 
   async getToken(provider: OAuthProvider, projectId: string): Promise<string | null> {
     try {
-      const vaultKey = this.getVaultKey();
-      return await provider.getAccessToken(this.vaultManager, vaultKey, projectId);
+      return await provider.getAccessToken(this.credentialService, projectId);
     } catch {
       return null;
     }
@@ -255,8 +251,7 @@ export class OAuthManager {
   }
 
   revokeToken(provider: OAuthProvider, projectId: string): void {
-    const vaultKey = this.getVaultKey();
-    provider.revokeStoredTokens(this.vaultManager, vaultKey, projectId);
+    provider.revokeStoredTokens(this.credentialService, projectId);
   }
 
   // ---------------------------------------------------------------------------
@@ -295,9 +290,8 @@ export class OAuthManager {
         );
       }
 
-      const vaultKey = this.getVaultKey();
       if (tokens.refreshToken) {
-        provider.storeRefreshToken(this.vaultManager, vaultKey, session.projectId, tokens.refreshToken);
+        provider.storeRefreshToken(this.credentialService, session.projectId, tokens.refreshToken);
       }
 
       this.markStep(session, 'oauth_consent', 'completed', `Signed in as ${userEmail}`);
@@ -311,7 +305,7 @@ export class OAuthManager {
         }
       } else if (provider.onAuthComplete) {
         try {
-          metadata = await provider.onAuthComplete(tokens.accessToken, session.projectId, this.vaultManager, vaultKey);
+          metadata = await provider.onAuthComplete(tokens.accessToken, session.projectId, this.credentialService);
         } catch (err) {
           log.warn('onAuthComplete hook failed', { providerId: provider.id, error: (err as Error).message });
         }

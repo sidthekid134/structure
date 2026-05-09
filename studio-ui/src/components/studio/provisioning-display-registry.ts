@@ -140,6 +140,9 @@ const RESOURCE_DISPLAY_BY_KEY: Record<string, ResourceOutputPresentation> = {
       { label: 'Zone dashboard fallback', hrefTemplate: 'https://dash.cloudflare.com/?zoneId={upstream.cloudflare_zone_id}' },
     ],
   },
+  cloudflare_app_url: {
+    primaryLinkFromValue: true,
+  },
   domain_name: {
     relatedLinks: [{ label: 'WHOIS / registrar', hrefTemplate: 'https://www.whois.com/whois/{value}' }],
   },

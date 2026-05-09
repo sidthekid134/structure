@@ -8,8 +8,8 @@ import {
 export const cloudflareDomainPlugin: PluginDefinition = {
   id: 'cloudflare-domain',
   version: '1.0.0',
-  label: 'Domain & SSL',
-  description: 'DNS management, SSL, deep link routing, and AASA/asset-links hosting.',
+  label: 'Custom Domain',
+  description: 'Configure DNS, SSL, and app link verification files.',
   integrationId: 'cloudflare',
   provider: 'cloudflare',
   providerMeta: {
@@ -33,7 +33,6 @@ export const cloudflareDomainPlugin: PluginDefinition = {
     CLOUDFLARE_STEPS.find((s) => s.key === 'cloudflare:configure-ssl')!,
     CLOUDFLARE_STEPS.find((s) => s.key === 'cloudflare:setup-apple-app-site-association')!,
     CLOUDFLARE_STEPS.find((s) => s.key === 'cloudflare:setup-android-asset-links')!,
-    CLOUDFLARE_STEPS.find((s) => s.key === 'cloudflare:configure-deep-link-routes')!,
   ],
   teardownSteps: [
     CLOUDFLARE_TEARDOWN_STEPS.find((s) => s.key === 'cloudflare:remove-domain-zone')!,
@@ -53,7 +52,6 @@ export const cloudflareDomainPlugin: PluginDefinition = {
   },
   defaultJourneyPhase: 'domain_dns',
   journeyPhaseOverrides: {
-    'cloudflare:configure-deep-link-routes': 'deep_links',
     'cloudflare:setup-apple-app-site-association': 'deep_links',
     'cloudflare:setup-android-asset-links': 'deep_links',
     'cloudflare:configure-ssl': 'edge_ssl',

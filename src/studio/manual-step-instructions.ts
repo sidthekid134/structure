@@ -105,6 +105,8 @@ interface InstructionContext {
   expectedGcpId: string;
   platforms: string[];
   environments: string[];
+  selectedModules: string[];
+  githubDeployInputs: Record<string, string>;
   /** Project-wide Apple Auth Key snapshot (see type docs). */
   appleAuthKeys: AppleAuthKeyRegistrySnapshot;
 }
@@ -174,6 +176,105 @@ function buildLlmIntegrationPromptInstructions(
   };
 }
 
+function buildCicdIntegrationPromptInstructions(ctx: InstructionContext): ManualInstructions {
+  const selectedTargetsRaw = ctx.githubDeployInputs['deploy_target_types']?.trim() || '';
+  const configuredTargets = selectedTargetsRaw
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part === 'mobile' || part === 'web' || part === 'api');
+  const selectedTargets = configuredTargets.length > 0
+    ? Array.from(new Set(configuredTargets))
+    : (() => {
+        const inferred = new Set<string>();
+        if (ctx.selectedModules.includes('eas-builds') || ctx.selectedModules.includes('eas-submit')) inferred.add('mobile');
+        if (ctx.selectedModules.includes('gcp-serverless-web') || ctx.selectedModules.includes('gcp-serverless-fullstack')) inferred.add('web');
+        if (ctx.selectedModules.includes('gcp-serverless-api') || ctx.selectedModules.includes('gcp-serverless-fullstack')) inferred.add('api');
+        if (inferred.size === 0) inferred.add('web');
+        return Array.from(inferred);
+      })();
+
+  const mobileStack = (ctx.githubDeployInputs['deploy_mobile_stack']?.trim() || 'expo').toLowerCase();
+  const webStack = (ctx.githubDeployInputs['deploy_web_stack']?.trim() || 'react').toLowerCase();
+  const webDestination = (ctx.githubDeployInputs['deploy_web_destination']?.trim() || 'gcp-cloud-run').toLowerCase();
+  const apiStack = (ctx.githubDeployInputs['deploy_api_stack']?.trim() || 'node/express').toLowerCase();
+  const apiDestination = (ctx.githubDeployInputs['deploy_api_destination']?.trim() || 'gcp-cloud-run').toLowerCase();
+  const repoUrl = ctx.upstream['github_repo_url']?.trim() || 'https://github.com/<owner>/<repo>';
+  const projectId = ctx.upstream['gcp_project_id']?.trim() || ctx.expectedGcpId;
+  const region = ctx.upstream['gcp_region']?.trim() || 'us-central1';
+  const webService = ctx.upstream['web_cloud_run_service']?.trim() || `${ctx.slug}-web`;
+  const apiService = ctx.upstream['api_cloud_run_service']?.trim() || `${ctx.slug}-api`;
+  const artifactRepo = ctx.upstream['artifact_registry_repo']?.trim() || `${region}-docker.pkg.dev/${projectId}/studio-serverless`;
+  const envLabel = ctx.environments.length > 0 ? ctx.environments.join(', ') : 'preview, production';
+
+  const targetGuidance: string[] = [];
+  if (selectedTargets.includes('mobile')) {
+    targetGuidance.push(
+      `- Mobile target (${mobileStack}): keep Expo/EAS config checked in (app.json or app.config.*, eas.json), keep signing/runtime values in CI/EAS env, and keep workflow-invoked scripts stable.`,
+    );
+  }
+  if (selectedTargets.includes('web')) {
+    targetGuidance.push(
+      `- Web target (${webStack} -> ${webDestination}): ensure a production-ready Docker build context, deterministic install/build commands, and test execution in CI. Expected Cloud Run service: "${webService}".`,
+      '- For Cloud Run web deployment, commit Dockerfile, .dockerignore, and avoid local-only Studio assumptions.',
+    );
+  }
+  if (selectedTargets.includes('api')) {
+    targetGuidance.push(
+      `- API target (${apiStack} -> ${apiDestination}): ensure API container build context is correct, health checks are available, and runtime env assumptions are explicit. Expected Cloud Run service: "${apiService}".`,
+    );
+  }
+
+  const prompt =
+    `Refactor and align this repository for Studio-managed GitHub CI/CD deployment.\n` +
+    `Project context:\n` +
+    `- App name: "${ctx.appName}"\n` +
+    `- Project slug: "${ctx.slug}"\n` +
+    `- Domain: "${ctx.domain || `${ctx.slug}.example.com`}"\n` +
+    `- Bundle ID: "${ctx.bundleId || `com.example.${ctx.slug}`}"\n` +
+    `- GitHub repo: "${repoUrl}"\n` +
+    `- Studio environments: ${envLabel}\n` +
+    `- CI targets: ${selectedTargets.join(', ')}\n` +
+    `- GCP project: "${projectId}" region "${region}"\n` +
+    `- Artifact Registry: "${artifactRepo}"\n\n` +
+    `Requirements:\n` +
+    `${targetGuidance.join('\n')}\n` +
+    `- Keep CI deterministic: lockfile committed, explicit runtime/toolchain versions, no hidden local-only assumptions.\n` +
+    `- Ensure test commands exist and run in GitHub Actions.\n` +
+    `- Ensure build output and Docker contexts match selected deploy targets.\n` +
+    `- Add or update only necessary docs to explain required CI contract.\n` +
+    `- Do not introduce fallback behavior that masks failures; fail loudly with actionable errors.\n\n` +
+    `Deliverables:\n` +
+    `1) File-level changes required for CI contract compliance.\n` +
+    `2) Updated scripts/commands invoked by workflows.\n` +
+    `3) Verification checklist for local + CI.\n` +
+    `4) Any repo-structure moves needed for deterministic build/deploy.\n`;
+
+  return {
+    intro:
+      'This gate provides a dynamic CI/CD handoff prompt tailored to your selected targets and current project context.',
+    steps: [
+      {
+        title: 'Review generated CI/CD contract context',
+        detail:
+          `Targets: ${selectedTargets.join(', ')}. Repo: ${repoUrl}. Environments: ${envLabel}.`,
+      },
+      {
+        title: 'Copy this prompt into your coding LLM',
+        detail:
+          'Use it to apply concrete repository structure, build, and test alignment changes required by generated CI/CD workflows.',
+        copyText: prompt,
+      },
+      {
+        title: 'Apply changes in your app repo and validate build/test flow',
+        detail:
+          'Run your local and CI-equivalent build/test paths before marking this gate complete.',
+      },
+    ],
+    note:
+      'This is an explicit handoff checkpoint so deploy verification does not proceed until repository CI contract alignment is acknowledged.',
+  };
+}
+
 /**
  * Registry of manual-instruction builders keyed by node key. Add a new
  * entry here only when the underlying provider API genuinely cannot
@@ -197,7 +298,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
       {
         title: 'Use zone-scoped permission rows',
         detail:
-          'Add: "Zone | DNS | Edit", "Zone | Zone | Read", "Zone | Page Rules | Edit", and "Zone | Zone Settings | Edit" (or "Zone | SSL and Certificates | Edit" if Zone Settings is unavailable).',
+          'Add: "Zone | DNS | Edit", "Zone | Zone | Read", "Zone | Page Rules | Edit", "Zone | Zone Settings | Edit" (or "Zone | SSL and Certificates | Edit" if Zone Settings is unavailable), and "Zone | Zone Rulesets | Edit" (required for custom domain routing to Cloud Run).',
       },
       {
         title: 'Restrict resources to this project apex zone, then paste token in this step',
@@ -471,8 +572,9 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
     const promptName = `${slug}-auth-llm-prompt.txt`;
     return {
       intro:
-        'This final handoff packages your configured auth outputs into a downloadable kit for your app repository. ' +
-        'Use the generated prompt with your coding LLM so auth wiring is applied directly in the app codebase with the exact values from this project.',
+        'This final handoff packages your configured auth outputs into a downloadable kit for your app or web repository. ' +
+        'The kit auto-selects a native (Expo/React Native) or web (Firebase Web SDK) flavor based on the modules in your project. ' +
+        'Use the generated prompt with your coding LLM so auth wiring is applied directly in the codebase with the exact values from this project.',
       steps: [
         {
           title: `Download "${zipName}"`,
@@ -551,6 +653,8 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
     buildLlmIntegrationPromptInstructions(ctx, 'gemini', 'Google Gemini'),
   'user:share-custom-llm-integration-prompt': (ctx) =>
     buildLlmIntegrationPromptInstructions(ctx, 'custom', 'Custom OpenAI-compatible'),
+  'user:share-cicd-integration-prompt': (ctx) =>
+    buildCicdIntegrationPromptInstructions(ctx),
 };
 
 type Capability = 'apns' | 'sign_in_with_apple';
@@ -895,6 +999,8 @@ export function buildManualInstructionsByNodeKey(
       expectedGcpId,
       platforms: project.platforms ?? [],
       environments: project.environments ?? [],
+      selectedModules: plan.selectedModules ?? [],
+      githubDeployInputs: userInputsForNodeKey(plan, 'github:deploy-workflows'),
       appleAuthKeys,
     });
   }
