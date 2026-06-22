@@ -131,6 +131,18 @@ The runtime executor for a step. Defined via the `StepHandler` interface in `src
 
 Handlers receive a `StepHandlerContext` containing the project ID, upstream artifacts, a `getToken()` helper, direct vault access, and the 32-byte vault DEK for reading/writing secrets.
 
+### Fullstack Cloud Run Repository Contract
+
+Studio-managed fullstack Cloud Run delivery treats web and API as separate deployable services in one repository:
+
+```text
+apps/web       # React or Next.js app
+apps/api       # Node/Express or Flask service
+packages/*     # shared packages
+```
+
+The `github:deploy-workflows` step stores each target's app root, Dockerfile path, and Docker build context. New fullstack projects default to `apps/web`, `apps/api`, and build context `.` so shared packages are available to both Docker builds. Existing root-Dockerfile repositories remain supported through legacy defaults.
+
 ---
 
 ## Plugin Registry

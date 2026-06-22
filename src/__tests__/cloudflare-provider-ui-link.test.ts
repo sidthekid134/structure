@@ -33,6 +33,8 @@ class FakeCloudflareClient implements CloudflareApiClient {
     return 'zone-1';
   }
 
+  async deleteZone(): Promise<void> {}
+
   async addDnsRecord(_zoneId: string, record: DnsRecord): Promise<string> {
     this.addedRecords.push(record);
     return 'record-1';

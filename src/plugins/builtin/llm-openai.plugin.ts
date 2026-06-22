@@ -33,6 +33,7 @@ export const llmOpenAIPlugin: PluginDefinition = {
       'openai_organization_id',
       'anthropic_api_key',
       'gemini_api_key',
+      'openrouter_api_key',
       'custom_api_key',
       'custom_base_url',
     ],

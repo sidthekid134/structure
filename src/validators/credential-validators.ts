@@ -170,7 +170,7 @@ export function validateGooglePlayKey(fileBuffer: Buffer): ValidationResult {
  * propagate back to the user with the upstream message intact.
  */
 export function validateLlmApiKey(
-  kind: 'openai' | 'anthropic' | 'gemini' | 'custom',
+  kind: 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom',
   key: string,
 ): ValidationResult {
   if (!key || typeof key !== 'string') {
@@ -270,6 +270,8 @@ export function validateByType(
       return validateLlmApiKey('anthropic', value);
     case 'llm_gemini_api_key':
       return validateLlmApiKey('gemini', value);
+    case 'llm_openrouter_api_key':
+      return validateLlmApiKey('openrouter', value);
     case 'llm_custom_api_key':
       return validateLlmApiKey('custom', value);
     default:

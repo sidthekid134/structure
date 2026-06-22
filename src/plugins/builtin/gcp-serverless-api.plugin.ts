@@ -22,7 +22,8 @@ export const gcpServerlessApiPlugin: PluginDefinition = {
   id: 'gcp-serverless-api',
   version: '1.0.0',
   label: 'Backend Service',
-  description: 'Build, deploy, smoke test, promote, and roll back API services on Cloud Run.',
+  description:
+    'Build, deploy, smoke test, promote, and roll back API services on Cloud Run from a configurable API app root/Dockerfile/build context.',
   integrationId: 'gcp',
   provider: 'gcp',
   requiredModules: ['gcp-serverless-core', 'github-ci'],

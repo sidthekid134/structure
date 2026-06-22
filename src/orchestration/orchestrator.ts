@@ -791,6 +791,83 @@ export class Orchestrator {
           };
         }
 
+        if ((node as ProvisioningStepNode).direction === 'teardown' && options.teardownStepExecutor) {
+          try {
+            const result = await options.teardownStepExecutor({
+              node: node as ProvisioningStepNode,
+              environment: item.environment,
+              upstreamResources: { ...upstreamResources },
+            });
+            if (result) {
+              if (result.resourcesProduced) {
+                Object.assign(upstreamResources, result.resourcesProduced);
+              }
+
+              const newStatus =
+                result.status === 'completed'
+                  ? 'completed'
+                  : result.status === 'waiting-on-user'
+                    ? 'waiting-on-user'
+                    : 'failed';
+              plan.nodeStates.set(stateKey, {
+                nodeKey: item.nodeKey,
+                status: newStatus as NodeState['status'],
+                environment: item.environment,
+                completedAt: Date.now(),
+                error: result.error,
+                userPrompt: result.userPrompt,
+                resourcesProduced: result.resourcesProduced,
+                manualRequired: result.manualRequired,
+                verificationMode: result.verificationMode,
+                verificationEvidenceRequired: result.verificationEvidenceRequired,
+              });
+
+              return {
+                event: {
+                  nodeKey: item.nodeKey,
+                  nodeType: 'step' as const,
+                  provider: node.provider,
+                  environment: item.environment,
+                  status:
+                    result.status === 'completed'
+                      ? 'success'
+                      : result.status === 'waiting-on-user'
+                        ? 'waiting-on-user'
+                        : 'failure',
+                  error: result.error,
+                  resourcesProduced: result.resourcesProduced,
+                  userPrompt: result.userPrompt,
+                  manualRequired: result.manualRequired,
+                  verificationMode: result.verificationMode,
+                  verificationEvidenceRequired: result.verificationEvidenceRequired,
+                  timestamp: new Date(),
+                  correlation_id: correlationId,
+                } satisfies StepProgressEvent,
+              };
+            }
+          } catch (err) {
+            const error = (err as Error).message;
+            plan.nodeStates.set(stateKey, {
+              nodeKey: item.nodeKey,
+              status: 'failed',
+              environment: item.environment,
+              error,
+            });
+            return {
+              event: {
+                nodeKey: item.nodeKey,
+                nodeType: 'step' as const,
+                provider: node.provider,
+                environment: item.environment,
+                status: 'failure' as const,
+                error,
+                timestamp: new Date(),
+                correlation_id: correlationId,
+              } satisfies StepProgressEvent,
+            };
+          }
+        }
+
         const providerConfig = manifest.providers.find(
           (p) => p.provider === node.provider,
         ) as ProviderConfig | undefined;

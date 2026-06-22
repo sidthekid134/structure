@@ -627,6 +627,7 @@ export function SetupWizard({
   onUserActionComplete,
   onRefresh,
   onRecomputePlan,
+  runEndpoint = 'setup',
 }: {
   projectId: string;
   plan: ProvisioningPlanResponse | null;
@@ -643,6 +644,7 @@ export function SetupWizard({
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => Promise<void>;
   onRefresh: () => Promise<void>;
   onRecomputePlan?: () => Promise<void>;
+  runEndpoint?: 'setup' | 'teardown';
 }) {
   const [credentialText, setCredentialText] = useState('');
   const [resourceInputs, setResourceInputs] = useState<Record<string, string>>({});
@@ -854,8 +856,15 @@ export function SetupWizard({
       new Set([
         'deploy_web_stack',
         'deploy_web_destination',
+        'deploy_web_root',
+        'deploy_web_dockerfile',
+        'deploy_web_build_context',
         'deploy_api_stack',
         'deploy_api_destination',
+        'deploy_api_root',
+        'deploy_api_dockerfile',
+        'deploy_api_build_context',
+        'deploy_api_health_path',
       ]),
     [],
   );
@@ -1030,8 +1039,12 @@ export function SetupWizard({
       }
 
       const intent = forcedIntent ?? runIntentForNodeKey(currentNode.key);
+      const runUrl =
+        runEndpoint === 'teardown'
+          ? `/api/projects/${encodeURIComponent(projectId)}/provisioning/teardown/run`
+          : `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`;
       const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
-        `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`,
+        runUrl,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1043,7 +1056,7 @@ export function SetupWizard({
         // OAuth required — authenticate first, then retry the step automatically.
         const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
         if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
-          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
+          await api(runUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ nodeKeys: [currentNode.key], intent }),
@@ -1324,7 +1337,7 @@ export function SetupWizard({
 
 
   const showRevert =
-    currentStatus === 'completed' || currentStatus === 'skipped' || currentStatus === 'failed';
+    !isTeardown && (currentStatus === 'completed' || currentStatus === 'skipped' || currentStatus === 'failed');
   const showRevalidate =
     (
       (currentNode?.type === 'step' && !isTeardown) ||
@@ -1335,6 +1348,7 @@ export function SetupWizard({
     currentStatus !== 'waiting-on-user';
   const showSkip =
     Boolean(currentNode && plan) &&
+    !isTeardown &&
     !['completed', 'skipped', 'in-progress'].includes(currentStatus) &&
     !planHasInProgress;
 
@@ -1425,12 +1439,6 @@ export function SetupWizard({
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-1.5 flex-wrap">
-                          <span
-                            className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-border/70 bg-background/70 text-foreground/75 dark:text-foreground/80"
-                            aria-hidden
-                          >
-                            <ProviderLogo provider={providerId} moduleId={moduleId} size={9} />
-                          </span>
                           <span className="text-xs font-semibold text-foreground leading-snug line-clamp-2">
                             {node.label}
                           </span>
@@ -1489,7 +1497,9 @@ export function SetupWizard({
               {isRunning
                 ? 'Running...'
                 : isTeardown
-                  ? 'Confirm Deletion'
+                  ? currentNode?.type === 'step' && currentNode.key === 'cloudflare:remove-domain-zone'
+                    ? 'Delete'
+                    : 'Confirm Deletion'
                   : currentInvalidation.isInvalidated
                     ? 'Refresh Step'
                     : 'Run Step'}
@@ -2012,8 +2022,23 @@ export function SetupWizard({
             const fieldByKey = new Map(visibleFields.map((field) => [field.key, field]));
             const webStackField = fieldByKey.get('deploy_web_stack');
             const webDestinationField = fieldByKey.get('deploy_web_destination');
+            const webConfigFields = [
+              webStackField,
+              webDestinationField,
+              fieldByKey.get('deploy_web_root'),
+              fieldByKey.get('deploy_web_dockerfile'),
+              fieldByKey.get('deploy_web_build_context'),
+            ].filter((field): field is (typeof visibleFields)[number] => Boolean(field));
             const apiStackField = fieldByKey.get('deploy_api_stack');
             const apiDestinationField = fieldByKey.get('deploy_api_destination');
+            const apiConfigFields = [
+              apiStackField,
+              apiDestinationField,
+              fieldByKey.get('deploy_api_root'),
+              fieldByKey.get('deploy_api_dockerfile'),
+              fieldByKey.get('deploy_api_build_context'),
+              fieldByKey.get('deploy_api_health_path'),
+            ].filter((field): field is (typeof visibleFields)[number] => Boolean(field));
             const renderSegmentedField = (field: (typeof visibleFields)[number]) => {
               const options = field.options ?? [];
               const value = stepInputs[field.key] ?? field.defaultValue ?? '';
@@ -2039,6 +2064,30 @@ export function SetupWizard({
                       );
                     })}
                   </div>
+                </div>
+              );
+            };
+            const renderDeployField = (field: (typeof visibleFields)[number]) => {
+              if (field.type === 'select' && (field.options ?? []).length > 0) {
+                return <div key={field.key}>{renderSegmentedField(field)}</div>;
+              }
+              const value = stepInputs[field.key] ?? field.defaultValue ?? '';
+              return (
+                <div key={field.key} className="space-y-1.5">
+                  <label className="text-[10px] font-semibold text-muted-foreground/90">
+                    {field.label}
+                    {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                  </label>
+                  {field.description && (
+                    <p className="text-[11px] text-muted-foreground/90 leading-snug">{field.description}</p>
+                  )}
+                  <input
+                    type="text"
+                    value={value}
+                    onChange={(e) => handleStepInputChange(field.key, e.target.value)}
+                    placeholder={field.placeholder}
+                    className="w-full rounded-xl border border-border/70 bg-background/90 px-3 py-2 text-sm font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus:ring-2 focus:ring-primary/20 focus:border-primary/50 outline-none transition-colors"
+                  />
                 </div>
               );
             };
@@ -2343,22 +2392,20 @@ export function SetupWizard({
                 </div>
                 );
               })}
-              {(webStackField || webDestinationField) && (
+              {webConfigFields.length > 0 && (
                 <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 px-3 py-3 space-y-2">
                   <p className="text-[11px] font-semibold text-violet-700 dark:text-violet-300">
                     Web Deployment Configuration
                   </p>
-                  {webStackField && renderSegmentedField(webStackField)}
-                  {webDestinationField && renderSegmentedField(webDestinationField)}
+                  {webConfigFields.map((field) => renderDeployField(field))}
                 </div>
               )}
-              {(apiStackField || apiDestinationField) && (
+              {apiConfigFields.length > 0 && (
                 <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3 py-3 space-y-2">
                   <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
                     API Deployment Configuration
                   </p>
-                  {apiStackField && renderSegmentedField(apiStackField)}
-                  {apiDestinationField && renderSegmentedField(apiDestinationField)}
+                  {apiConfigFields.map((field) => renderDeployField(field))}
                 </div>
               )}
               <button
@@ -2446,6 +2493,45 @@ export function SetupWizard({
                 <div className="flex items-start gap-2">
                   <AlertTriangle size={14} className="text-red-500 mt-0.5 shrink-0" />
                   <div className="text-sm text-red-800 dark:text-red-200 space-y-2 min-w-0">
+                    {parts.map((part, i) =>
+                      urlRegex.test(part) ? (
+                        <a
+                          key={i}
+                          href={part}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-primary font-semibold hover:underline break-all"
+                        >
+                          <ExternalLink size={12} className="shrink-0" />
+                          {part}
+                        </a>
+                      ) : (
+                        <span key={i} className="whitespace-pre-wrap">{part}</span>
+                      ),
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {currentStatus === 'waiting-on-user' && (() => {
+            const waitingMessage =
+              currentNode.type === 'step' && currentNode.environmentScope === 'per-environment'
+                ? plan.environments
+                    .map((env) => plan.nodeStates[`${currentNode.key}@${env}`]?.userPrompt || plan.nodeStates[`${currentNode.key}@${env}`]?.error)
+                    .find(Boolean)
+                : currentNodeState?.userPrompt || currentNodeState?.error;
+            if (!waitingMessage) return null;
+
+            const urlRegex = /(https?:\/\/[^\s]+)/g;
+            const parts = waitingMessage.split(urlRegex);
+
+            return (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <PauseCircle size={14} className="text-amber-500 mt-0.5 shrink-0" />
+                  <div className="text-sm text-amber-900 dark:text-amber-100 space-y-2 min-w-0">
                     {parts.map((part, i) =>
                       urlRegex.test(part) ? (
                         <a

@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as https from 'https';
+import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { Octokit } from '@octokit/rest';
@@ -9,6 +10,7 @@ import type {
   StepHandlerContext,
   StepHandlerResult,
 } from '../../provisioning/step-handler-registry.js';
+import type { ProvisioningPlan } from '../../provisioning/graph.types.js';
 import {
   gcpRequest,
   GcpHttpError,
@@ -22,6 +24,7 @@ import {
 import { getStoredGcpProjectId } from './gcp-credentials.js';
 import { HttpGitHubApiClient } from '../../providers/github.js';
 import { HttpCloudflareApiClient } from '../../providers/cloudflare.js';
+import { resolveDeployContractFromInputs } from '../../studio/deploy-contract.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +53,11 @@ function regionForContext(context: StepHandlerContext): string {
     context.upstreamArtifacts['gcp_region']?.trim() ||
     'us-central1'
   );
+}
+
+function githubDeployInputsForContext(context: StepHandlerContext): Record<string, string> | undefined {
+  const plan = context.projectManager.loadPlan(context.projectId) as ProvisioningPlan | null;
+  return plan?.nodeStates.get('github:deploy-workflows')?.userInputs ?? context.userInputs;
 }
 
 function normalizeBillingAccountName(raw: string): string {
@@ -669,17 +677,51 @@ const apiBuildContainerHandler = simpleHandler(
       || `${region}-docker.pkg.dev/${projectId}/studio-serverless`;
     const image = `${repo}/${resourceSlug(context)}-api:${Date.now()}`;
     const cwd = process.cwd();
+    const contract = resolveDeployContractFromInputs(githubDeployInputsForContext(context));
+    const dockerfilePath = path.join(cwd, contract.api.dockerfile);
+    const buildContextPath = path.join(cwd, contract.api.buildContext);
 
-    if (!fs.existsSync(path.join(cwd, 'Dockerfile'))) {
-      return { reconciled: false, message: 'No Dockerfile found in project root. Add a Dockerfile to build the API container.' };
+    if (!fs.existsSync(dockerfilePath)) {
+      return {
+        reconciled: false,
+        message: `No Dockerfile found at "${contract.api.dockerfile}". Add the API Dockerfile or update deploy_api_dockerfile.`,
+      };
+    }
+    if (!fs.existsSync(buildContextPath)) {
+      return {
+        reconciled: false,
+        message: `No Docker build context found at "${contract.api.buildContext}". Add the directory or update deploy_api_build_context.`,
+      };
     }
 
-    await runCommand(
-      'gcloud',
-      ['builds', 'submit', '.', '--tag', image, '--project', projectId, '--quiet'],
-      cwd,
-      log,
-    );
+    const cloudBuildConfig = {
+      steps: [
+        {
+          name: 'gcr.io/cloud-builders/docker',
+          args: [
+            'build',
+            '-f',
+            contract.api.dockerfile,
+            '-t',
+            image,
+            contract.api.buildContext,
+          ],
+        },
+      ],
+      images: [image],
+    };
+    const configPath = path.join(os.tmpdir(), `studio-cloudbuild-${context.projectId}-${Date.now()}.json`);
+    fs.writeFileSync(configPath, JSON.stringify(cloudBuildConfig, null, 2));
+    try {
+      await runCommand(
+        'gcloud',
+        ['builds', 'submit', '.', '--config', configPath, '--project', projectId, '--quiet'],
+        cwd,
+        log,
+      );
+    } finally {
+      fs.rmSync(configPath, { force: true });
+    }
 
     return { reconciled: true, resourcesProduced: { api_image_uri: image } };
   },
@@ -725,7 +767,7 @@ const apiRunSmokeCheckHandler = simpleHandler(
   async (context) => {
     const base = context.upstreamArtifacts['api_cloud_run_url']?.trim();
     if (!base) return { reconciled: false, message: 'Missing api_cloud_run_url for smoke check.' };
-    const healthPath = context.userInputs?.['health_path']?.trim() || '/api/health';
+    const healthPath = resolveDeployContractFromInputs(githubDeployInputsForContext(context)).api.healthPath || '/api/health';
     const url = `${base.replace(/\/+$/, '')}${healthPath}`;
     await smokeCheck(url);
     return { reconciled: true, resourcesProduced: { api_smoke_check_passed: 'true' } };
@@ -1034,7 +1076,7 @@ const comboCrossServiceSmokeHandler = simpleHandler(
     if (!webUrl || !apiUrl) {
       return { reconciled: false, message: 'Missing web or api URL for combined smoke check.' };
     }
-    const healthPath = context.userInputs?.['health_path']?.trim() || '/api/health';
+    const healthPath = resolveDeployContractFromInputs(githubDeployInputsForContext(context)).api.healthPath || '/api/health';
     await smokeCheck(webUrl);
     await smokeCheck(`${apiUrl.replace(/\/+$/, '')}${healthPath}`);
     return { reconciled: true, resourcesProduced: { combo_smoke_check_passed: 'true' } };

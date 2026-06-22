@@ -50,6 +50,7 @@ const LLM_EAS_PREFETCH_KEYS = [
   'openai_organization_id',
   'anthropic_api_key',
   'gemini_api_key',
+  'openrouter_api_key',
   'custom_api_key',
   'custom_base_url',
 ] as const;
@@ -188,6 +189,7 @@ function buildLlmRuntimeEnvResourcesProduced(values: Record<string, string>): Re
     ['LLM_ANTHROPIC_DEFAULT_MODEL', 'eas_env_llm_anthropic_default_model'],
     ['LLM_GEMINI_API_KEY', 'eas_env_llm_gemini_api_key'],
     ['LLM_GEMINI_DEFAULT_MODEL', 'eas_env_llm_gemini_default_model'],
+    ['LLM_OPENROUTER_API_KEY', 'eas_env_llm_openrouter_api_key'],
     ['LLM_CUSTOM_API_KEY', 'eas_env_llm_custom_api_key'],
     ['LLM_CUSTOM_BASE_URL', 'eas_env_llm_custom_base_url'],
     ['LLM_CUSTOM_DEFAULT_MODEL', 'eas_env_llm_custom_default_model'],

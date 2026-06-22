@@ -4,6 +4,7 @@ export type StudioView =
   | 'overview'
   | 'project'
   | 'project-setup'
+  | 'project-teardown'
   | 'project-modules'
   | 'project-dashboard'
   | 'project-settings'
@@ -167,6 +168,15 @@ export interface NodeState {
   userInputs?: Record<string, string>;
   invalidatedBy?: string;
   invalidatedAt?: number;
+  manualRequired?: boolean;
+  verificationMode?: 'automatic' | 'manual-confirmation';
+  verificationEvidenceRequired?: string[];
+  manualConfirmation?: {
+    note: string;
+    targetIds: string[];
+    confirmedAt: string;
+    recordedAt: number;
+  };
 }
 
 /**
@@ -442,6 +452,9 @@ export interface WsStepProgressMessage {
     resourcesProduced?: Record<string, string>;
     error?: string;
     userPrompt?: string;
+    manualRequired?: boolean;
+    verificationMode?: 'automatic' | 'manual-confirmation';
+    verificationEvidenceRequired?: string[];
   };
 }
 /** Open string — built-in providers plus plugin-contributed ones */

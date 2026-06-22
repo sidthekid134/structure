@@ -18,6 +18,7 @@ import type {
 import { PLATFORM_CORE_VERSION } from '../providers/types.js';
 import type { ProvisioningPlan } from '../provisioning/graph.types.js';
 import type { CredentialService, CredentialType } from '../services/credential-service.js';
+import { resolveDeployContractFromInputs } from './deploy-contract.js';
 
 // ---------------------------------------------------------------------------
 // Vault-key to CredentialType mapping (used by legacy StepContext.vaultRead)
@@ -181,6 +182,9 @@ export function buildGitHubManifestConfig(
     branch_protection_rules: DEFAULT_BRANCH_RULES,
     environments: plan.environments as Array<'development' | 'preview' | 'production'>,
     workflow_templates: buildGitHubWorkflowTemplates(plan),
+    deploy_contract: resolveDeployContractFromInputs(
+      plan.nodeStates.get('github:deploy-workflows')?.userInputs,
+    ),
   };
 }
 
@@ -232,13 +236,11 @@ export function buildGitHubWorkflowTemplates(plan: ProvisioningPlan): string[] {
         );
       }
       if (deployConfig.apiStack === 'node/express') {
-        templates.add('api-gcp-node-build');
-        templates.add('api-gcp-node-deploy');
+        templates.add('api-gcp-node-delivery');
         continue;
       }
       if (deployConfig.apiStack === 'flask') {
-        templates.add('api-gcp-flask-build');
-        templates.add('api-gcp-flask-deploy');
+        templates.add('api-gcp-flask-delivery');
         continue;
       }
       throw new Error(

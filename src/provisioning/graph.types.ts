@@ -251,6 +251,15 @@ export interface NodeState {
   /** Step key that invalidated this state and forced re-run. */
   invalidatedBy?: string;
   invalidatedAt?: number;
+  manualRequired?: boolean;
+  verificationMode?: 'automatic' | 'manual-confirmation';
+  verificationEvidenceRequired?: string[];
+  manualConfirmation?: {
+    note: string;
+    targetIds: string[];
+    confirmedAt: string;
+    recordedAt: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +280,9 @@ export interface StepResult {
   resourcesProduced: Record<string, string>;
   error?: string;
   userPrompt?: string; // what to show the user if waiting-on-user
+  manualRequired?: boolean;
+  verificationMode?: 'automatic' | 'manual-confirmation';
+  verificationEvidenceRequired?: string[];
 }
 
 // ---------------------------------------------------------------------------

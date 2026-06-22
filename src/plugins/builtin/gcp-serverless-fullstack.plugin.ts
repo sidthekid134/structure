@@ -15,7 +15,8 @@ export const gcpServerlessFullstackPlugin: PluginDefinition = {
   id: 'gcp-serverless-fullstack',
   version: '1.0.0',
   label: 'Full-Stack Release',
-  description: 'Coordinate frontend/backend environment contracts, smoke checks, promotion, and rollback.',
+  description:
+    'Coordinate independently deployable web/API Cloud Run services, environment contracts, smoke checks, promotion, and rollback.',
   integrationId: 'gcp',
   provider: 'gcp',
   requiredModules: ['gcp-serverless-api', 'gcp-serverless-web'],

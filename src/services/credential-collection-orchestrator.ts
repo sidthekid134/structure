@@ -119,6 +119,12 @@ const CREDENTIAL_INFO: Partial<Record<CredentialType, Omit<MissingCredentialInfo
     input_type: 'password',
     help_url: 'https://aistudio.google.com/app/apikey',
   },
+  llm_openrouter_api_key: {
+    label: 'OpenRouter API Key',
+    description: 'Required to call models via OpenRouter (access 100+ models through a single endpoint).',
+    input_type: 'password',
+    help_url: 'https://openrouter.ai/keys',
+  },
   llm_custom_api_key: {
     label: 'Custom LLM API Key',
     description:

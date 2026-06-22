@@ -41,6 +41,7 @@ export type CredentialType =
   | 'llm_openai_api_key'
   | 'llm_anthropic_api_key'
   | 'llm_gemini_api_key'
+  | 'llm_openrouter_api_key'
   | 'llm_custom_api_key'
   // ── GitHub connection (org-level) ──────────────────────────────────────
   | 'github_user_id'
@@ -396,6 +397,7 @@ export class CredentialService {
       case 'llm_openai_api_key':
       case 'llm_anthropic_api_key':
       case 'llm_gemini_api_key':
+      case 'llm_openrouter_api_key':
       case 'llm_custom_api_key':
         this.validateLlmApiKey(type, value);
         break;

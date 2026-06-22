@@ -217,7 +217,39 @@ export async function deleteGcpProject(accessToken: string, projectId: string): 
     console.log(`[gcp-api] GCP project "${projectId}" marked for deletion.`);
   } catch (err) {
     if (err instanceof GcpHttpError && err.statusCode === 403) {
-      throw new Error(`Permission denied deleting GCP project "${projectId}". The stored OAuth token may not be the project owner.`);
+      let principal = 'unknown';
+      try {
+        const info = await fetchGoogleTokenInfo(accessToken);
+        if (info.email?.trim()) principal = info.email.trim();
+      } catch {
+        // best-effort only
+      }
+
+      let apiMessage = '';
+      try {
+        const parsed = JSON.parse(err.body) as {
+          error?: {
+            message?: string;
+            status?: string;
+            details?: Array<{ reason?: string; '@type'?: string }>;
+          };
+        };
+        const raw = parsed.error?.message?.trim();
+        if (raw) apiMessage = raw;
+      } catch {
+        // keep generic fallback
+      }
+      if (/cannot delete an inactive project/i.test(apiMessage)) {
+        console.log(`[gcp-api] Project "${projectId}" is already inactive/pending delete.`);
+        return;
+      }
+
+      const extra = apiMessage ? ` GCP says: ${apiMessage}` : '';
+      throw new Error(
+        `Permission denied deleting GCP project "${projectId}" as "${principal}". ` +
+        'Even when this user created the project, deletion can still be blocked by organization policy/constraints or project liens.' +
+        extra,
+      );
     }
     if (err instanceof GcpHttpError && err.statusCode === 404) {
       console.log(`[gcp-api] Project "${projectId}" not found — already deleted.`);

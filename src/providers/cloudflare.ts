@@ -36,6 +36,7 @@ export interface CloudflareApiClient {
   getZoneId(domain: string): Promise<string | null>;
   getZone(domain: string): Promise<CloudflareZoneSummary | null>;
   createZone(domain: string): Promise<string>;
+  deleteZone(zoneId: string): Promise<void>;
   addDnsRecord(zoneId: string, record: DnsRecord): Promise<string>;
   getDnsRecords(zoneId: string): Promise<DnsRecord[]>;
   deleteDnsRecord(zoneId: string, recordId: string): Promise<void>;
@@ -90,6 +91,12 @@ export class StubCloudflareApiClient implements CloudflareApiClient {
   async createZone(_domain: string): Promise<string> {
     throw new Error(
       'StubCloudflareApiClient cannot create zones. Configure CloudflareAdapter with a real Cloudflare API client.',
+    );
+  }
+
+  async deleteZone(_zoneId: string): Promise<void> {
+    throw new Error(
+      'StubCloudflareApiClient cannot delete zones. Configure CloudflareAdapter with a real Cloudflare API client.',
     );
   }
 
@@ -198,6 +205,10 @@ export class HttpCloudflareApiClient implements CloudflareApiClient {
       type: 'full',
     });
     return response.result.id;
+  }
+
+  async deleteZone(zoneId: string): Promise<void> {
+    await this.request<{ id: string }>('DELETE', `/zones/${encodeURIComponent(zoneId)}`);
   }
 
   async addDnsRecord(zoneId: string, record: DnsRecord): Promise<string> {
@@ -464,6 +475,21 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
     };
   }
 
+  private async deleteProjectDnsRecordsForAppHost(
+    zoneId: string,
+    target: { appDomain: string; zoneDomain: string; dnsRecordName: string },
+  ): Promise<{ removed: number; host: string }> {
+    const desiredNameFqdn = this.toFqdn(target.dnsRecordName, target.zoneDomain);
+    const records = await this.apiClient.getDnsRecords(zoneId);
+    const toDelete = records.filter(
+      (r) => this.toFqdn(r.name, target.zoneDomain) === desiredNameFqdn && typeof r.id === 'string' && r.id.length > 0,
+    );
+    for (const record of toDelete) {
+      await this.apiClient.deleteDnsRecord(zoneId, record.id!);
+    }
+    return { removed: toDelete.length, host: desiredNameFqdn };
+  }
+
   async provision(config: CloudflareManifestConfig): Promise<ProviderState> {
     const target = this.resolveTarget(config);
     this.log.info('Starting Cloudflare provisioning', {
@@ -560,6 +586,75 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
   ): Promise<StepResult> {
     this.log.info('CloudflareAdapter.executeStep()', { stepKey });
     switch (stepKey) {
+      case 'cloudflare:remove-domain-zone': {
+        const target = this.resolveTarget(config);
+        let zoneId: string | null = context.upstreamResources['cloudflare_zone_id']?.trim() || null;
+        if (!zoneId) {
+          try {
+            zoneId = await this.apiClient.getZoneId(target.zoneDomain);
+          } catch (err) {
+            return {
+              status: 'waiting-on-user',
+              resourcesProduced: {},
+              error: `Could not look up Cloudflare zone "${target.zoneDomain}" automatically: ${(err as Error).message}`,
+              userPrompt:
+                `Open Cloudflare dashboard and remove zone "${target.zoneDomain}" manually if it exists: ` +
+                `https://dash.cloudflare.com/`,
+              manualRequired: true,
+              verificationMode: 'manual-confirmation',
+            };
+          }
+        }
+        if (!zoneId) {
+          return {
+            status: 'completed',
+            resourcesProduced: {},
+            userPrompt: `Cloudflare zone "${target.zoneDomain}" was already absent.`,
+          };
+        }
+        if (target.domainMode === 'subdomain') {
+          const dns = await this.deleteProjectDnsRecordsForAppHost(zoneId, target);
+          return {
+            status: 'completed',
+            resourcesProduced: {
+              cloudflare_dns_record_deleted_host: dns.host,
+              cloudflare_dns_records_removed_count: String(dns.removed),
+            },
+            userPrompt:
+              dns.removed === 0
+                ? `No DNS records found for "${dns.host}" in zone "${target.zoneDomain}".`
+                : `Deleted ${dns.removed} DNS record(s) for "${dns.host}" from zone "${target.zoneDomain}".`,
+          };
+        }
+        try {
+          await this.apiClient.deleteZone(zoneId);
+          return {
+            status: 'completed',
+            resourcesProduced: { cloudflare_zone_deleted: target.zoneDomain },
+            userPrompt: `Deleted Cloudflare zone "${target.zoneDomain}".`,
+          };
+        } catch (err) {
+          const message = (err as Error).message;
+          // Idempotent success: zone may already be gone between lookup and delete.
+          if (/404|not found|does not exist/i.test(message)) {
+            return {
+              status: 'completed',
+              resourcesProduced: { cloudflare_zone_deleted: target.zoneDomain },
+              userPrompt: `Cloudflare zone "${target.zoneDomain}" was already absent.`,
+            };
+          }
+          return {
+            status: 'waiting-on-user',
+            resourcesProduced: {},
+            error: `Could not delete Cloudflare zone "${target.zoneDomain}" automatically: ${message}`,
+            userPrompt:
+              `Delete zone "${target.zoneDomain}" manually in Cloudflare dashboard, then confirm teardown: ` +
+              `https://dash.cloudflare.com/`,
+            manualRequired: true,
+            verificationMode: 'manual-confirmation',
+          };
+        }
+      }
       case 'cloudflare:add-domain-zone': {
         const target = this.resolveTarget(config);
         const zoneResult = await this.ensureZone(target.zoneDomain);

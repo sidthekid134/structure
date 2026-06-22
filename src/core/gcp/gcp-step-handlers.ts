@@ -1973,6 +1973,23 @@ const deleteGcpProjectTeardownHandler: StepHandler = {
     } catch (err) {
       const msg = (err as Error).message;
       log(`✗ Delete failed: ${msg}`);
+      const permissionDenied = /permission denied deleting gcp project/i.test(msg);
+      if (permissionDenied) {
+        return {
+          reconciled: false,
+          message:
+            `Could not delete GCP project "${storedId}" with the current Google account. ` +
+            'Re-authenticate with the Google account that owns the project, or delete it manually in Google Cloud Console.',
+          suggestsReauth: true,
+          recovery: {
+            type: 'reauth',
+            instructions:
+              `Reconnect Google OAuth using the account that owns "${storedId}", then rerun teardown. ` +
+              'If ownership cannot be changed, delete the project manually in Cloud Resource Manager.',
+            portalUrl: `https://console.cloud.google.com/cloud-resource-manager?project=${encodeURIComponent(storedId)}`,
+          },
+        };
+      }
       return { reconciled: false, message: `Could not delete GCP project "${storedId}": ${msg}` };
     }
 
@@ -2011,17 +2028,37 @@ const deleteGcpProjectTeardownHandler: StepHandler = {
     }
     log(`Checking deletion state of "${storedId}"...`);
     const token = await context.getToken('gcp');
-    const status = await getGcpProjectStatus(token, storedId);
-    if (status === 'not_found') {
+    const summary = await fetchGcpProjectSummary(token, storedId);
+    if (!summary.ok && summary.reason === 'not_found') {
       log(`✓ GCP project "${storedId}" no longer exists.`);
       return { reconciled: true };
     }
+    if (summary.ok && summary.lifecycleState === 'DELETE_REQUESTED') {
+      log(`✓ GCP project "${storedId}" is already in DELETE_REQUESTED state.`);
+      return { reconciled: true, message: `GCP project "${storedId}" is pending permanent deletion.` };
+    }
+    const status = summary.ok ? (summary.lifecycleState ?? 'ACTIVE') : summary.reason;
     log(`○ GCP project "${storedId}" still exists (status: ${status}).`);
     return { reconciled: false, message: `GCP project "${storedId}" still exists. Run this teardown step to delete it.` };
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
     return this.validate(context);
+  },
+
+  getManualRevertAction(context: StepHandlerContext) {
+    const { projectId, credentialService } = context;
+    const storedId = getStoredGcpProjectId(credentialService, projectId);
+    if (!storedId) return null;
+    return {
+      stepKey: 'firebase:delete-gcp-project',
+      title: 'Delete GCP project manually',
+      body:
+        `Open Cloud Resource Manager for "${storedId}", select the project, and delete it ` +
+        'using a Google account with owner-level permissions.',
+      primaryUrl: `https://console.cloud.google.com/cloud-resource-manager?project=${encodeURIComponent(storedId)}`,
+      primaryLabel: 'Open Cloud Resource Manager',
+    };
   },
 };
 
@@ -2033,7 +2070,12 @@ function makeAssistedTeardownHandler(stepKey: string): StepHandler {
   return {
     stepKey,
     async create(_context: StepHandlerContext): Promise<StepHandlerResult> {
-      return { reconciled: true, message: 'User confirmed cleanup complete.' };
+      return {
+        reconciled: false,
+        message:
+          `${stepKey} is not safely deletable through Studio APIs yet. ` +
+          'Delete it in the provider console, or delete the backing GCP project to remove all Firebase resources.',
+      };
     },
     async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
       return { reconciled: true };
@@ -2132,8 +2174,32 @@ const enableAuthProvidersHandler: StepHandler = {
     return { reconciled: true, resourcesProduced: { enabled_auth_providers: 'email' } };
   },
 
-  async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
-    return { reconciled: true };
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, credentialService } = context;
+    const log = makeLog('enable-auth-providers:delete', projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    if (!gcpProjectId) return { reconciled: true, message: 'No GCP project linked — nothing to disable.' };
+
+    const token = await context.getToken('gcp');
+    try {
+      await gcpRequest(
+        'PATCH',
+        'identitytoolkit.googleapis.com',
+        `/admin/v2/projects/${gcpProjectId}/config?updateMask=signIn.email.enabled`,
+        token,
+        JSON.stringify({ signIn: { email: { enabled: false } } }),
+      );
+      log(`✓ Email/password sign-in disabled on "${gcpProjectId}".`);
+      return { reconciled: true, message: 'Disabled Firebase Auth email/password sign-in.' };
+    } catch (err) {
+      const is403 = err instanceof GcpHttpError && err.statusCode === 403;
+      log(`✗ Could not disable email/password sign-in: ${(err as Error).message}`);
+      return {
+        reconciled: false,
+        message: `Could not disable Firebase Auth email/password sign-in: ${(err as Error).message}`,
+        suggestsReauth: is403,
+      };
+    }
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {

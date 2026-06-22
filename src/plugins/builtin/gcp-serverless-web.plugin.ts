@@ -20,7 +20,8 @@ export const gcpServerlessWebPlugin: PluginDefinition = {
   id: 'gcp-serverless-web',
   version: '1.0.0',
   label: 'Web Frontend',
-  description: 'Prepare CI contract, verify GitHub-driven Cloud Run deploys, smoke test, and bind domains for web frontends.',
+  description:
+    'Prepare CI contract, verify GitHub-driven Cloud Run deploys from a configurable web app root/Dockerfile/build context, smoke test, and bind domains.',
   integrationId: 'gcp',
   provider: 'gcp',
   requiredModules: ['gcp-serverless-core', 'github-ci'],

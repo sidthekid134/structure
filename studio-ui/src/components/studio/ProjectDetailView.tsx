@@ -4,7 +4,6 @@ import { api } from './helpers';
 import { inferTemplateIdFromModules, ModuleSelectionWizard } from './ModuleSelectionWizard';
 import { ProjectQuickLinks } from './ProjectQuickLinks';
 import { SetupWizard } from './SetupWizard';
-import { TeardownWizard } from './TeardownWizard';
 import { usePluginCatalog } from './usePluginCatalog';
 import type {
   ConnectedProviders,
@@ -17,7 +16,7 @@ import type {
   ProvisioningPlanResponse,
 } from './types';
 
-export type ProjectSubtab = 'modules' | 'setup' | 'dashboard' | 'settings';
+export type ProjectSubtab = 'modules' | 'setup' | 'teardown' | 'dashboard' | 'settings';
 
 export function ProjectDetailView({
   projectDetail,
@@ -48,9 +47,9 @@ export function ProjectDetailView({
 }) {
   const [tab, setTab] = useState<ProjectSubtab>('modules');
   const [plan, setPlan] = useState<ProvisioningPlanResponse | null>(null);
+  const [teardownPlan, setTeardownPlan] = useState<ProvisioningPlanResponse | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSavingModules, setIsSavingModules] = useState(false);
-  const [isTeardownRunning, setIsTeardownRunning] = useState(false);
   const [isExportingMigration, setIsExportingMigration] = useState(false);
   const [instanceVaultBusy, setInstanceVaultBusy] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -142,6 +141,27 @@ export function ProjectDetailView({
     void loadPlan();
   }, [loadPlan]);
 
+  const loadTeardownPlan = useCallback(async () => {
+    setIsRefreshing(true);
+    setError(null);
+    try {
+      const payload = await api<ProvisioningPlanResponse>(
+        `/api/projects/${encodeURIComponent(projectId)}/provisioning/teardown`,
+      );
+      setTeardownPlan(payload);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (activeTab === 'teardown' && !teardownPlan) {
+      void loadTeardownPlan();
+    }
+  }, [activeTab, loadTeardownPlan, teardownPlan]);
+
   // Re-classify the active template once the catalog arrives — `loadPlan`
   // may have raced ahead of `usePluginCatalog()` and stamped 'custom' due to
   // the templates list being empty at that point.
@@ -178,20 +198,17 @@ export function ProjectDetailView({
     return modulesDirty ? (selectedModules as string[]) : ((plan.selectedModules as string[]) ?? []);
   }, [plan, modulesDirty, selectedModules]);
 
-  const runTeardown = useCallback(async () => {
-    setIsTeardownRunning(true);
-    setError(null);
-    try {
-      await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/teardown/run`, {
+  const rebuildTeardownPlan = useCallback(async () => {
+    const payload = await api<ProvisioningPlanResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/provisioning/teardown`,
+      {
         method: 'POST',
-      });
-      await loadPlan();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setIsTeardownRunning(false);
-    }
-  }, [loadPlan, projectId]);
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modules: selectedModules }),
+      },
+    );
+    setTeardownPlan(payload);
+  }, [projectId, selectedModules]);
 
   const exportProjectMigration = useCallback(
     async (mode: 'custom' | 'none', customPassphrase?: string) => {
@@ -237,7 +254,7 @@ export function ProjectDetailView({
       <ProjectQuickLinks plan={plan} onDeleteProject={onDeleteProject} />
 
       <div className="flex items-center gap-1 border-b border-border flex-wrap">
-        {(['modules', 'setup', 'dashboard', 'settings'] as const).map((tabId) => (
+        {(['modules', 'setup', 'teardown', 'dashboard', 'settings'] as const).map((tabId) => (
           <button
             key={tabId}
             type="button"
@@ -252,9 +269,11 @@ export function ProjectDetailView({
               ? 'Modules'
               : tabId === 'setup'
                 ? 'Setup'
-                : tabId === 'dashboard'
-                  ? 'Dashboard'
-                  : 'Settings'}
+                : tabId === 'teardown'
+                  ? 'Teardown'
+                  : tabId === 'dashboard'
+                    ? 'Dashboard'
+                    : 'Settings'}
           </button>
         ))}
       </div>
@@ -373,6 +392,7 @@ export function ProjectDetailView({
                   body: JSON.stringify({ modules: selectedModules }),
                 });
                 await loadPlan();
+                await rebuildTeardownPlan();
                 updateTab('setup');
               } catch (err) {
                 setError((err as Error).message);
@@ -415,6 +435,25 @@ export function ProjectDetailView({
             });
             await loadPlan();
           }}
+        />
+      )}
+
+      {activeTab === 'teardown' && (
+        <SetupWizard
+          projectId={projectId}
+          plan={teardownPlan}
+          displaySelectedModules={(teardownPlan?.selectedModules as string[]) ?? selectedModulesForStepCopy}
+          connectedProviders={connectedProviders}
+          instanceVaultSync={projectDetail.instanceVaultSync}
+          onRefreshProjectDetail={onRefreshProjectDetail}
+          onProjectProvidersRefresh={onProjectProvidersRefresh}
+          onPlanChange={setTeardownPlan}
+          onUserActionComplete={async () => undefined}
+          onRefresh={loadTeardownPlan}
+          onRecomputePlan={async () => {
+            await rebuildTeardownPlan();
+          }}
+          runEndpoint="teardown"
         />
       )}
 
@@ -558,30 +597,22 @@ export function ProjectDetailView({
               <Settings size={14} className="text-muted-foreground" />
               <div>
                 <p className="text-sm font-semibold">Project Settings</p>
-                <p className="text-xs text-muted-foreground">Manage teardown and destructive operations.</p>
+                <p className="text-xs text-muted-foreground">Manage destructive operations from the Teardown tab.</p>
               </div>
             </div>
             <button
               type="button"
               onClick={() => {
-                void (async () => {
-                  await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/teardown`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ modules: selectedModules }),
-                  });
-                  await loadPlan();
-                })();
+                updateTab('teardown');
+                void loadTeardownPlan();
               }}
               className="text-xs font-bold rounded-lg border border-border px-3 py-2 hover:bg-accent"
             >
-              Build Teardown Plan
+              Open Teardown
             </button>
           </div>
-          <TeardownWizard plan={plan} isRunning={isTeardownRunning} onRun={runTeardown} />
         </div>
       )}
     </div>
   );
 }
-

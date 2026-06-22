@@ -1,47 +1,124 @@
 # Studio Pro
 
+**Ship the app, not the setup.**
+
+Studio Pro is a local provisioning studio for app builders. It helps you take a project from “runs on my machine” to launch-ready by guiding the setup of Firebase, Google Cloud, GitHub, Expo EAS, Apple Developer, Google Play, Cloudflare, CI secrets, OAuth configuration, and LLM provider keys from one encrypted local workspace.
+
+It is built for founders, solo developers, agencies, and small teams who can build the product but do not want to lose days to provider consoles, signing keys, service accounts, app store setup, DNS records, and fragile launch checklists.
+
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![CI](https://github.com/sidthekid134/structure/actions/workflows/ci.yml/badge.svg)](https://github.com/sidthekid134/structure/actions/workflows/ci.yml)
-
-**Automated infrastructure provisioning and credential vault for mobile apps.** Studio Pro runs locally on your machine, stores all secrets encrypted at rest, and walks you through provisioning Firebase, EAS, GitHub, Apple, Cloudflare, Google Play, and LLM integrations from a single UI — no cloud services, no telemetry, no account required.
 
 ---
 
 ## Why Studio Pro?
 
-- **One command, fully provisioned.** Spinning up a new React Native / Expo project means 15+ manual steps across 6 different consoles. Studio Pro drives the dependency graph automatically, pausing only when genuine human action is required (registering an Apple developer account, creating an App Store listing, etc.).
-- **Secrets stay on your machine.** Everything is AES-256-GCM encrypted with an Argon2id-derived key; vault access is gated by WebAuthn passkeys (Touch ID / Windows Hello). Nothing leaves your machine unless you choose to push it.
-- **Plugin-driven and extensible.** Integrations are first-class plugins. Adding support for a new provider means writing a plugin file and a step handler — no changes to core. See [docs/authoring-plugins.md](./docs/authoring-plugins.md).
+Most production app setup is not hard because any one provider is impossible. It is hard because the work is scattered:
+
+- Firebase needs projects, apps, services, credentials, and rules.
+- Apple and Google Play need developer accounts, signing assets, bundle IDs, and store credentials.
+- Expo EAS needs build and submission configuration.
+- GitHub needs repositories, environments, workflow files, and secrets.
+- Cloudflare needs domain zones, DNS records, and nameserver verification.
+- OAuth callbacks must line up across web, iOS, Android, Firebase, and provider dashboards.
+- API keys and service account JSON need to be stored somewhere safer than notes, chat, shell history, or random `.env` files.
+
+Studio Pro gives that setup a visible dependency graph. It runs what can be automated, pauses for required human actions, stores produced credentials in a local encrypted vault, and shows you what is complete, blocked, or ready to run next.
+
+---
+
+## What You Can Build With It
+
+Studio Pro supports project templates for:
+
+| Template | Use Case |
+|---|---|
+| Mobile App | Cross-platform mobile apps with Firebase, EAS, app store, signing, push, and CI setup |
+| Web App | Web-focused apps with auth, data, CI, DNS, and managed cloud foundations |
+| API Backend | Backend services with cloud runtime, data, auth, and deployment workflows |
+| Custom | Pick only the modules your project needs |
+
+Built-in integrations include:
+
+| Area | Studio Pro Helps With |
+|---|---|
+| Google Cloud / Firebase | GCP project foundation, Firebase setup, Auth, Firestore, Storage, Messaging, service accounts |
+| GitHub | Repository setup, CI workflow files, environments, repository secrets, environment secrets |
+| Expo EAS | Mobile build configuration and store submission support |
+| Apple Developer | App Store Connect credentials, code signing, distribution assets, push keys |
+| Google Play | Android signing and publishing setup |
+| Cloudflare | Domain zone setup, DNS routing, nameserver verification |
+| LLM Providers | OpenAI, Anthropic, Gemini, or custom endpoint keys stored per project |
+| Fullstack Delivery | Web/API Cloud Run deployment structure for `apps/web`, `apps/api`, and shared packages |
+
+---
+
+## How It Works
+
+Studio Pro runs locally and opens a browser UI backed by a local Express server. Your projects, credentials, and provisioning state stay on your machine.
+
+The workflow is:
+
+1. Create a project and choose a template or modules.
+2. Connect the providers your project needs.
+3. Review the generated provisioning plan.
+4. Run ready steps from the dependency graph.
+5. Complete any required manual gates, such as account enrollment or DNS delegation.
+6. Inspect produced resources, uploaded secrets, and completed setup.
+
+Provisioning is graph-based, so Studio Pro understands which steps depend on which credentials, accounts, providers, and generated resources. That makes it easier to resume setup, troubleshoot blockers, and repeat the same launch path across projects.
+
+---
+
+## Security and Privacy
+
+Studio Pro is local-first by design.
+
+| Layer | Behavior |
+|---|---|
+| Network | Binds to `127.0.0.1` by default. Public bind requires explicit opt-in. |
+| Vault | Credentials are stored in a local encrypted vault. |
+| Auth | WebAuthn passkeys can gate vault unlock. |
+| Encryption | AES-256-GCM authenticated encryption with Argon2id key derivation where passphrases are used. |
+| OAuth | OAuth flows use PKCE and state validation. Authorization codes are not logged. |
+| Telemetry | No analytics, crash reporting, usage tracking, or phone-home logic. |
+
+Studio Pro only contacts external providers when you configure an integration and run a provisioning step that requires that provider.
+
+Read more:
+
+- [docs/security.md](./docs/security.md)
+- [docs/privacy.md](./docs/privacy.md)
+- [SECURITY.md](./SECURITY.md)
 
 ---
 
 ## Quickstart
 
-### Download a binary (recommended)
+### Download a Binary
 
-Download the latest release for your platform from the [GitHub Releases page](https://github.com/sidthekid134/structure/releases):
+Download the latest release for your platform from the [GitHub Releases page](https://github.com/sidthekid134/structure/releases).
 
 | Platform | Download |
 |---|---|
-| macOS (Apple Silicon) | `Studio-Pro-v*.dmg` — open, drag to Applications, double-click |
+| macOS Apple Silicon | `Studio-Pro-v*.dmg` |
 | Linux x86_64 | `studio-pro-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux arm64 | `studio-pro-aarch64-unknown-linux-gnu.tar.gz` |
 
-> **Intel Mac users:** Build from source (Node 20+) until an x86 DMG is available.
+Studio opens in your browser at:
 
-```bash
-# macOS — open the DMG, drag Studio Pro to Applications, then double-click it.
-
-# Linux — extract and run
-tar xzf studio-pro-*.tar.gz
-./studio-pro-*
+```text
+http://localhost:3737
 ```
 
-Studio opens in your browser at `http://localhost:3737`. On first run, register a passkey (Touch ID or security key) to seal the vault. All subsequent access requires the passkey — there are no recovery codes.
+On first run, create or unlock the local vault. Future access requires vault unlock.
 
-### From source (development)
+### Run From Source
 
-Requirements: Node 20+, npm.
+Requirements:
+
+- Node 22+
+- npm
 
 ```bash
 git clone https://github.com/sidthekid134/structure
@@ -51,37 +128,72 @@ npm run ui:install
 npm run dev:full
 ```
 
-Open `http://localhost:3738`. The development scripts set `STUDIO_PROFILE=dev` + `STUDIO_PORT=3738` by default so your local source workflow stays isolated from a production install on the same machine. In development mode, a dev session is created automatically so you are not prompted for a passkey on every reload. To test passkey registration, open `http://localhost:3738?passkey=1` once.
+Open:
 
-See [BUILDING.md](./BUILDING.md) for building the CLI binary locally.
+```text
+http://localhost:3738
+```
 
----
+Development mode uses `STUDIO_PROFILE=dev` and `STUDIO_PORT=3738` so it stays isolated from a production install. To test passkey registration in development, open:
 
-## Security model
+```text
+http://localhost:3738?passkey=1
+```
 
-| Layer | Behavior |
-|---|---|
-| Network | Binds loopback only (`127.0.0.1`). Refuses non-loopback connections unless `STUDIO_ALLOW_PUBLIC_BIND=1`. |
-| Auth | WebAuthn passkey (PRF extension) gates vault unlock. HttpOnly `studio_session` cookie (4-hour TTL) for subsequent API calls. |
-| Encryption | AES-256-GCM authenticated encryption. Argon2id key derivation (memory-hard; no PBKDF2). |
-| Disk | Vault file created with `0600` permissions. Row-level encryption for individual credentials via HKDF-SHA256. |
-| OAuth | PKCE + state parameter on all OAuth flows. Authorization codes are never logged. |
-| Exports | Migration exports encrypted with keys derived from the active vault session or an optional bundle passphrase. |
-
-Full details: [docs/security.md](./docs/security.md) · [docs/privacy.md](./docs/privacy.md)
+See [BUILDING.md](./BUILDING.md) for local binary builds.
 
 ---
 
-## Environment variables
+## Useful Commands
+
+```bash
+npm run dev:full        # Run backend and UI watcher for local development
+npm run build           # Build UI and TypeScript backend
+npm run build:cli       # Build the local CLI binary
+npm run test            # Run Jest tests
+npm run typecheck       # Type-check without emitting files
+npm run reset:data      # Destroy local Studio data for the active profile
+```
+
+---
+
+## Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `STUDIO_STORE_DIR` | OS app data dir for `studio-pro` | Override data directory |
-| `STUDIO_PROFILE` | unset | Isolate app data per profile (for example `dev` -> app data dir for `studio-pro-dev`) |
+| `STUDIO_PROFILE` | unset | Isolate app data per profile, such as `dev` |
 | `STUDIO_PORT` | `3737` | Listen port |
 | `STUDIO_HOST` | `127.0.0.1` | Bind address |
-| `STUDIO_SERVE_UI_FROM_SOURCE` | unset | `1` serves dashboard from source (dev only) |
-| `STUDIO_NO_OPEN` | unset | `1` skips opening the browser |
+| `STUDIO_SERVE_UI_FROM_SOURCE` | unset | Serve dashboard from source during development |
+| `STUDIO_NO_OPEN` | unset | Skip opening the browser |
+
+---
+
+## Fullstack Repository Layout
+
+For Studio-managed fullstack Cloud Run deployment, use:
+
+```text
+apps/web        # React or Next.js app
+apps/api        # Node/Express or Flask service
+packages/*      # shared packages
+```
+
+Each deployable service owns its Dockerfile. The default Docker build context is the repository root (`.`) so shared packages are available during image builds. Existing single-service and root-Dockerfile repositories continue to work.
+
+---
+
+## Extending Studio Pro
+
+Provisioning is plugin-driven.
+
+- Built-in plugins live in `src/plugins/builtin/`.
+- Step definitions live in `src/provisioning/steps/`.
+- Runtime handlers are registered through `src/provisioning/step-handler-registry.ts`.
+- Integrations are grouped through `src/plugins/builtin-integrations.ts`.
+
+See [docs/authoring-plugins.md](./docs/authoring-plugins.md) for adding new integrations and provisioning steps.
 
 ---
 
@@ -89,46 +201,22 @@ Full details: [docs/security.md](./docs/security.md) · [docs/privacy.md](./docs
 
 | Doc | Description |
 |---|---|
-| [docs/architecture.md](./docs/architecture.md) | Integration → Plugin → Step hierarchy, vault design, API server, build pipeline |
+| [docs/architecture.md](./docs/architecture.md) | Core architecture, plugin registry, provisioning graph, API server |
 | [docs/security.md](./docs/security.md) | Threat model, encryption, OAuth flow, file permissions |
-| [docs/privacy.md](./docs/privacy.md) | Zero-telemetry policy, external endpoints, data residency |
-| [docs/authoring-plugins.md](./docs/authoring-plugins.md) | Guide for adding new integrations and plugins |
-| [docs/distribution.md](./docs/distribution.md) | Release process, binary builds, Homebrew tap |
-| [BUILDING.md](./BUILDING.md) | Building from source, running tests |
-| [CONTRIBUTING.md](./CONTRIBUTING.md) | How to contribute |
+| [docs/privacy.md](./docs/privacy.md) | Zero telemetry policy, external endpoints, data residency |
+| [docs/authoring-plugins.md](./docs/authoring-plugins.md) | Add new integrations and plugin steps |
+| [docs/distribution.md](./docs/distribution.md) | Release process and binary distribution |
+| [BUILDING.md](./BUILDING.md) | Source setup, builds, and tests |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | Contribution workflow |
 | [CHANGELOG.md](./CHANGELOG.md) | Version history |
-
----
-
-## Built-in integrations
-
-| Integration | Plugins |
-|---|---|
-| Google Cloud Platform / Firebase | firebase-core, firebase-auth, firebase-firestore, firebase-storage, firebase-messaging, oauth-social |
-| Apple Developer | apple-signing |
-| Google Play | google-play |
-| GitHub | github-repo, github-ci |
-| Expo / EAS | eas-builds, eas-submit |
-| Cloudflare | cloudflare-domain |
-| LLM Providers | llm-openai, llm-anthropic, llm-gemini, llm-custom |
-
-Adding a new integration: [docs/authoring-plugins.md](./docs/authoring-plugins.md).
-
----
-
-## Plugins
-
-Provisioning is plugin-driven. Built-ins live in `src/plugins/builtin/`. Step data lives in `src/provisioning/steps/` (one file per provider). See [docs/architecture.md](./docs/architecture.md) for the full design and [docs/authoring-plugins.md](./docs/authoring-plugins.md) for a step-by-step guide.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). Please read [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) before opening issues or pull requests.
+Contributions are welcome. Start with [CONTRIBUTING.md](./CONTRIBUTING.md), and read [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) before opening issues or pull requests.
 
-## Security vulnerabilities
-
-Report security issues privately — see [SECURITY.md](./SECURITY.md) for the disclosure process.
+Report security issues privately through the process in [SECURITY.md](./SECURITY.md).
 
 ## License
 

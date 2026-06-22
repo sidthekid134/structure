@@ -15,6 +15,7 @@
  *   POST /api/projects/:projectId/provisioning/plan/node/revalidate — re-check a completed node
  *   POST /api/projects/:projectId/provisioning/teardown           — build teardown plan
  *   POST /api/projects/:projectId/provisioning/teardown/run       — execute teardown
+ *   POST /api/projects/:projectId/provisioning/teardown/confirm   — confirm manual teardown completion
  */
 
 import { Router, Request, Response } from 'express';
@@ -47,7 +48,7 @@ import {
 } from '../provisioning/step-registry.js';
 import { StepResolver } from '../provisioning/step-resolver.js';
 import { buildPlanViewModel } from '../provisioning/journey-phases.js';
-import type { ProvisioningPlan, ProvisioningNode, NodeState, CompletionPortalLink } from '../provisioning/graph.types.js';
+import type { ProvisioningPlan, ProvisioningNode, ProvisioningStepNode, NodeState, CompletionPortalLink } from '../provisioning/graph.types.js';
 import type {
   ProviderType,
   GitHubManifestConfig,
@@ -59,6 +60,7 @@ import type {
   ProviderConfig,
   StepContext,
   StepExecutionIntent,
+  StepResult,
 } from '../providers/types.js';
 import { PLATFORM_CORE_VERSION } from '../providers/types.js';
 import { formatRun, integrationProgress } from '../core/formatting.js';
@@ -91,7 +93,7 @@ import { Orchestrator } from '../orchestration/orchestrator.js';
 import type { ModuleId } from '../provisioning/module-catalog.js';
 import { getProvidersForModules, resolveModuleDependencies } from '../provisioning/module-catalog.js';
 import { buildProvisioningGateResolver } from '../provisioning/gate-resolvers.js';
-import { globalStepHandlerRegistry } from '../provisioning/step-handler-registry.js';
+import { globalStepHandlerRegistry, type StepHandlerContext } from '../provisioning/step-handler-registry.js';
 import { EAS_STEP_HANDLERS } from '../provisioning/eas-step-handlers.js';
 import { GITHUB_STEP_HANDLERS } from '../provisioning/github-step-handlers.js';
 import { FIREBASE_STEP_HANDLERS } from '../core/gcp/gcp-step-handlers.js';
@@ -105,6 +107,7 @@ import {
   parseGithubRepoUrl,
   collectCompletedUpstreamArtifacts,
 } from './api-helpers.js';
+import { resolveDeployContractFromInputs } from './deploy-contract.js';
 import {
   applyProjectDomainToUpstreamArtifacts,
   buildInitialUpstreamSeed,
@@ -128,6 +131,7 @@ import {
 import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 import {
   appendExpoManualDeleteIfRobotBlocked,
+  tryGetManualRevertAction,
   type RevertManualAction,
 } from './revert-manual-actions.js';
 import {
@@ -687,9 +691,28 @@ export function createApiRouter(
     return restored;
   };
 
+  const isTeardownPlan = (plan: ProvisioningPlan): boolean =>
+    plan.nodes.some((node) => node.type === 'step' && node.direction === 'teardown');
+
   const savePersistedPlan = (projectId: string, plan: ProvisioningPlan): void => {
     pruneConnectedCloudflareTokenGate(plan, projectId);
     projectManager.savePlan(projectId, StepResolver.snapshotPlan(plan));
+  };
+
+  const loadPersistedTeardownPlan = (projectId: string): ProvisioningPlan | null => {
+    const snapshot = projectManager.loadTeardownPlan(projectId);
+    if (!snapshot) return null;
+    return StepResolver.restorePlan(snapshot as {
+      projectId: string;
+      environments: string[];
+      selectedModules?: string[];
+      nodes: ProvisioningPlan['nodes'];
+      nodeStates: Record<string, NodeState>;
+    });
+  };
+
+  const savePersistedTeardownPlan = (projectId: string, plan: ProvisioningPlan): void => {
+    projectManager.saveTeardownPlan(projectId, StepResolver.snapshotPlan(plan));
   };
 
   function pruneConnectedCloudflareTokenGate(plan: ProvisioningPlan, projectId: string): void {
@@ -3677,12 +3700,13 @@ export function createApiRouter(
         savePersistedPlan(projectId, plan);
         createdNewPlan = true;
       }
+      const servingTeardownPlan = isTeardownPlan(plan);
 
       // Keep persisted plans aligned with current module-selection semantics.
       // This removes stale mobile-only nodes from serverless/backend plans
       // without requiring a manual plan reset.
       let planResyncedWithModules = false;
-      if (plan.selectedModules.length > 0) {
+      if (!servingTeardownPlan && plan.selectedModules.length > 0) {
         const projectPlatforms = module.project.platforms ?? [];
         const normalizedModules = resolveModuleDependencies(plan.selectedModules as ModuleId[]);
         const recomputed = recomputePlanForModules(plan, normalizedModules, projectPlatforms);
@@ -3936,6 +3960,40 @@ export function createApiRouter(
   });
 
   // -------------------------------------------------------------------------
+  // GET /api/projects/:projectId/provisioning/teardown
+  // Returns the persisted teardown plan, or creates one from current modules.
+  // -------------------------------------------------------------------------
+  router.get('/projects/:projectId/provisioning/teardown', (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const moduleRecord = projectManager.getProject(projectId);
+      const environments = normalizeExpoEnvironments(moduleRecord.project.environments);
+      let plan = loadPersistedTeardownPlan(projectId);
+      if (!plan) {
+        const setupPlan = loadPersistedPlan(projectId);
+        const selectedModules = resolveModuleDependencies(
+          (setupPlan?.selectedModules as ModuleId[] | undefined) ?? [],
+        );
+        plan = buildTeardownPlan(
+          projectId,
+          getProvidersForModules(selectedModules),
+          environments,
+          selectedModules,
+          moduleRecord.project.platforms ?? [],
+        );
+        savePersistedTeardownPlan(projectId, plan);
+      }
+      res.json(enrichPlanForResponse(plan));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // POST /api/projects/:projectId/provisioning/teardown
   // Creates teardown plan from selected modules or existing provisioning plan.
   // Body: { modules?: string[] }
@@ -3961,7 +4019,7 @@ export function createApiRouter(
         moduleRecord.project.platforms ?? [],
       );
 
-      savePersistedPlan(projectId, teardownPlan);
+      savePersistedTeardownPlan(projectId, teardownPlan);
       res.json(enrichPlanForResponse(teardownPlan));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -3979,16 +4037,22 @@ export function createApiRouter(
   router.post('/projects/:projectId/provisioning/teardown/run', async (req: Request, res: Response) => {
     try {
       const { projectId } = req.params;
-      const plan = loadPersistedPlan(projectId);
+      const plan = loadPersistedTeardownPlan(projectId);
       if (!plan) {
-        res.status(404).json({ error: `No persisted plan found for project "${projectId}".` });
+        res.status(404).json({ error: `No persisted teardown plan found for project "${projectId}".` });
         return;
       }
+      const nodeKeysFilter = Array.isArray(req.body?.nodeKeys)
+        ? new Set((req.body.nodeKeys as string[]).map((key) => key.split('@')[0]!).filter(Boolean))
+        : undefined;
+      const nodesRequestedForRun = nodeKeysFilter
+        ? plan.nodes.filter((node) => nodeKeysFilter.has(node.key))
+        : plan.nodes;
 
       const module = projectManager.getProject(projectId);
       const githubToken = gitHubConnectionService.getStoredGitHubToken();
-      const planTouchesGithub = planUsesGithubProvider(plan);
-      const planTouchesEas = plan.nodes.some((n) => n.provider === 'eas');
+      const planTouchesGithub = nodesRequestedForRun.some((n) => n.provider === 'github');
+      const planTouchesEas = nodesRequestedForRun.some((n) => n.provider === 'eas');
       const expoTokenForTeardown = easConnectionService.getStoredExpoToken();
       if (planTouchesGithub && !githubToken) {
         res.status(400).json({
@@ -4003,6 +4067,23 @@ export function createApiRouter(
             'Expo / EAS is not connected. Add an Expo access token before running teardown for a plan that includes EAS steps.',
         });
         return;
+      }
+      const gcpHandlerTeardownKeys = nodesRequestedForRun
+        .filter((n): n is ProvisioningStepNode => n.type === 'step' && n.direction === 'teardown')
+        .map((n) => {
+          if (globalStepHandlerRegistry.has(n.key)) return n.key;
+          return n.teardownOf && globalStepHandlerRegistry.has(n.teardownOf) ? n.teardownOf : null;
+        })
+        .filter((key): key is string => Boolean(key))
+        .filter((key) => globalStepHandlerRegistry.get(key)?.requiredAuth === 'gcp');
+      if (gcpHandlerTeardownKeys.length > 0) {
+        try {
+          await gcpConnectionService.getAccessToken(projectId, 'teardown:pre-flight');
+        } catch {
+          const oauthResult = await gcpConnectionService.startProjectOAuthFlow(projectId);
+          res.json({ needsReauth: true, sessionId: oauthResult.sessionId, authUrl: oauthResult.authUrl, projectId });
+          return;
+        }
       }
 
       const defaultBranchRules: BranchProtectionRule[] = [
@@ -4025,6 +4106,9 @@ export function createApiRouter(
           branch_protection_rules: defaultBranchRules,
           environments: (plan.environments as Array<'development' | 'preview' | 'production'>),
           workflow_templates: buildGitHubWorkflowTemplates(plan),
+          deploy_contract: resolveDeployContractFromInputs(
+            plan.nodeStates.get('github:deploy-workflows')?.userInputs,
+          ),
         };
         manifestProviders.push(githubManifestConfig);
       }
@@ -4089,12 +4173,215 @@ export function createApiRouter(
       }
       const orchestrator = new Orchestrator(registry, eventLog);
       const vaultRead = createVaultReader(credentialService, projectId);
+      const vaultWrite = createVaultWriter(credentialService, projectId);
+
+      const executeTeardownStep = async ({
+        node,
+        environment,
+        upstreamResources,
+      }: {
+        node: ProvisioningStepNode;
+        environment?: string;
+        upstreamResources: Record<string, string>;
+      }): Promise<StepResult | null> => {
+        const manualRequirementForNode = (stepKey: string): { evidenceRequired: string[] } | null => {
+          if (stepKey.startsWith('llm:revoke-')) {
+            return { evidenceRequired: ['provider_console_key_id_or_label', 'revocation_note'] };
+          }
+          switch (stepKey) {
+            case 'apple:revoke-signing-assets':
+              return { evidenceRequired: ['apple_key_or_cert_ids', 'revocation_note'] };
+            case 'apple:remove-app-store-listing':
+              return { evidenceRequired: ['asc_app_id_or_name', 'archive_or_removal_note'] };
+            case 'google-play:revoke-service-account':
+              return { evidenceRequired: ['service_account_email', 'revocation_note'] };
+            case 'google-play:remove-app-listing':
+              return { evidenceRequired: ['play_app_id', 'listing_state_note'] };
+            case 'firebase:disable-messaging':
+              return { evidenceRequired: ['firebase_project_id', 'messaging_disable_note'] };
+            case 'firebase:delete-storage-buckets':
+              return { evidenceRequired: ['firebase_project_id', 'storage_cleanup_note'] };
+            case 'oauth:delete-oauth-clients':
+              return { evidenceRequired: ['oauth_client_ids', 'revocation_note'] };
+            case 'eas:remove-submit-targets':
+              return { evidenceRequired: ['expo_project_id', 'submit_target_cleanup_note'] };
+            default:
+              return null;
+          }
+        };
+        const manualFailure = async (
+          stepKey: string,
+          fallbackMessage: string,
+          resourcesProduced?: Record<string, string>,
+        ): Promise<StepResult> => {
+          const manual = manualRequirementForNode(stepKey);
+          const manualAction = await tryGetManualRevertAction(
+            stepKey,
+            {
+              projectId,
+              environment,
+              upstreamArtifacts: { ...upstreamResources },
+              getToken: async (_providerId: string) => '',
+              hasToken: (_providerId: string) => false,
+              projectManager,
+              credentialService,
+            },
+            fallbackMessage,
+            projectManager,
+          );
+          const message = manualAction
+            ? `${fallbackMessage} ${manualAction.body}`
+            : fallbackMessage;
+          const prompt = manualAction?.primaryUrl
+            ? `${manualAction.title}: ${manualAction.primaryUrl}`
+            : message;
+          return {
+            status: 'waiting-on-user',
+            resourcesProduced: resourcesProduced ?? {},
+            error: message,
+            userPrompt: prompt,
+            manualRequired: true,
+            verificationMode: 'manual-confirmation',
+            verificationEvidenceRequired: manual?.evidenceRequired ?? ['operator_note', 'target_identifiers'],
+          };
+        };
+
+        const exactHandler = globalStepHandlerRegistry.get(node.key);
+        const baseHandler =
+          !exactHandler && node.teardownOf ? globalStepHandlerRegistry.get(node.teardownOf) : undefined;
+        const tokenCache = new Map<string, string>();
+        const handlerContext: StepHandlerContext = {
+          projectId,
+          environment,
+          upstreamArtifacts: { ...upstreamResources },
+          async getToken(providerId: string): Promise<string> {
+            const cached = tokenCache.get(providerId);
+            if (cached) return cached;
+            if (providerId === 'gcp') {
+              const token = await gcpConnectionService.getAccessToken(projectId, `teardown:${node.key}`);
+              tokenCache.set(providerId, token);
+              return token;
+            }
+            if (providerId === 'github' && githubToken) return githubToken;
+            if (providerId === 'eas' && expoTokenForTeardown) return expoTokenForTeardown;
+            throw new Error(`No token provider for "${providerId}" in teardown step "${node.key}".`);
+          },
+          hasToken: (providerId: string) =>
+            providerId === 'gcp'
+              ? gcpConnectionService.hasStoredUserOAuthRefreshToken(projectId)
+              : providerId === 'github'
+                ? Boolean(githubToken)
+                : providerId === 'eas'
+                  ? Boolean(expoTokenForTeardown)
+                  : false,
+          projectManager,
+          credentialService,
+        };
+
+        const predeclaredManual = manualRequirementForNode(node.key);
+        if (predeclaredManual) {
+          return manualFailure(
+            node.key,
+            `Manual teardown confirmation required for "${node.key}". ${node.description}`,
+            { teardown_instruction: node.description },
+          );
+        }
+
+        if (exactHandler) {
+          const result = await exactHandler.delete(handlerContext);
+          return result.reconciled
+            ? {
+                status: 'completed',
+                resourcesProduced: result.resourcesProduced ?? {},
+                userPrompt: result.message,
+                manualRequired: false,
+                verificationMode: 'automatic',
+              }
+            : await manualFailure(
+                node.key,
+                result.message ?? `Teardown handler "${node.key}" did not complete cleanup.`,
+                result.resourcesProduced ?? {},
+              );
+        }
+
+        if (baseHandler) {
+          const result = await baseHandler.delete(handlerContext);
+          return result.reconciled
+            ? {
+                status: 'completed',
+                resourcesProduced: result.resourcesProduced ?? {},
+                userPrompt: result.message,
+                manualRequired: false,
+                verificationMode: 'automatic',
+              }
+            : await manualFailure(
+                node.key,
+                result.message ?? `Cleanup for "${node.teardownOf}" did not complete.`,
+                result.resourcesProduced ?? {},
+              );
+        }
+
+        const providerConfig = manifest.providers.find((p) => p.provider === node.provider) as ProviderConfig | undefined;
+        const adapter = registry.hasAdapter(node.provider) ? registry.getAdapter(node.provider) : null;
+        if (providerConfig && adapter?.executeStep) {
+          try {
+            const adapterResult = await adapter.executeStep(node.key, providerConfig, {
+              projectId,
+              environment: environment ?? 'global',
+              upstreamResources: { ...upstreamResources },
+              vaultRead,
+              vaultWrite,
+              executionIntent: 'create',
+              selectedModuleIds: plan.selectedModules,
+            });
+            return {
+              ...adapterResult,
+              manualRequired: adapterResult.status === 'completed' ? false : adapterResult.manualRequired,
+              verificationMode:
+                adapterResult.status === 'completed'
+                  ? 'automatic'
+                  : adapterResult.verificationMode,
+            };
+          } catch (err) {
+            const msg = (err as Error).message;
+            if (node.automationLevel !== 'full') {
+              return manualFailure(
+                node.key,
+                `Automated teardown could not complete for "${node.key}". ${msg}`,
+                { teardown_instruction: node.description },
+              );
+            }
+            if (!/unknown|unsupported|not implemented/i.test(msg)) throw err;
+          }
+        }
+
+        if (node.automationLevel !== 'full' || manualRequirementForNode(node.key)) {
+          return manualFailure(
+            node.key,
+            `Manual teardown confirmation required for "${node.key}". ${node.description}`,
+            { teardown_instruction: node.description },
+          );
+        }
+
+        return manualFailure(
+          node.key,
+          `No automated delete implementation exists for teardown step "${node.key}". Complete this cleanup manually.`,
+          { teardown_instruction: node.description },
+        );
+      };
 
       void (async () => {
-        const currentPlan = loadPersistedPlan(projectId);
+        const currentPlan = loadPersistedTeardownPlan(projectId);
         if (!currentPlan) return;
 
-        for await (const event of orchestrator.teardownBySteps(currentPlan, manifest, {}, vaultRead)) {
+        for await (const event of orchestrator.teardownBySteps(
+          currentPlan,
+          manifest,
+          { teardownStepExecutor: executeTeardownStep },
+          vaultRead,
+          vaultWrite,
+          nodeKeysFilter,
+        )) {
           const normalizedEnvironment =
             event.environment && event.environment !== 'global' ? event.environment : undefined;
           const stateKey = normalizedEnvironment ? `${event.nodeKey}@${normalizedEnvironment}` : event.nodeKey;
@@ -4116,9 +4403,12 @@ export function createApiRouter(
             error: event.error,
             userPrompt: event.userPrompt,
             resourcesProduced: event.resourcesProduced,
+            manualRequired: event.manualRequired,
+            verificationMode: event.verificationMode,
+            verificationEvidenceRequired: event.verificationEvidenceRequired,
             completedAt: event.status === 'success' || event.status === 'skipped' ? Date.now() : undefined,
           });
-          savePersistedPlan(projectId, currentPlan);
+          savePersistedTeardownPlan(projectId, currentPlan);
 
           wsHandler.broadcastStepProgress(
             projectId,
@@ -4129,12 +4419,112 @@ export function createApiRouter(
             event.resourcesProduced,
             event.error,
             event.userPrompt,
+            event.manualRequired,
+            event.verificationMode,
+            event.verificationEvidenceRequired,
           );
         }
       })();
 
       res.json({ started: true, projectId });
     } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/projects/:projectId/provisioning/teardown/confirm
+  // Records manual teardown confirmation and marks the teardown node complete.
+  // Body: { nodeKey, environment?, evidence: { note, targetIds, confirmedAt } }
+  // -------------------------------------------------------------------------
+  router.post('/projects/:projectId/provisioning/teardown/confirm', (req: Request, res: Response) => {
+    try {
+      const { projectId } = req.params;
+      const nodeKey = (req.body?.nodeKey as string | undefined)?.trim();
+      const environment = (req.body?.environment as string | undefined)?.trim();
+      const evidence = (req.body?.evidence ?? {}) as {
+        note?: string;
+        targetIds?: string[];
+        confirmedAt?: string;
+      };
+
+      if (!nodeKey) {
+        res.status(400).json({ error: 'nodeKey is required.' });
+        return;
+      }
+      if (!evidence.note?.trim()) {
+        res.status(400).json({ error: 'evidence.note is required.' });
+        return;
+      }
+      if (!Array.isArray(evidence.targetIds)) {
+        res.status(400).json({ error: 'evidence.targetIds must be an array.' });
+        return;
+      }
+      if (!evidence.confirmedAt?.trim()) {
+        res.status(400).json({ error: 'evidence.confirmedAt is required.' });
+        return;
+      }
+
+      const plan = loadPersistedTeardownPlan(projectId);
+      if (!plan) {
+        res.status(404).json({ error: `No persisted teardown plan found for project "${projectId}".` });
+        return;
+      }
+
+      const node = plan.nodes.find((n) => n.key === nodeKey);
+      if (!node || node.type !== 'step' || node.direction !== 'teardown') {
+        res.status(404).json({ error: `Teardown node "${nodeKey}" not found.` });
+        return;
+      }
+
+      const stateKey = environment ? `${nodeKey}@${environment}` : nodeKey;
+      const existing = plan.nodeStates.get(stateKey);
+      if (!existing) {
+        res.status(404).json({ error: `No teardown state found for "${stateKey}".` });
+        return;
+      }
+      if (!existing.manualRequired) {
+        res.status(409).json({ error: `Teardown step "${stateKey}" does not require manual confirmation.` });
+        return;
+      }
+
+      const nextState: NodeState = {
+        ...existing,
+        status: 'completed',
+        error: undefined,
+        completedAt: Date.now(),
+        manualRequired: false,
+        verificationMode: 'manual-confirmation',
+        manualConfirmation: {
+          note: evidence.note.trim(),
+          targetIds: evidence.targetIds.map((v) => String(v).trim()).filter(Boolean),
+          confirmedAt: evidence.confirmedAt.trim(),
+          recordedAt: Date.now(),
+        },
+      };
+      plan.nodeStates.set(stateKey, nextState);
+      savePersistedTeardownPlan(projectId, plan);
+
+      wsHandler.broadcastStepProgress(
+        projectId,
+        nodeKey,
+        'step',
+        'success',
+        environment || undefined,
+        nextState.resourcesProduced,
+        undefined,
+        `Manual teardown confirmation recorded for "${nodeKey}".`,
+        false,
+        'manual-confirmation',
+        nextState.verificationEvidenceRequired,
+      );
+
+      res.json(enrichPlanForResponse(plan));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        res.status(404).json({ error: `Project "${req.params.projectId}" not found.` });
+        return;
+      }
       res.status(500).json({ error: (err as Error).message });
     }
   });
@@ -4256,6 +4646,7 @@ export function createApiRouter(
           'user:provide-openai-api-key': 'openai',
           'user:provide-anthropic-api-key': 'anthropic',
           'user:provide-gemini-api-key': 'gemini',
+          'user:provide-openrouter-api-key': 'openrouter',
           'user:provide-custom-llm-credentials': 'custom',
         };
         const llmKind = llmUserActionToKind[nodeKey];
@@ -4282,6 +4673,7 @@ export function createApiRouter(
             res.status(400).json({ error: 'Missing "custom_base_url" in resourcesProduced.' });
             return;
           }
+          // openrouter has a fixed base URL baked into OpenRouterClient — no base_url field needed
           const organizationId =
             llmKind === 'openai'
               ? ((resourcesProduced?.['openai_organization_id'] as string | undefined) ?? '').trim() || undefined
@@ -5191,6 +5583,9 @@ export function createApiRouter(
               ],
               environments: currentPlan.environments as Array<'development' | 'preview' | 'production'>,
               workflow_templates: buildGitHubWorkflowTemplates(currentPlan),
+              deploy_contract: resolveDeployContractFromInputs(
+                currentPlan.nodeStates.get('github:deploy-workflows')?.userInputs,
+              ),
             });
           }
           if (needsEasOrchestration && expoTokenForOrchestrator) {
@@ -6719,7 +7114,7 @@ export function createApiRouter(
           'github_pat', 'cloudflare_token', 'apple_p8', 'apple_team_id',
           'google_play_key', 'expo_token', 'domain_name',
           'llm_openai_api_key', 'llm_anthropic_api_key',
-          'llm_gemini_api_key', 'llm_custom_api_key',
+          'llm_gemini_api_key', 'llm_openrouter_api_key', 'llm_custom_api_key',
         ];
         if (!allowedTypes.includes(credentialType as CredentialType)) {
           res.status(400).json({
@@ -7181,13 +7576,14 @@ export function createApiRouter(
   // or fallback behavior — so the user sees the upstream message.
   // -------------------------------------------------------------------------
 
-  const LLM_KINDS: readonly LlmKind[] = ['openai', 'anthropic', 'gemini', 'custom'] as const;
+  const LLM_KINDS: readonly LlmKind[] = ['openai', 'anthropic', 'gemini', 'openrouter', 'custom'] as const;
 
   function llmKindCredentialType(kind: LlmKind): CredentialType {
     switch (kind) {
       case 'openai': return 'llm_openai_api_key';
       case 'anthropic': return 'llm_anthropic_api_key';
       case 'gemini': return 'llm_gemini_api_key';
+      case 'openrouter': return 'llm_openrouter_api_key';
       case 'custom': return 'llm_custom_api_key';
     }
   }
@@ -7197,6 +7593,7 @@ export function createApiRouter(
       case 'openai': return 'gpt-4o-mini';
       case 'anthropic': return 'claude-3-5-haiku-latest';
       case 'gemini': return 'gemini-1.5-flash';
+      case 'openrouter': return 'openai/gpt-4o-mini';
       case 'custom': return '';
     }
   }
@@ -7206,6 +7603,7 @@ export function createApiRouter(
       case 'openai': return 'OpenAI';
       case 'anthropic': return 'Anthropic Claude';
       case 'gemini': return 'Google Gemini';
+      case 'openrouter': return 'OpenRouter';
       case 'custom': return 'Custom OpenAI-compatible';
     }
   }

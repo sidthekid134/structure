@@ -174,6 +174,21 @@ export class ProjectManager {
     return JSON.parse(raw) as ProvisioningPlanFile;
   }
 
+  saveTeardownPlan(projectId: string, plan: ProvisioningPlanFile): void {
+    const planPath = this.teardownPlanPath(projectId);
+    fs.writeFileSync(planPath, JSON.stringify(plan, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+  }
+
+  loadTeardownPlan(projectId: string): ProvisioningPlanFile | null {
+    const planPath = this.teardownPlanPath(projectId);
+    if (!fs.existsSync(planPath)) return null;
+    const raw = fs.readFileSync(planPath, 'utf8');
+    return JSON.parse(raw) as ProvisioningPlanFile;
+  }
+
   deletePlan(projectId: string): void {
     const planPath = this.planPath(projectId);
     if (!fs.existsSync(planPath)) return;
@@ -479,6 +494,10 @@ export class ProjectManager {
 
   private planPath(projectId: string): string {
     return path.join(this.projectDir(projectId), 'plan.json');
+  }
+
+  private teardownPlanPath(projectId: string): string {
+    return path.join(this.projectDir(projectId), 'teardown-plan.json');
   }
 
   private projectDir(projectId: string): string {

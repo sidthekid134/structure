@@ -21,6 +21,7 @@ export const PROJECT_LLM_RUNTIME_ENV_KEYS = [
   'LLM_ANTHROPIC_DEFAULT_MODEL',
   'LLM_GEMINI_API_KEY',
   'LLM_GEMINI_DEFAULT_MODEL',
+  'LLM_OPENROUTER_API_KEY',
   'LLM_CUSTOM_API_KEY',
   'LLM_CUSTOM_BASE_URL',
   'LLM_CUSTOM_DEFAULT_MODEL',
@@ -52,6 +53,7 @@ export const PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES: Record<
   LLM_ANTHROPIC_DEFAULT_MODEL: 'PUBLIC',
   LLM_GEMINI_API_KEY: 'SECRET',
   LLM_GEMINI_DEFAULT_MODEL: 'PUBLIC',
+  LLM_OPENROUTER_API_KEY: 'SECRET',
   LLM_CUSTOM_API_KEY: 'SECRET',
   LLM_CUSTOM_BASE_URL: 'SENSITIVE',
   LLM_CUSTOM_DEFAULT_MODEL: 'PUBLIC',
@@ -76,6 +78,7 @@ export const LLM_KIND_MODULE_IDS = [
   'llm-openai',
   'llm-anthropic',
   'llm-gemini',
+  'llm-openrouter',
   'llm-custom',
 ] as const;
 
@@ -87,6 +90,7 @@ export function llmModuleIdForEasEnvKey(
   if (name.startsWith('LLM_OPENAI_')) return 'llm-openai';
   if (name.startsWith('LLM_ANTHROPIC_')) return 'llm-anthropic';
   if (name.startsWith('LLM_GEMINI_')) return 'llm-gemini';
+  if (name.startsWith('LLM_OPENROUTER_')) return 'llm-openrouter';
   return 'llm-custom';
 }
 
@@ -186,12 +190,13 @@ export function resolveProjectRuntimeEnvValues(
 }
 
 const LLM_API_KEY_VAULT_TO_CREDENTIAL_TYPE: Record<
-  'openai_api_key' | 'anthropic_api_key' | 'gemini_api_key' | 'custom_api_key',
+  'openai_api_key' | 'anthropic_api_key' | 'gemini_api_key' | 'openrouter_api_key' | 'custom_api_key',
   CredentialType
 > = {
   openai_api_key: 'llm_openai_api_key',
   anthropic_api_key: 'llm_anthropic_api_key',
   gemini_api_key: 'llm_gemini_api_key',
+  openrouter_api_key: 'llm_openrouter_api_key',
   custom_api_key: 'llm_custom_api_key',
 };
 
@@ -244,6 +249,8 @@ export function resolveProjectLlmRuntimeEnvValues(
     firstPresent(upstream['llm_gemini_default_model']),
     false,
   );
+
+  setRuntimeValue(full, [], 'LLM_OPENROUTER_API_KEY', readLlmApiKeyOrVault(input, 'openrouter_api_key'), false);
 
   setRuntimeValue(full, [], 'LLM_CUSTOM_API_KEY', readLlmApiKeyOrVault(input, 'custom_api_key'), false);
   setRuntimeValue(full, [], 'LLM_CUSTOM_BASE_URL', firstPresent(read('custom_base_url'), upstream['custom_base_url']), false);

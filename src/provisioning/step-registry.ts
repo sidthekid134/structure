@@ -69,11 +69,13 @@ import {
   LLM_OPENAI_STEPS,
   LLM_ANTHROPIC_STEPS,
   LLM_GEMINI_STEPS,
+  LLM_OPENROUTER_STEPS,
   LLM_CUSTOM_STEPS,
   LLM_TEARDOWN_STEPS,
   LLM_OPENAI_TEARDOWN_STEPS,
   LLM_ANTHROPIC_TEARDOWN_STEPS,
   LLM_GEMINI_TEARDOWN_STEPS,
+  LLM_OPENROUTER_TEARDOWN_STEPS,
   LLM_CUSTOM_TEARDOWN_STEPS,
 } from './steps/llm-steps.js';
 
@@ -91,9 +93,9 @@ export {
   EAS_STEPS, EAS_TEARDOWN_STEPS,
   GOOGLE_PLAY_STEPS, GOOGLE_PLAY_TEARDOWN_STEPS,
   OAUTH_STEPS, OAUTH_TEARDOWN_STEPS,
-  LLM_STEPS, LLM_OPENAI_STEPS, LLM_ANTHROPIC_STEPS, LLM_GEMINI_STEPS, LLM_CUSTOM_STEPS,
+  LLM_STEPS, LLM_OPENAI_STEPS, LLM_ANTHROPIC_STEPS, LLM_GEMINI_STEPS, LLM_OPENROUTER_STEPS, LLM_CUSTOM_STEPS,
   LLM_TEARDOWN_STEPS, LLM_OPENAI_TEARDOWN_STEPS, LLM_ANTHROPIC_TEARDOWN_STEPS,
-  LLM_GEMINI_TEARDOWN_STEPS, LLM_CUSTOM_TEARDOWN_STEPS,
+  LLM_GEMINI_TEARDOWN_STEPS, LLM_OPENROUTER_TEARDOWN_STEPS, LLM_CUSTOM_TEARDOWN_STEPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -396,6 +398,35 @@ export function buildTeardownPlan(
   const effectiveProviders = expandSelectedProvidersWithDependencies(selectedProviders);
   for (const provider of effectiveProviders) {
     teardownSteps.push(...getTeardownStepsForProvider(provider));
+  }
+  const effectiveModules = selectedModules
+    ? filterModulesByPlatforms(resolveModuleDependencies(selectedModules), platforms)
+    : [];
+  if (effectiveModules.length > 0) {
+    const catalog = getEffectiveModuleCatalog();
+    const seenTeardownKeys = new Set(teardownSteps.map((step) => step.key));
+    for (const moduleId of effectiveModules) {
+      const mod = catalog[moduleId];
+      if (!mod || mod.teardownStepKeys.length > 0) continue;
+      const key = `teardown:module:${moduleId}:cleanup`;
+      if (seenTeardownKeys.has(key)) continue;
+      teardownSteps.push({
+        type: 'step',
+        key,
+        label: `Review ${mod.label} Cleanup`,
+        description:
+          `${mod.description} Review the provider console for resources, credentials, webhooks, domains, ` +
+          'environment variables, workflow files, or generated artifacts that Studio does not remove automatically.',
+        provider: mod.provider,
+        environmentScope: 'global',
+        automationLevel: 'manual',
+        direction: 'teardown',
+        dependencies: [],
+        produces: [],
+        platforms: mod.platforms,
+      });
+      seenTeardownKeys.add(key);
+    }
   }
   const nodes = pruneNodesWithUnresolvedDependencies(
     filterNodesByPlatforms(teardownSteps as ProvisioningNode[], platforms),

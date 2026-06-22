@@ -13,6 +13,7 @@ import type { ProvisioningPlan, ProvisioningNode } from '../provisioning/graph.t
 import type { ProjectModule } from './project-manager.js';
 import { projectPrimaryDomain, projectResourceSlug } from './project-identity.js';
 import { buildStudioGcpProjectId } from '../core/gcp-connection.js';
+import { resolveDeployContractFromInputs } from './deploy-contract.js';
 
 export interface ManualInstructionDownload {
   /**
@@ -113,12 +114,13 @@ interface InstructionContext {
 
 type InstructionBuilder = (ctx: InstructionContext) => ManualInstructions;
 
-type LlmKind = 'openai' | 'anthropic' | 'gemini' | 'custom';
+type LlmKind = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom';
 
 const LLM_RUNTIME_KEYS_BY_KIND: Record<LlmKind, string[]> = {
   openai: ['LLM_OPENAI_API_KEY', 'LLM_OPENAI_ORGANIZATION_ID', 'LLM_OPENAI_DEFAULT_MODEL'],
   anthropic: ['LLM_ANTHROPIC_API_KEY', 'LLM_ANTHROPIC_DEFAULT_MODEL'],
   gemini: ['LLM_GEMINI_API_KEY', 'LLM_GEMINI_DEFAULT_MODEL'],
+  openrouter: ['LLM_OPENROUTER_API_KEY'],
   custom: ['LLM_CUSTOM_API_KEY', 'LLM_CUSTOM_BASE_URL', 'LLM_CUSTOM_DEFAULT_MODEL'],
 };
 
@@ -126,6 +128,7 @@ const LLM_VAULT_SLOTS_BY_KIND: Record<LlmKind, string[]> = {
   openai: ['llm/openai_api_key', 'llm/openai_organization_id'],
   anthropic: ['llm/anthropic_api_key'],
   gemini: ['llm/gemini_api_key'],
+  openrouter: ['llm/openrouter_api_key'],
   custom: ['llm/custom_api_key', 'llm/custom_base_url'],
 };
 
@@ -205,6 +208,7 @@ function buildCicdIntegrationPromptInstructions(ctx: InstructionContext): Manual
   const apiService = ctx.upstream['api_cloud_run_service']?.trim() || `${ctx.slug}-api`;
   const artifactRepo = ctx.upstream['artifact_registry_repo']?.trim() || `${region}-docker.pkg.dev/${projectId}/studio-serverless`;
   const envLabel = ctx.environments.length > 0 ? ctx.environments.join(', ') : 'preview, production';
+  const deployContract = resolveDeployContractFromInputs(ctx.githubDeployInputs);
 
   const targetGuidance: string[] = [];
   if (selectedTargets.includes('mobile')) {
@@ -214,13 +218,12 @@ function buildCicdIntegrationPromptInstructions(ctx: InstructionContext): Manual
   }
   if (selectedTargets.includes('web')) {
     targetGuidance.push(
-      `- Web target (${webStack} -> ${webDestination}): ensure a production-ready Docker build context, deterministic install/build commands, and test execution in CI. Expected Cloud Run service: "${webService}".`,
-      '- For Cloud Run web deployment, commit Dockerfile, .dockerignore, and avoid local-only Studio assumptions.',
+      `- Web target (${webStack} -> ${webDestination}): keep the deployable app in "${deployContract.web.root}", own its Dockerfile at "${deployContract.web.dockerfile}", and ensure Docker build context "${deployContract.web.buildContext}" contains all shared packages needed at build time. Expected Cloud Run service: "${webService}".`,
     );
   }
   if (selectedTargets.includes('api')) {
     targetGuidance.push(
-      `- API target (${apiStack} -> ${apiDestination}): ensure API container build context is correct, health checks are available, and runtime env assumptions are explicit. Expected Cloud Run service: "${apiService}".`,
+      `- API target (${apiStack} -> ${apiDestination}): keep the deployable service in "${deployContract.api.root}", own its Dockerfile at "${deployContract.api.dockerfile}", expose health endpoint "${deployContract.api.healthPath || '/api/health'}", and ensure Docker build context "${deployContract.api.buildContext}" contains all shared packages needed at build time. Expected Cloud Run service: "${apiService}".`,
     );
   }
 
@@ -235,7 +238,18 @@ function buildCicdIntegrationPromptInstructions(ctx: InstructionContext): Manual
     `- Studio environments: ${envLabel}\n` +
     `- CI targets: ${selectedTargets.join(', ')}\n` +
     `- GCP project: "${projectId}" region "${region}"\n` +
-    `- Artifact Registry: "${artifactRepo}"\n\n` +
+    `- Artifact Registry: "${artifactRepo}"\n` +
+    `- Web root: "${deployContract.web.root}"\n` +
+    `- Web Dockerfile: "${deployContract.web.dockerfile}"\n` +
+    `- Web build context: "${deployContract.web.buildContext}"\n` +
+    `- API root: "${deployContract.api.root}"\n` +
+    `- API Dockerfile: "${deployContract.api.dockerfile}"\n` +
+    `- API build context: "${deployContract.api.buildContext}"\n` +
+    `- API health path: "${deployContract.api.healthPath || '/api/health'}"\n\n` +
+    `Recommended fullstack monorepo structure:\n` +
+    `apps/web\n` +
+    `apps/api\n` +
+    `packages/shared\n\n` +
     `Requirements:\n` +
     `${targetGuidance.join('\n')}\n` +
     `- Keep CI deterministic: lockfile committed, explicit runtime/toolchain versions, no hidden local-only assumptions.\n` +
@@ -651,6 +665,8 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
     buildLlmIntegrationPromptInstructions(ctx, 'anthropic', 'Anthropic Claude'),
   'user:share-gemini-integration-prompt': (ctx) =>
     buildLlmIntegrationPromptInstructions(ctx, 'gemini', 'Google Gemini'),
+  'user:share-openrouter-integration-prompt': (ctx) =>
+    buildLlmIntegrationPromptInstructions(ctx, 'openrouter', 'OpenRouter'),
   'user:share-custom-llm-integration-prompt': (ctx) =>
     buildLlmIntegrationPromptInstructions(ctx, 'custom', 'Custom OpenAI-compatible'),
   'user:share-cicd-integration-prompt': (ctx) =>

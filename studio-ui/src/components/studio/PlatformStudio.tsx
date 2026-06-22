@@ -41,10 +41,11 @@ import type {
 } from './types';
 
 const DEFAULT_PROJECT_SUBTAB: ProjectSubtab = 'modules';
-const PROJECT_SUBTABS: readonly ProjectSubtab[] = ['modules', 'setup', 'dashboard', 'settings'];
+const PROJECT_SUBTABS: readonly ProjectSubtab[] = ['modules', 'setup', 'teardown', 'dashboard', 'settings'];
 const PROJECT_SCOPED_VIEWS: readonly StudioView[] = [
   'project',
   'project-setup',
+  'project-teardown',
   'project-modules',
   'project-dashboard',
   'project-settings',

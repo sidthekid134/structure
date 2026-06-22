@@ -27,6 +27,7 @@ import { oauthSocialPlugin } from './oauth-social.plugin.js';
 import { llmOpenAIPlugin } from './llm-openai.plugin.js';
 import { llmAnthropicPlugin } from './llm-anthropic.plugin.js';
 import { llmGeminiPlugin } from './llm-gemini.plugin.js';
+import { llmOpenRouterPlugin } from './llm-openrouter.plugin.js';
 import { llmCustomPlugin } from './llm-custom.plugin.js';
 import { gcpServerlessCorePlugin } from './gcp-serverless-core.plugin.js';
 import { gcpServerlessApiPlugin } from './gcp-serverless-api.plugin.js';
@@ -77,6 +78,7 @@ export function registerBuiltinPlugins(): void {
   globalPluginRegistry.register(llmOpenAIPlugin);
   globalPluginRegistry.register(llmAnthropicPlugin);
   globalPluginRegistry.register(llmGeminiPlugin);
+  globalPluginRegistry.register(llmOpenRouterPlugin);
   globalPluginRegistry.register(llmCustomPlugin);
 
   // Tier 1: depend on tier 0
@@ -117,6 +119,7 @@ export {
   llmOpenAIPlugin,
   llmAnthropicPlugin,
   llmGeminiPlugin,
+  llmOpenRouterPlugin,
   llmCustomPlugin,
   gcpProjectFoundationPlugin,
   gcpServerlessCorePlugin,

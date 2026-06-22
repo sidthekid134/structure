@@ -100,11 +100,13 @@ const createEasProjectHandler: StepHandler = {
         message: 'No Expo token in vault — cannot delete the Expo project from Expo servers.',
       };
     }
-    const expoAppId = context.upstreamArtifacts['eas_project_id']?.trim();
+    const client = new ExpoGraphqlEasApiClient(token);
+    const expoAppId =
+      context.upstreamArtifacts['eas_project_id']?.trim() ??
+      (await client.getProject(easProjectSlug(context), easOrganization(context)));
     if (!expoAppId) {
       return { reconciled: true, message: 'No EAS project id recorded — nothing to delete on Expo.' };
     }
-    const client = new ExpoGraphqlEasApiClient(token);
     await client.deleteProject(expoAppId);
     return { reconciled: true, message: 'Scheduled deletion of the Expo app / EAS project on expo.dev.' };
   },
@@ -230,6 +232,7 @@ function buildLlmRuntimeEnvResourcesProduced(llmValues: Record<string, string>):
     ['LLM_ANTHROPIC_DEFAULT_MODEL', 'eas_env_llm_anthropic_default_model'],
     ['LLM_GEMINI_API_KEY', 'eas_env_llm_gemini_api_key'],
     ['LLM_GEMINI_DEFAULT_MODEL', 'eas_env_llm_gemini_default_model'],
+    ['LLM_OPENROUTER_API_KEY', 'eas_env_llm_openrouter_api_key'],
     ['LLM_CUSTOM_API_KEY', 'eas_env_llm_custom_api_key'],
     ['LLM_CUSTOM_BASE_URL', 'eas_env_llm_custom_base_url'],
     ['LLM_CUSTOM_DEFAULT_MODEL', 'eas_env_llm_custom_default_model'],

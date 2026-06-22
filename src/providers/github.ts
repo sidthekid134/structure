@@ -24,6 +24,11 @@ import {
 } from './types.js';
 import { createOperationLogger } from '../logger.js';
 import type { LoggingCallback } from '../types.js';
+import {
+  quoteWorkflowShellArg,
+  resolveDeployContractFromInputs,
+  type FullstackDeployContract,
+} from '../studio/deploy-contract.js';
 
 // ---------------------------------------------------------------------------
 // API client interface
@@ -574,7 +579,7 @@ export class HttpGitHubApiClient implements GitHubApiClient {
  * new case — otherwise switching a project off that template will leave the
  * stale file running on every push.
  */
-const MANAGED_WORKFLOW_FILENAMES: readonly string[] = [
+export const MANAGED_WORKFLOW_FILENAMES: readonly string[] = [
   'build.yml',
   'deploy.yml',
   'web-build.yml',
@@ -595,6 +600,8 @@ const MANAGED_WORKFLOW_FILENAMES: readonly string[] = [
   'web-gcp-nextjs-deploy.yml',
   'web-gcp-react-delivery.yml',
   'web-gcp-nextjs-delivery.yml',
+  'api-gcp-node-delivery.yml',
+  'api-gcp-flask-delivery.yml',
   'api-gcp-node-build.yml',
   'api-gcp-node-deploy.yml',
   'api-gcp-flask-build.yml',
@@ -621,7 +628,26 @@ function resolveProjectEnvironments(config: GitHubManifestConfig): Environment[]
   return envs;
 }
 
-function buildWorkflowTemplate(template: string, environments: Environment[]): string {
+function dockerBuildCommand(imageName: string, dockerfile: string, buildContext: string): string {
+  return `          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/${imageName}:\${{ github.sha }}"
+          docker build \\
+            -f ${quoteWorkflowShellArg(dockerfile)} \\
+            -t "$IMAGE_URI" \\
+            ${quoteWorkflowShellArg(buildContext)}
+          docker push "$IMAGE_URI"`;
+}
+
+function npmRunForRoot(root: string, command: string): string {
+  return root === '.'
+    ? `npm run ${command}`
+    : `npm --prefix ${quoteWorkflowShellArg(root)} run ${command}`;
+}
+
+export function buildWorkflowTemplate(
+  template: string,
+  environments: Environment[],
+  deployContract: FullstackDeployContract = resolveDeployContractFromInputs(undefined),
+): string {
   const envList = environments.join(', ');
   // Pick the env names this workflow targets from the project's actual envs.
   // `production` is always used for `main`; the non-main env is the first
@@ -632,6 +658,11 @@ function buildWorkflowTemplate(template: string, environments: Environment[]): s
   const nonProdEnv =
     environments.find((e) => e !== 'production') ?? productionEnv;
   const envExpression = `\${{ github.ref == 'refs/heads/main' && '${productionEnv}' || '${nonProdEnv}' }}`;
+  const webBuildCommand = npmRunForRoot(deployContract.web.root, 'build');
+  const apiTestCommand = npmRunForRoot(deployContract.api.root, 'test --if-present');
+  const apiBuildCommand = npmRunForRoot(deployContract.api.root, 'build --if-present');
+  const apiRequirements = quoteWorkflowShellArg(`${deployContract.api.root}/requirements.txt`);
+  const apiTests = quoteWorkflowShellArg(`${deployContract.api.root}/tests`);
   switch (template) {
     case 'web-build':
     case 'web-react-build':
@@ -646,7 +677,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
       - run: npm ci
-      - run: npm run build
+      - run: ${webBuildCommand}
 `;
     case 'web-deploy':
     case 'web-react-deploy':
@@ -679,7 +710,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
       - run: npm ci
-      - run: npm run build
+      - run: ${webBuildCommand}
 `;
     case 'web-nextjs-deploy':
       return `name: Next.js Deploy
@@ -714,7 +745,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
       - run: npm ci
-      - run: npm run build
+      - run: ${webBuildCommand}
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -725,8 +756,7 @@ jobs:
           IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-react:\${{ github.sha }}"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
       - run: |
-          docker build -t "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
+${dockerBuildCommand('web-react', deployContract.web.dockerfile, deployContract.web.buildContext)}
 `;
     case 'web-gcp-react-deploy':
       return `name: Web (React) Deploy to Cloud Run
@@ -797,7 +827,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
       - run: npm ci
-      - run: npm run build
+      - run: ${webBuildCommand}
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -808,8 +838,7 @@ jobs:
           IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-nextjs:\${{ github.sha }}"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
       - run: |
-          docker build -t "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
+${dockerBuildCommand('web-nextjs', deployContract.web.dockerfile, deployContract.web.buildContext)}
 `;
     case 'web-gcp-nextjs-deploy':
       return `name: Web (Next.js) Deploy to Cloud Run
@@ -883,7 +912,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
       - run: npm ci
-      - run: npm run build
+      - run: ${webBuildCommand}
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -891,9 +920,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
       - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
       - run: |
-          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-react:\${{ github.sha }}"
-          docker build -t "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
+${dockerBuildCommand('web-react', deployContract.web.dockerfile, deployContract.web.buildContext)}
   deploy:
     if: github.event_name == 'push'
     needs: [build]
@@ -959,7 +986,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
       - run: npm ci
-      - run: npm run build
+      - run: ${webBuildCommand}
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -967,9 +994,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
       - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
       - run: |
-          IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/web-nextjs:\${{ github.sha }}"
-          docker build -t "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
+${dockerBuildCommand('web-nextjs', deployContract.web.dockerfile, deployContract.web.buildContext)}
   deploy:
     if: github.event_name == 'push'
     needs: [build]
@@ -1030,8 +1055,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
       - run: npm ci
-      - run: npm run test --if-present
-      - run: npm run build --if-present
+      - run: ${apiTestCommand}
+      - run: ${apiBuildCommand}
 `;
     case 'api-deploy':
     case 'api-node-deploy':
@@ -1113,8 +1138,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
       - run: npm ci
-      - run: npm run test --if-present
-      - run: npm run build --if-present
+      - run: ${apiTestCommand}
+      - run: ${apiBuildCommand}
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -1125,7 +1150,10 @@ jobs:
           IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-node:\${{ github.sha }}"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
       - run: |
-          docker build -t "$IMAGE_URI" .
+          docker build \\
+            -f ${quoteWorkflowShellArg(deployContract.api.dockerfile)} \\
+            -t "$IMAGE_URI" \\
+            ${quoteWorkflowShellArg(deployContract.api.buildContext)}
           docker push "$IMAGE_URI"
 `;
     case 'api-gcp-node-deploy':
@@ -1152,6 +1180,85 @@ jobs:
           image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-node:\${{ github.sha }}"
           region: \${{ vars.GCP_REGION }}
 `;
+    case 'api-gcp-node-delivery':
+      return `name: API (Node/Express) Delivery to Cloud Run
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: ${apiTestCommand}
+      - run: ${apiBuildCommand}
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          docker build \\
+            -f ${quoteWorkflowShellArg(deployContract.api.dockerfile)} \\
+            -t "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-node:\${{ github.sha }}" \\
+            ${quoteWorkflowShellArg(deployContract.api.buildContext)}
+          docker push "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-node:\${{ github.sha }}"
+  deploy:
+    if: github.event_name == 'push'
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: \${{ vars.API_CLOUD_RUN_SERVICE }}
+          image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-node:\${{ github.sha }}"
+          region: \${{ vars.GCP_REGION }}
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure() && github.event_name == 'push'
+    needs: [deploy]
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: |
+          PREV=$(gcloud run revisions list \
+            --service "\${{ vars.API_CLOUD_RUN_SERVICE }}" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --sort-by=~metadata.creationTimestamp \
+            --format='value(metadata.name)' \
+            --limit=2 | tail -1)
+          if [ -z "$PREV" ]; then
+            echo "No previous revision available for rollback"; exit 1;
+          fi
+          gcloud run services update-traffic "\${{ vars.API_CLOUD_RUN_SERVICE }}" \
+            --to-revisions="$PREV=100" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --quiet
+`;
     case 'api-gcp-flask-build':
       return `name: API (Flask) Build for Cloud Run
 on: [push, pull_request]
@@ -1171,10 +1278,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f ${apiRequirements} ]; then pip install -r ${apiRequirements}; fi
       - name: Run tests
         run: |
-          if [ -d tests ]; then python -m pytest; else echo "No tests directory found; skipping."; fi
+          if [ -d ${apiTests} ]; then python -m pytest ${apiTests}; else echo "No API tests directory found; skipping."; fi
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -1185,7 +1292,10 @@ jobs:
           IMAGE_URI="\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-flask:\${{ github.sha }}"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
       - run: |
-          docker build -t "$IMAGE_URI" .
+          docker build \\
+            -f ${quoteWorkflowShellArg(deployContract.api.dockerfile)} \\
+            -t "$IMAGE_URI" \\
+            ${quoteWorkflowShellArg(deployContract.api.buildContext)}
           docker push "$IMAGE_URI"
 `;
     case 'api-gcp-flask-deploy':
@@ -1211,6 +1321,91 @@ jobs:
           service: \${{ vars.API_CLOUD_RUN_SERVICE }}
           image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-flask:\${{ github.sha }}"
           region: \${{ vars.GCP_REGION }}
+`;
+    case 'api-gcp-flask-delivery':
+      return `name: API (Flask) Delivery to Cloud Run
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f ${apiRequirements} ]; then pip install -r ${apiRequirements}; fi
+      - name: Run tests
+        run: |
+          if [ -d ${apiTests} ]; then python -m pytest ${apiTests}; else echo "No API tests directory found; skipping."; fi
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker \${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - run: |
+          docker build \\
+            -f ${quoteWorkflowShellArg(deployContract.api.dockerfile)} \\
+            -t "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-flask:\${{ github.sha }}" \\
+            ${quoteWorkflowShellArg(deployContract.api.buildContext)}
+          docker push "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-flask:\${{ github.sha }}"
+  deploy:
+    if: github.event_name == 'push'
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: \${{ vars.API_CLOUD_RUN_SERVICE }}
+          image: "\${{ vars.GCP_REGION }}-docker.pkg.dev/\${{ vars.GCP_PROJECT_ID }}/\${{ vars.GCP_ARTIFACT_REPOSITORY }}/api-flask:\${{ github.sha }}"
+          region: \${{ vars.GCP_REGION }}
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure() && github.event_name == 'push'
+    needs: [deploy]
+    environment: ${envExpression}
+    # Environments: ${envList}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: \${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: \${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: |
+          PREV=$(gcloud run revisions list \
+            --service "\${{ vars.API_CLOUD_RUN_SERVICE }}" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --sort-by=~metadata.creationTimestamp \
+            --format='value(metadata.name)' \
+            --limit=2 | tail -1)
+          if [ -z "$PREV" ]; then
+            echo "No previous revision available for rollback"; exit 1;
+          fi
+          gcloud run services update-traffic "\${{ vars.API_CLOUD_RUN_SERVICE }}" \
+            --to-revisions="$PREV=100" \
+            --region "\${{ vars.GCP_REGION }}" \
+            --project "\${{ vars.GCP_PROJECT_ID }}" \
+            --platform managed \
+            --quiet
 `;
     case 'build':
       return `name: Build
@@ -1413,7 +1608,7 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
       );
       for (const template of config.workflow_templates) {
         try {
-          const content = buildWorkflowTemplate(template, config.environments);
+          const content = buildWorkflowTemplate(template, config.environments, config.deploy_contract);
           await this.withRateLimit(() =>
             this.apiClient.deployWorkflow(
               config.owner,
@@ -1636,7 +1831,7 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
   ): Promise<StepResult> {
     const desired = new Set(config.workflow_templates.map((t) => `${t}.yml`));
     for (const template of config.workflow_templates) {
-      const content = buildWorkflowTemplate(template, config.environments);
+      const content = buildWorkflowTemplate(template, config.environments, config.deploy_contract);
       await this.withRateLimit(() =>
         this.apiClient.deployWorkflow(config.owner, config.repo_name, `${template}.yml`, content),
       );
@@ -1875,7 +2070,7 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
           } else if (diff.field.startsWith('workflow.')) {
             const filename = diff.field.replace('workflow.', '');
             const template = filename.replace('.yml', '');
-            const content = buildWorkflowTemplate(template, manifest.environments);
+            const content = buildWorkflowTemplate(template, manifest.environments, manifest.deploy_contract);
             await this.withRateLimit(() =>
               this.apiClient.deployWorkflow(manifest.owner, manifest.repo_name, filename, content),
             );

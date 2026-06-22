@@ -9,8 +9,9 @@
  * Orchestrator.provisionBySteps().
  */
 
-import type { ProviderType, StepExecutionIntent } from '../providers/types.js';
+import type { ProviderType, StepExecutionIntent, StepResult } from '../providers/types.js';
 import type { CredentialType } from '../services/credential-service.js';
+import type { ProvisioningStepNode } from '../provisioning/graph.types.js';
 
 // ---------------------------------------------------------------------------
 // OperationError — structured error with recovery guidance
@@ -104,6 +105,15 @@ export interface OrchestrationOptions {
    * Resolves SQLite `project_credentials` (e.g. `llm_anthropic_api_key`) — used alongside vault for LLM→EAS sync.
    */
   retrieveProjectCredential?: (type: CredentialType) => string | null;
+  /**
+   * Optional lifecycle-aware executor for teardown steps. Returning null lets
+   * the orchestrator fall back to the provider adapter's executeStep().
+   */
+  teardownStepExecutor?: (args: {
+    node: ProvisioningStepNode;
+    environment?: string;
+    upstreamResources: Record<string, string>;
+  }) => Promise<StepResult | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +142,9 @@ export interface StepProgressEvent {
   error?: string;
   /** Shown to the user when status is 'waiting-on-user' */
   userPrompt?: string;
+  manualRequired?: boolean;
+  verificationMode?: 'automatic' | 'manual-confirmation';
+  verificationEvidenceRequired?: string[];
   timestamp: Date;
   correlation_id: string;
 }

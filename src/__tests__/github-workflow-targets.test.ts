@@ -1,4 +1,6 @@
 import { buildGitHubWorkflowTemplates } from '../studio/api-helpers.js';
+import { buildWorkflowTemplate } from '../providers/github.js';
+import { resolveDeployContractFromInputs } from '../studio/deploy-contract.js';
 import type { NodeState, ProvisioningPlan, ProvisioningStepNode } from '../provisioning/graph.types.js';
 
 function makeStep(
@@ -56,8 +58,7 @@ describe('buildGitHubWorkflowTemplates', () => {
 
     expect(buildGitHubWorkflowTemplates(plan)).toEqual([
       'web-gcp-react-delivery',
-      'api-gcp-node-build',
-      'api-gcp-node-deploy',
+      'api-gcp-node-delivery',
     ]);
   });
 
@@ -81,8 +82,7 @@ describe('buildGitHubWorkflowTemplates', () => {
 
     expect(buildGitHubWorkflowTemplates(plan)).toEqual([
       'web-gcp-react-delivery',
-      'api-gcp-node-build',
-      'api-gcp-node-deploy',
+      'api-gcp-node-delivery',
     ]);
   });
 
@@ -108,8 +108,7 @@ describe('buildGitHubWorkflowTemplates', () => {
 
     expect(buildGitHubWorkflowTemplates(plan)).toEqual([
       'web-gcp-nextjs-delivery',
-      'api-gcp-flask-build',
-      'api-gcp-flask-deploy',
+      'api-gcp-flask-delivery',
     ]);
   });
 
@@ -136,8 +135,7 @@ describe('buildGitHubWorkflowTemplates', () => {
 
     expect(buildGitHubWorkflowTemplates(plan)).toEqual([
       'web-gcp-nextjs-delivery',
-      'api-gcp-flask-build',
-      'api-gcp-flask-deploy',
+      'api-gcp-flask-delivery',
     ]);
   });
 
@@ -197,5 +195,65 @@ describe('buildGitHubWorkflowTemplates', () => {
     );
 
     expect(() => buildGitHubWorkflowTemplates(plan)).toThrow('Unsupported web stack');
+  });
+
+  it('renders monorepo web workflow commands from deploy contract inputs', () => {
+    const contract = resolveDeployContractFromInputs({
+      deploy_web_root: 'apps/web',
+      deploy_web_dockerfile: 'apps/web/Dockerfile',
+      deploy_web_build_context: '.',
+    });
+    const workflow = buildWorkflowTemplate('web-gcp-react-delivery', ['preview', 'production'], contract);
+
+    expect(workflow).toContain("npm --prefix 'apps/web' run build");
+    expect(workflow).toContain("-f 'apps/web/Dockerfile'");
+    expect(workflow).toContain("'.'");
+    expect(workflow).toContain('web-react:${{ github.sha }}');
+  });
+
+  it('renders monorepo Next.js workflow commands from deploy contract inputs', () => {
+    const contract = resolveDeployContractFromInputs({
+      deploy_web_root: 'apps/web',
+      deploy_web_dockerfile: 'apps/web/Dockerfile',
+      deploy_web_build_context: '.',
+    });
+    const workflow = buildWorkflowTemplate('web-gcp-nextjs-delivery', ['preview', 'production'], contract);
+
+    expect(workflow).toContain("npm --prefix 'apps/web' run build");
+    expect(workflow).toContain("-f 'apps/web/Dockerfile'");
+    expect(workflow).toContain('web-nextjs:${{ github.sha }}');
+  });
+
+  it('renders monorepo Node API workflow commands from deploy contract inputs', () => {
+    const contract = resolveDeployContractFromInputs({
+      deploy_api_root: 'apps/api',
+      deploy_api_dockerfile: 'apps/api/Dockerfile',
+      deploy_api_build_context: '.',
+    });
+    const workflow = buildWorkflowTemplate('api-gcp-node-delivery', ['preview', 'production'], contract);
+
+    expect(workflow).toContain("npm --prefix 'apps/api' run test --if-present");
+    expect(workflow).toContain("npm --prefix 'apps/api' run build --if-present");
+    expect(workflow).toContain("-f 'apps/api/Dockerfile'");
+  });
+
+  it('renders monorepo Flask API workflow commands from deploy contract inputs', () => {
+    const contract = resolveDeployContractFromInputs({
+      deploy_api_root: 'apps/api',
+      deploy_api_dockerfile: 'apps/api/Dockerfile',
+      deploy_api_build_context: '.',
+    });
+    const workflow = buildWorkflowTemplate('api-gcp-flask-delivery', ['preview', 'production'], contract);
+
+    expect(workflow).toContain("'apps/api/requirements.txt'");
+    expect(workflow).toContain("'apps/api/tests'");
+    expect(workflow).toContain("-f 'apps/api/Dockerfile'");
+  });
+
+  it('keeps legacy root workflow commands when no deploy contract inputs exist', () => {
+    const workflow = buildWorkflowTemplate('api-gcp-node-delivery', ['preview', 'production']);
+
+    expect(workflow).toContain('npm run test --if-present');
+    expect(workflow).toContain("-f 'Dockerfile'");
   });
 });

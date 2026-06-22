@@ -27,4 +27,20 @@ describe('gcp serverless web CI handlers', () => {
     expect(handlerSource.includes('Dockerfile.web')).toBe(false);
     expect(handlerSource.includes('cloud-run-delivery.yml')).toBe(false);
   });
+
+  it('uses deploy contract inputs and Cloud Build config for API containers', () => {
+    const handlerSourcePath = path.resolve(
+      process.cwd(),
+      'src/core/gcp/gcp-serverless-step-handlers.ts',
+    );
+    const handlerSource = fs.readFileSync(handlerSourcePath, 'utf8');
+
+    expect(handlerSource).toContain('resolveDeployContractFromInputs');
+    expect(handlerSource).toContain('githubDeployInputsForContext');
+    expect(handlerSource).toContain('deploy_api_dockerfile');
+    expect(handlerSource).toContain('deploy_api_build_context');
+    expect(handlerSource).toContain('gcr.io/cloud-builders/docker');
+    expect(handlerSource).toContain('No Dockerfile found at');
+    expect(handlerSource).not.toContain('No Dockerfile found in project root');
+  });
 });

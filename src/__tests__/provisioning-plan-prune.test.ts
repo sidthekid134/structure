@@ -1,4 +1,4 @@
-import { buildProvisioningPlan, pruneNodesWithUnresolvedDependencies } from '../provisioning/step-registry.js';
+import { buildProvisioningPlan, buildTeardownPlan, pruneNodesWithUnresolvedDependencies } from '../provisioning/step-registry.js';
 import type { ProvisioningNode } from '../provisioning/graph.types.js';
 import { registerBuiltinPlugins } from '../plugins/builtin/index.js';
 
@@ -73,6 +73,23 @@ describe('buildProvisioningPlan default providers', () => {
     expect(keys.has('apple:generate-asc-api-key')).toBe(false);
     expect(keys.has('apple:create-app-store-listing')).toBe(true);
     expect(keys.has('eas:configure-submit-android')).toBe(true);
+  });
+});
+
+describe('buildTeardownPlan', () => {
+  it('adds module-level cleanup instructions for modules without dedicated teardown steps', () => {
+    const plan = buildTeardownPlan(
+      'proj',
+      ['gcp', 'github'],
+      ['development'],
+      ['gcp-serverless-api'],
+    );
+    const keys = new Set(plan.nodes.map((n) => n.key));
+
+    expect(keys.has('teardown:module:gcp-serverless-api:cleanup')).toBe(true);
+    expect(keys.has('teardown:module:gcp-serverless-core:cleanup')).toBe(true);
+    expect(keys.has('github:delete-workflows')).toBe(true);
+    expect(keys.has('firebase:delete-gcp-project')).toBe(true);
   });
 });
 

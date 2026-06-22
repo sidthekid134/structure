@@ -156,6 +156,10 @@ function deleteJsonWithStatus(url: string): Promise<{ statusCode: number; body: 
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------------------------------------------------------------------------
 // StudioServer lifecycle
 // ---------------------------------------------------------------------------
@@ -331,6 +335,72 @@ describe('StudioServer', () => {
       (resource) => resource.key === 'provisioner_service_account',
     );
     expect(serviceAccount?.standardized_name).toContain('platform-provisioner@');
+  });
+
+  it('requires manual confirmation for manual teardown steps and allows explicit confirm', async () => {
+    const created = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects`,
+      {
+        name: 'Teardown Manual Confirm',
+        slug: 'teardown-manual-confirm',
+        domain: 'teardown-manual-confirm.example.com',
+        bundleId: 'com.example.teardownmanualconfirm',
+        platforms: ['ios', 'android'],
+        modules: ['firebase-messaging'],
+      },
+    );
+    expect(created.statusCode).toBe(201);
+
+    const projectId = 'teardown-manual-confirm';
+    const built = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown`,
+      { modules: ['firebase-messaging'] },
+    );
+    expect(built.statusCode).toBe(200);
+
+    const run = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown/run`,
+      { nodeKeys: ['firebase:disable-messaging'] },
+    );
+    expect(run.statusCode).toBe(200);
+
+    let manualState: Record<string, unknown> | null = null;
+    for (let i = 0; i < 20; i++) {
+      const plan = await getJson(
+        `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown`,
+      ) as { nodeStates: Record<string, Record<string, unknown>> };
+      const state = plan.nodeStates['firebase:disable-messaging'];
+      if (state?.status === 'failed') {
+        manualState = state;
+        break;
+      }
+      await sleep(50);
+    }
+
+    expect(manualState).not.toBeNull();
+    expect(manualState?.manualRequired).toBe(true);
+    expect(manualState?.verificationMode).toBe('manual-confirmation');
+    expect(Array.isArray(manualState?.verificationEvidenceRequired)).toBe(true);
+
+    const confirmed = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown/confirm`,
+      {
+        nodeKey: 'firebase:disable-messaging',
+        evidence: {
+          note: 'Manually disabled/verified messaging teardown.',
+          targetIds: ['teardown-manual-confirm'],
+          confirmedAt: '2026-05-10T12:00:00.000Z',
+        },
+      },
+    );
+    expect(confirmed.statusCode).toBe(200);
+    const confirmedBody = confirmed.body as { nodeStates: Record<string, Record<string, unknown>> };
+    const confirmedState = confirmedBody.nodeStates['firebase:disable-messaging'];
+    expect(confirmedState?.status).toBe('completed');
+    expect(confirmedState?.manualRequired).toBe(false);
+    expect((confirmedState?.manualConfirmation as Record<string, unknown>)?.note).toBe(
+      'Manually disabled/verified messaging teardown.',
+    );
   });
 
   it('reports EAS integration unavailable when EXPO_TOKEN is missing', async () => {
@@ -862,6 +932,42 @@ describe('WsHandler', () => {
       wsHandler.handleConnection(ws, runId);
       setTimeout(() => {
         wsHandler.broadcastStatusUpdate(runId, 'complete', 'Done');
+      }, 50);
+    });
+  });
+
+  it('broadcasts teardown verification metadata in step progress', (done) => {
+    const runId = 'teardown-meta-run';
+    const client = new WebSocket(`ws://127.0.0.1:${port}`);
+
+    client.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'step_progress') {
+        expect(msg.data.nodeKey).toBe('firebase:disable-messaging');
+        expect(msg.data.manualRequired).toBe(true);
+        expect(msg.data.verificationMode).toBe('manual-confirmation');
+        expect(Array.isArray(msg.data.verificationEvidenceRequired)).toBe(true);
+        client.close();
+        done();
+      }
+    });
+
+    wss.on('connection', (ws) => {
+      wsHandler.handleConnection(ws, runId);
+      setTimeout(() => {
+        wsHandler.broadcastStepProgress(
+          runId,
+          'firebase:disable-messaging',
+          'step',
+          'failure',
+          undefined,
+          {},
+          'Manual teardown required',
+          'Confirm manually',
+          true,
+          'manual-confirmation',
+          ['firebase_project_id', 'messaging_disable_note'],
+        );
       }, 50);
     });
   });

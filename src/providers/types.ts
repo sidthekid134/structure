@@ -7,6 +7,7 @@
 
 import { CredentialError } from '../types.js';
 import type { CredentialType } from '../services/credential-service.js';
+import type { FullstackDeployContract } from '../studio/deploy-contract.js';
 
 export const PLATFORM_CORE_VERSION = '1.0';
 
@@ -94,6 +95,7 @@ export interface GitHubManifestConfig {
   branch_protection_rules: BranchProtectionRule[];
   environments: Environment[];
   workflow_templates: string[];
+  deploy_contract?: FullstackDeployContract;
   existing_repo_id?: string;
 }
 
@@ -146,12 +148,13 @@ export interface OAuthManifestConfig {
  * Supported LLM backend kinds. Each maps to a different REST API shape and
  * authentication header convention.
  *
- * - openai:    https://api.openai.com/v1 — Bearer api_key, optional org id
- * - anthropic: https://api.anthropic.com/v1 — x-api-key + anthropic-version
- * - gemini:    https://generativelanguage.googleapis.com/v1beta — ?key=api_key
- * - custom:    operator-supplied OpenAI-compatible base URL (Azure, vLLM, Ollama, etc.)
+ * - openai:      https://api.openai.com/v1 — Bearer api_key, optional org id
+ * - anthropic:   https://api.anthropic.com/v1 — x-api-key + anthropic-version
+ * - gemini:      https://generativelanguage.googleapis.com/v1beta — ?key=api_key
+ * - openrouter:  https://openrouter.ai/api/v1 — Bearer api_key (OpenAI-compatible)
+ * - custom:      operator-supplied OpenAI-compatible base URL (Azure, vLLM, Ollama, etc.)
  */
-export type LlmKind = 'openai' | 'anthropic' | 'gemini' | 'custom';
+export type LlmKind = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom';
 
 export interface LlmManifestConfig {
   readonly provider: 'llm';
@@ -299,6 +302,9 @@ export interface StepResult {
   resourcesProduced: Record<string, string>;
   error?: string;
   userPrompt?: string;
+  manualRequired?: boolean;
+  verificationMode?: 'automatic' | 'manual-confirmation';
+  verificationEvidenceRequired?: string[];
 }
 
 export interface ProviderAdapter<T extends ProviderConfig> {

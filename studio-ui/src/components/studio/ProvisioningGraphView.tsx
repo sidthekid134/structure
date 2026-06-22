@@ -456,8 +456,15 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
       new Set([
         'deploy_web_stack',
         'deploy_web_destination',
+        'deploy_web_root',
+        'deploy_web_dockerfile',
+        'deploy_web_build_context',
         'deploy_api_stack',
         'deploy_api_destination',
+        'deploy_api_root',
+        'deploy_api_dockerfile',
+        'deploy_api_build_context',
+        'deploy_api_health_path',
       ]),
     [],
   );
@@ -1007,6 +1014,21 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
                     const webDestinationField = visibleInputFields.find((f) => f.key === 'deploy_web_destination');
                     const apiStackField = visibleInputFields.find((f) => f.key === 'deploy_api_stack');
                     const apiDestinationField = visibleInputFields.find((f) => f.key === 'deploy_api_destination');
+                    const webConfigFields = [
+                      webStackField,
+                      webDestinationField,
+                      visibleInputFields.find((f) => f.key === 'deploy_web_root'),
+                      visibleInputFields.find((f) => f.key === 'deploy_web_dockerfile'),
+                      visibleInputFields.find((f) => f.key === 'deploy_web_build_context'),
+                    ].filter((field): field is NonNullable<ProvisioningStepNode['inputFields']>[number] => Boolean(field));
+                    const apiConfigFields = [
+                      apiStackField,
+                      apiDestinationField,
+                      visibleInputFields.find((f) => f.key === 'deploy_api_root'),
+                      visibleInputFields.find((f) => f.key === 'deploy_api_dockerfile'),
+                      visibleInputFields.find((f) => f.key === 'deploy_api_build_context'),
+                      visibleInputFields.find((f) => f.key === 'deploy_api_health_path'),
+                    ].filter((field): field is NonNullable<ProvisioningStepNode['inputFields']>[number] => Boolean(field));
                     const renderSegmentedField = (field: NonNullable<ProvisioningStepNode['inputFields']>[number]) => {
                       if (!field) return null;
                       const options = field.options ?? [];
@@ -1039,24 +1061,44 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
                         </div>
                       );
                     };
+                    const renderDeployField = (field: NonNullable<ProvisioningStepNode['inputFields']>[number]) => {
+                      if (field.type === 'select' && (field.options ?? []).length > 0) {
+                        return <div key={field.key}>{renderSegmentedField(field)}</div>;
+                      }
+                      const value = localInputs[field.key] ?? field.defaultValue ?? '';
+                      return (
+                        <div key={field.key} className="space-y-1">
+                          <p className="text-[9px] font-semibold text-muted-foreground/90">{field.label}</p>
+                          {field.description && (
+                            <p className="text-[10px] leading-snug text-muted-foreground/80">{field.description}</p>
+                          )}
+                          <input
+                            type="text"
+                            value={value}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => handleInputChange(field.key, e.target.value)}
+                            placeholder={field.placeholder}
+                            className="w-full rounded-lg border border-border/70 bg-background/80 px-2 py-1.5 text-[11px] font-mono outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/15"
+                          />
+                        </div>
+                      );
+                    };
                     return (
                       <>
-                        {(webStackField || webDestinationField) && (
+                        {webConfigFields.length > 0 && (
                           <div className="rounded-lg border border-violet-500/25 bg-violet-500/5 px-2.5 py-2 space-y-1.5">
                             <p className="text-[10px] font-semibold text-violet-700 dark:text-violet-300">
                               Web Deployment Configuration
                             </p>
-                            {webStackField ? renderSegmentedField(webStackField) : null}
-                            {webDestinationField ? renderSegmentedField(webDestinationField) : null}
+                            {webConfigFields.map((field) => renderDeployField(field))}
                           </div>
                         )}
-                        {(apiStackField || apiDestinationField) && (
+                        {apiConfigFields.length > 0 && (
                           <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-2.5 py-2 space-y-1.5">
                             <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
                               API Deployment Configuration
                             </p>
-                            {apiStackField ? renderSegmentedField(apiStackField) : null}
-                            {apiDestinationField ? renderSegmentedField(apiDestinationField) : null}
+                            {apiConfigFields.map((field) => renderDeployField(field))}
                           </div>
                         )}
                       </>
