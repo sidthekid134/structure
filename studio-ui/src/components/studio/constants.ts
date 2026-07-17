@@ -104,14 +104,21 @@ export const INTEGRATION_CONFIGS: IntegrationConfig[] = [
     logoColor: 'text-orange-500',
     description:
       'Connect a Cloudflare API token at organization scope as the default. Projects can optionally provide their own stricter zone-scoped token overrides during setup.',
-    docsUrl: 'https://developers.cloudflare.com/fundamentals/api/get-started/create-token/',
+    docsUrl: 'https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/',
     fields: [
+      {
+        key: 'cloudflareAccountId',
+        label: 'Cloudflare Account ID',
+        placeholder: '0123456789abcdef0123456789abcdef',
+        hint: '32-character hex Account ID, found in the Cloudflare dashboard sidebar.',
+        type: 'text',
+      },
       {
         key: 'cloudflareApiToken',
         label: 'Cloudflare API Token',
-        placeholder: 'cf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        placeholder: 'cfat_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
         hint:
-          'Grant Zone:Read, Zone:Edit, and DNS:Edit for required apex zones. Project-level override tokens can be added later for tighter scope.',
+          'Create an account-owned token (Manage Account -> Account API Tokens) with Zone:Read, Zone:Edit, DNS:Edit, and Single Redirect:Edit for required apex zones. Project-level override tokens can be added later for tighter scope.',
         type: 'password',
       },
     ],

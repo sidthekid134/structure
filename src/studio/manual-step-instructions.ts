@@ -298,26 +298,27 @@ function buildCicdIntegrationPromptInstructions(ctx: InstructionContext): Manual
 const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
   'user:provide-cloudflare-token': (_ctx) => ({
     intro:
-      'This step supports two modes: reuse your organization Cloudflare token (default), or provide a project-specific override token only if you need tighter scope.',
+      'This step supports two modes: reuse your organization Cloudflare account-owned token (default), or provide a project-specific override token only if you need tighter scope. Structure uses account-owned tokens (not the legacy per-user API tokens) so provisioning keeps working even if the person who created the token leaves your organization.',
     steps: [
       {
         title: 'If organization Cloudflare is already connected, reuse it and continue',
         detail:
-          'No new token is required for this project. Structure will use the org-level token automatically.',
+          'No new token is required for this project. Structure will use the org-level token and account ID automatically.',
       },
       {
         title: 'Optional override only: create a project token in Cloudflare',
-        detail: 'Open Cloudflare API Tokens: https://dash.cloudflare.com/profile/api-tokens',
+        detail:
+          'Open Manage Account -> Account API Tokens (not My Profile -> API Tokens): https://dash.cloudflare.com/?to=/:account/api-tokens',
       },
       {
         title: 'Use zone-scoped permission rows',
         detail:
-          'Add: "Zone | DNS | Edit", "Zone | Zone | Read", "Zone | Page Rules | Edit", "Zone | Zone Settings | Edit" (or "Zone | SSL and Certificates | Edit" if Zone Settings is unavailable), and "Zone | Zone Rulesets | Edit" (required for custom domain routing to Cloud Run).',
+          'Add: "Zone | DNS | Edit", "Zone | Zone | Read", "Zone | Single Redirect | Edit", "Zone | Zone Settings | Edit" (or "Zone | SSL and Certificates | Edit" if Zone Settings is unavailable), and "Zone | Zone Rulesets | Edit" (required for custom domain routing to Cloud Run).',
       },
       {
-        title: 'Restrict resources to this project apex zone, then paste token in this step',
+        title: 'Restrict resources to this project apex zone, then paste the Account ID and token in this step',
         detail:
-          'For app host flow.third-brain.net, scope the token to third-brain.net. Project token overrides org token for this project only.',
+          'For app host flow.third-brain.net, scope the token to third-brain.net. Copy the Account ID from the dashboard sidebar — it is required alongside the token to verify and use an account-owned token. Project token/account ID override the org defaults for this project only.',
       },
     ],
     note:

@@ -954,6 +954,19 @@ export function createApiRouter(
     return projectScoped || getOrganizationCloudflareToken();
   }
 
+  function getOrganizationCloudflareAccountId(): string | undefined {
+    return (
+      credentialService.retrieveCredential(ORGANIZATION_CREDENTIAL_SCOPE_ID, 'cloudflare_account_id')?.trim() ||
+      undefined
+    );
+  }
+
+  function getCloudflareAccountIdForProject(_projectId: string): string | undefined {
+    const projectScoped =
+      credentialService.retrieveCredential(_projectId, 'cloudflare_account_id')?.trim() || undefined;
+    return projectScoped || getOrganizationCloudflareAccountId();
+  }
+
   function buildCloudflareAdapter(projectId: string): CloudflareAdapter {
     const token = getCloudflareTokenForProject(projectId);
     if (!token) {
@@ -961,7 +974,13 @@ export function createApiRouter(
         `Cloudflare API token is missing for "${projectId}". Complete "Connect Cloudflare API Token" before running Cloudflare steps.`,
       );
     }
-    return new CloudflareAdapter(new HttpCloudflareApiClient(token));
+    const accountId = getCloudflareAccountIdForProject(projectId);
+    if (!accountId) {
+      throw new Error(
+        `Cloudflare Account ID is missing for "${projectId}". Complete "Connect Cloudflare API Token" before running Cloudflare steps.`,
+      );
+    }
+    return new CloudflareAdapter(new HttpCloudflareApiClient(token, accountId));
   }
 
   async function checkCloudflareZoneOwnershipForContext(context: StepContext): Promise<{
@@ -974,11 +993,12 @@ export function createApiRouter(
     nameservers?: string[];
   }> {
     const token = getCloudflareTokenForProject(context.projectId);
-    if (!token) return { owned: false };
+    const accountId = getCloudflareAccountIdForProject(context.projectId);
+    if (!token || !accountId) return { owned: false };
 
     const cloudflareConfig = buildCloudflareManifestConfig(context.projectId);
     const zoneDomain = cloudflareConfig.zone_domain ?? cloudflareConfig.domain;
-    const api = new HttpCloudflareApiClient(token);
+    const api = new HttpCloudflareApiClient(token, accountId);
     const zone = await api.getZone(zoneDomain);
     if (!zone) {
       return {
@@ -1886,11 +1906,12 @@ export function createApiRouter(
   router.get('/integrations/cloudflare/connection', async (_req: Request, res: Response) => {
     try {
       const token = getOrganizationCloudflareToken();
-      if (!token) {
+      const accountId = getOrganizationCloudflareAccountId();
+      if (!token || !accountId) {
         res.json({ connected: false });
         return;
       }
-      const client = new HttpCloudflareApiClient(token);
+      const client = new HttpCloudflareApiClient(token, accountId);
       const verified = await client.verifyToken();
       res.json({
         connected: verified.status.toLowerCase() === 'active',
@@ -1907,11 +1928,17 @@ export function createApiRouter(
   router.post('/organization/integrations/cloudflare/connect', async (req: Request, res: Response) => {
     try {
       const token = (req.body?.token as string | undefined)?.trim();
+      const accountId = (req.body?.accountId as string | undefined)?.trim();
       if (!token) {
         res.status(400).json({ error: 'Cloudflare API token is required.' });
         return;
       }
-      const client = new HttpCloudflareApiClient(token);
+      if (!accountId) {
+        res.status(400).json({ error: 'Cloudflare Account ID is required for account-owned tokens.' });
+        return;
+      }
+      credentialService.validateCredential('cloudflare_account_id', accountId);
+      const client = new HttpCloudflareApiClient(token, accountId);
       const verified = await client.verifyToken();
       if (verified.status.toLowerCase() !== 'active') {
         res.status(400).json({ error: `Cloudflare token is not active (status=${verified.status}).` });
@@ -1927,9 +1954,15 @@ export function createApiRouter(
         value: token,
         metadata: { scope: 'organization' },
       });
+      credentialService.storeCredential({
+        project_id: ORGANIZATION_CREDENTIAL_SCOPE_ID,
+        credential_type: 'cloudflare_account_id',
+        value: accountId,
+        metadata: { scope: 'organization' },
+      });
       const updated = projectManager.updateOrganizationIntegration('cloudflare', {
         status: 'configured',
-        notes: 'Cloudflare API token configured at organization scope.',
+        notes: 'Cloudflare account-owned API token configured at organization scope.',
         config: { token_source: 'organization_vault' },
         replaceConfig: true,
       });
@@ -1953,6 +1986,13 @@ export function createApiRouter(
       );
       if (summary) {
         credentialService.deleteCredential(summary.id);
+      }
+      const accountIdSummary = credentialService.getCredentialSummary(
+        ORGANIZATION_CREDENTIAL_SCOPE_ID,
+        'cloudflare_account_id',
+      );
+      if (accountIdSummary) {
+        credentialService.deleteCredential(accountIdSummary.id);
       }
       const organization = projectManager.getOrganization();
       if (!organization.integrations.cloudflare) {
@@ -3506,6 +3546,17 @@ export function createApiRouter(
                   : cloudflare?.status === 'configured'
                     ? 'Configured in organization credential vault'
                     : null;
+            } else if (dependency.key === 'cloudflare_account_id') {
+              const projectCloudflareAccountId = credentialService
+                .retrieveCredential(projectId, 'cloudflare_account_id')
+                ?.trim();
+              const cloudflare = organization.integrations.cloudflare;
+              value =
+                projectCloudflareAccountId
+                  ? 'Configured as project-scoped override account ID'
+                  : cloudflare?.status === 'configured'
+                    ? 'Configured in organization credential vault'
+                    : null;
             } else if (dependency.key === 'gcp_auth_method') {
               const firebase = module.integrations.firebase;
               value =
@@ -4616,11 +4667,17 @@ export function createApiRouter(
 
         if (nodeKey === 'user:provide-cloudflare-token') {
           const cloudflareToken = resourcesProduced?.['cloudflare_token']?.trim();
+          const cloudflareAccountId = resourcesProduced?.['cloudflare_account_id']?.trim();
           if (!cloudflareToken) {
             res.status(400).json({ error: 'Missing "cloudflare_token" in resourcesProduced.' });
             return;
           }
-          const cloudflareClient = new HttpCloudflareApiClient(cloudflareToken);
+          if (!cloudflareAccountId) {
+            res.status(400).json({ error: 'Missing "cloudflare_account_id" in resourcesProduced.' });
+            return;
+          }
+          credentialService.validateCredential('cloudflare_account_id', cloudflareAccountId);
+          const cloudflareClient = new HttpCloudflareApiClient(cloudflareToken, cloudflareAccountId);
           const verified = await cloudflareClient.verifyToken();
           if (verified.status.toLowerCase() !== 'active') {
             res.status(400).json({
@@ -4634,9 +4691,16 @@ export function createApiRouter(
             value: cloudflareToken,
             metadata: { scope: 'project', source: 'provisioning_plan_user_action_complete' },
           });
+          credentialService.storeCredential({
+            project_id: projectId,
+            credential_type: 'cloudflare_account_id',
+            value: cloudflareAccountId,
+            metadata: { scope: 'project', source: 'provisioning_plan_user_action_complete' },
+          });
           normalizedResourcesProduced = {
             ...(resourcesProduced ?? {}),
             cloudflare_token: '[stored in vault]',
+            cloudflare_account_id: '[stored in vault]',
           };
         }
 
@@ -5002,6 +5066,7 @@ export function createApiRouter(
         easConnectionService,
         getGitHubToken: () => gitHubConnectionService.getStoredGitHubToken(),
         getCloudflareToken: (id) => getCloudflareTokenForProject(id),
+        getCloudflareAccountId: (id) => getCloudflareAccountIdForProject(id),
         checkCloudflareZoneOwnership: checkCloudflareZoneOwnershipForContext,
         checkExpoGitHubInstall: checkExpoGitHubInstallForContext,
       });
@@ -5554,6 +5619,7 @@ export function createApiRouter(
             easConnectionService,
             getGitHubToken: () => gitHubConnectionService.getStoredGitHubToken(),
             getCloudflareToken: (id) => getCloudflareTokenForProject(id),
+            getCloudflareAccountId: (id) => getCloudflareAccountIdForProject(id),
             checkCloudflareZoneOwnership: checkCloudflareZoneOwnershipForContext,
             checkExpoGitHubInstall: checkExpoGitHubInstallForContext,
           });
@@ -6622,6 +6688,7 @@ export function createApiRouter(
         easConnectionService,
         getGitHubToken: () => gitHubConnectionService.getStoredGitHubToken(),
         getCloudflareToken: (id) => getCloudflareTokenForProject(id),
+        getCloudflareAccountId: (id) => getCloudflareAccountIdForProject(id),
         checkCloudflareZoneOwnership: checkCloudflareZoneOwnershipForContext,
         checkExpoGitHubInstall: checkExpoGitHubInstallForContext,
       });
@@ -7111,7 +7178,7 @@ export function createApiRouter(
       try {
         const { projectId, credentialType } = req.params;
         const allowedTypes: CredentialType[] = [
-          'github_pat', 'cloudflare_token', 'apple_p8', 'apple_team_id',
+          'github_pat', 'cloudflare_token', 'cloudflare_account_id', 'apple_p8', 'apple_team_id',
           'google_play_key', 'expo_token', 'domain_name',
           'llm_openai_api_key', 'llm_anthropic_api_key',
           'llm_gemini_api_key', 'llm_openrouter_api_key', 'llm_custom_api_key',

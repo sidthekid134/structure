@@ -134,7 +134,7 @@ export const CLOUDFLARE_STEPS: ProvisioningStepNode[] = [
     type: 'step',
     key: 'cloudflare:configure-deep-link-routes',
     label: 'Host App Link and Auth Callback Routes',
-    description: 'Set up Cloudflare Workers or Page Rules for deep link routing.',
+    description: 'Set up a Cloudflare Single Redirect rule for deep link routing.',
     provider: 'cloudflare',
     environmentScope: 'per-environment',
     automationLevel: 'full',

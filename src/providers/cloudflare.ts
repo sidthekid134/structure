@@ -40,8 +40,8 @@ export interface CloudflareApiClient {
   addDnsRecord(zoneId: string, record: DnsRecord): Promise<string>;
   getDnsRecords(zoneId: string): Promise<DnsRecord[]>;
   deleteDnsRecord(zoneId: string, recordId: string): Promise<void>;
-  setPageRule(zoneId: string, url: string, action: string): Promise<string>;
-  getPageRules(zoneId: string): Promise<Array<{ url: string; action: string }>>;
+  upsertRedirectRule(zoneId: string, url: string, action: string): Promise<string>;
+  getRedirectRules(zoneId: string): Promise<Array<{ url: string; action: string }>>;
   setSslMode(zoneId: string, mode: CloudflareManifestConfig['ssl_mode']): Promise<void>;
   upsertOriginHostHeaderRule(zoneId: string, matchHost: string, originHost: string): Promise<void>;
 }
@@ -118,17 +118,17 @@ export class StubCloudflareApiClient implements CloudflareApiClient {
     );
   }
 
-  async setPageRule(_zoneId: string, _url: string, _action: string): Promise<string> {
+  async upsertRedirectRule(_zoneId: string, _url: string, _action: string): Promise<string> {
     throw new Error(
-      'StubCloudflareApiClient cannot set page rules. Configure CloudflareAdapter with a real Cloudflare API client.',
+      'StubCloudflareApiClient cannot set redirect rules. Configure CloudflareAdapter with a real Cloudflare API client.',
     );
   }
 
-  async getPageRules(
+  async getRedirectRules(
     _zoneId: string,
   ): Promise<Array<{ url: string; action: string }>> {
     throw new Error(
-      'StubCloudflareApiClient cannot list page rules. Configure CloudflareAdapter with a real Cloudflare API client.',
+      'StubCloudflareApiClient cannot list redirect rules. Configure CloudflareAdapter with a real Cloudflare API client.',
     );
   }
 
@@ -148,14 +148,23 @@ export class StubCloudflareApiClient implements CloudflareApiClient {
 export class HttpCloudflareApiClient implements CloudflareApiClient {
   private readonly baseUrl = 'https://api.cloudflare.com/client/v4';
 
-  constructor(private readonly apiToken: string) {
+  constructor(
+    private readonly apiToken: string,
+    private readonly accountId: string,
+  ) {
     if (!apiToken.trim()) {
       throw new Error('Cloudflare API token is required to initialize HttpCloudflareApiClient.');
+    }
+    if (!accountId.trim()) {
+      throw new Error('Cloudflare account ID is required to initialize HttpCloudflareApiClient.');
     }
   }
 
   async verifyToken(): Promise<{ status: string }> {
-    const response = await this.request<{ status: string }>('GET', '/user/tokens/verify');
+    const response = await this.request<{ status: string }>(
+      'GET',
+      `/accounts/${encodeURIComponent(this.accountId)}/tokens/verify`,
+    );
     return { status: response.result.status };
   }
 
@@ -203,6 +212,7 @@ export class HttpCloudflareApiClient implements CloudflareApiClient {
     const response = await this.request<{ id: string }>('POST', '/zones', {
       name: domain,
       type: 'full',
+      account: { id: this.accountId },
     });
     return response.result.id;
   }
@@ -243,36 +253,73 @@ export class HttpCloudflareApiClient implements CloudflareApiClient {
     await this.request<{ id: string }>('DELETE', `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`);
   }
 
-  async setPageRule(zoneId: string, url: string, action: string): Promise<string> {
-    const response = await this.request<{ id: string }>('POST', `/zones/${encodeURIComponent(zoneId)}/pagerules`, {
-      targets: [
-        {
-          target: 'url',
-          constraint: {
-            operator: 'matches',
-            value: url,
-          },
+  // Deep link routes are enforced via a "Single Redirect" rule in the zone's
+  // http_request_dynamic_redirect ruleset phase — the supported replacement
+  // for the legacy Page Rules API, which account-owned tokens cannot use.
+  async upsertRedirectRule(zoneId: string, url: string, _action: string): Promise<string> {
+    const phase = 'http_request_dynamic_redirect';
+    const path = `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${phase}/entrypoint`;
+    let existing: Array<{
+      id?: string;
+      expression?: string;
+      description?: string;
+      action?: string;
+      action_parameters?: Record<string, unknown>;
+    }> = [];
+    try {
+      const current = await this.request<{ rules?: typeof existing }>('GET', path);
+      existing = current.result.rules ?? [];
+    } catch {
+      // Zone may have no entrypoint ruleset yet — start fresh.
+    }
+    const { host, urlPath } = this.splitHostAndPath(url);
+    const expression = `(http.host eq "${host}" and http.request.uri.path eq "${urlPath}")`;
+    const filtered = existing.filter((r) => r.expression !== expression);
+    filtered.push({
+      expression,
+      description: `Deep link route: ${url}`,
+      action: 'redirect',
+      action_parameters: {
+        from_value: {
+          target_url: { value: url },
+          status_code: 302,
+          preserve_query_string: true,
         },
-      ],
-      actions:
-        action === 'forward_url'
-          ? [{ id: 'forwarding_url', value: { url, status_code: 302 } }]
-          : [{ id: 'always_use_https', value: 'on' }],
-      status: 'active',
+      },
     });
-    return response.result.id;
+    const response = await this.request<{ rules?: Array<{ id?: string; expression?: string }> }>(
+      'PUT',
+      path,
+      { rules: filtered },
+    );
+    const savedRule = response.result.rules?.find((r) => r.expression === expression);
+    return savedRule?.id ?? expression;
   }
 
-  async getPageRules(zoneId: string): Promise<Array<{ url: string; action: string }>> {
-    const response = await this.request<Array<{
-      targets?: Array<{ target?: string; constraint?: { value?: string } }>;
-      actions?: Array<{ id?: string }>;
-    }>>('GET', `/zones/${encodeURIComponent(zoneId)}/pagerules`);
-    return response.result.map((rule) => {
-      const url = rule.targets?.find((t) => t.target === 'url')?.constraint?.value ?? '';
-      const action = rule.actions?.find((a) => typeof a.id === 'string')?.id ?? '';
-      return { url, action };
-    });
+  async getRedirectRules(zoneId: string): Promise<Array<{ url: string; action: string }>> {
+    const path = `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/http_request_dynamic_redirect/entrypoint`;
+    let rules: Array<{
+      action?: string;
+      action_parameters?: { from_value?: { target_url?: { value?: string } } };
+    }> = [];
+    try {
+      const response = await this.request<{ rules?: typeof rules }>('GET', path);
+      rules = response.result.rules ?? [];
+    } catch {
+      return [];
+    }
+    return rules
+      .filter((rule) => rule.action === 'redirect')
+      .map((rule) => ({
+        url: rule.action_parameters?.from_value?.target_url?.value ?? '',
+        action: 'forward_url',
+      }));
+  }
+
+  private splitHostAndPath(url: string): { host: string; urlPath: string } {
+    const slashIndex = url.indexOf('/');
+    if (slashIndex === -1) return { host: url, urlPath: '/' };
+    return { host: url.slice(0, slashIndex), urlPath: url.slice(slashIndex) };
   }
 
   async setSslMode(zoneId: string, mode: CloudflareManifestConfig['ssl_mode']): Promise<void> {
@@ -549,7 +596,7 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
       // Step 3: Configure deep link routes
       for (const route of config.deep_link_routes) {
         try {
-          const ruleId = await this.apiClient.setPageRule(
+          const ruleId = await this.apiClient.upsertRedirectRule(
             zoneId,
             `${target.appDomain}${route}`,
             'forward_url',
@@ -938,7 +985,7 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
     }
 
     // Check routes
-    const liveRules = await this.apiClient.getPageRules(zoneId);
+    const liveRules = await this.apiClient.getRedirectRules(zoneId);
     const liveRuleUrls = new Set(liveRules.map(r => r.url));
 
     for (const route of manifest.deep_link_routes) {
@@ -985,7 +1032,7 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
               report.live_state.resource_ids['ssl_mode'] = manifest.ssl_mode;
             } else if (diff.field.startsWith('route.')) {
               const route = diff.field.replace('route.', '');
-              const ruleId = await this.apiClient.setPageRule(
+              const ruleId = await this.apiClient.upsertRedirectRule(
                 zoneId,
                 `${target.appDomain}${route}`,
                 'forward_url',

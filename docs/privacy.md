@@ -71,8 +71,8 @@ Structure makes outbound network connections **only when you configure the corre
 
 ### Cloudflare
 
-- **When:** A Cloudflare API token is stored in the vault and a domain step runs.
-- **What is sent:** Zone identifiers, DNS record configurations.
+- **When:** A Cloudflare account-owned API token and its Account ID are stored in the vault and a domain step runs.
+- **What is sent:** Account ID, zone identifiers, DNS record configurations, redirect rule configurations.
 - **Endpoints:** `api.cloudflare.com`
 
 ### LLM Providers

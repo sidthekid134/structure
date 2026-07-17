@@ -115,6 +115,7 @@ export function buildProvisioningGateResolver(deps: {
   easConnectionService: EasConnectionService;
   getGitHubToken: () => string | undefined;
   getCloudflareToken?: (projectId: string) => string | undefined;
+  getCloudflareAccountId?: (projectId: string) => string | undefined;
   checkCloudflareZoneOwnership?: (context: StepContext) => Promise<{
     owned: boolean;
     zoneId?: string;
@@ -150,7 +151,8 @@ export function buildProvisioningGateResolver(deps: {
       'user:provide-cloudflare-token',
       async (context) => {
         const token = deps.getCloudflareToken!(context.projectId);
-        if (!token?.trim()) return { resolved: false, action: 'wait-on-user' };
+        const accountId = deps.getCloudflareAccountId?.(context.projectId);
+        if (!token?.trim() || !accountId?.trim()) return { resolved: false, action: 'wait-on-user' };
         return {
           resolved: true,
           resourcesProduced: { cloudflare_token: '[stored in vault]' },

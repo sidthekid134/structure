@@ -584,6 +584,134 @@ describe('StructureServer', () => {
     }
   });
 
+  it('connects Cloudflare with an account-owned token verified against the account ID', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, errors: [], result: { status: 'active' } }),
+    } as Response);
+
+    try {
+      const accountId = '0123456789abcdef0123456789abcdef';
+      const connection = await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/cloudflare/connect`,
+        { token: 'cfat_test_token_123456789', accountId },
+      );
+      expect(connection.statusCode).toBe(200);
+      const body = connection.body as Record<string, unknown>;
+      expect(body.tokenStored).toBe(true);
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        `https://api.cloudflare.com/client/v4/accounts/${accountId}/tokens/verify`,
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({ Authorization: 'Bearer cfat_test_token_123456789' }),
+        }),
+      );
+
+      const organization = await getJson(`http://127.0.0.1:${port}/api/organization`) as {
+        integrations: Record<string, { status: string }>;
+      };
+      expect(organization.integrations.cloudflare.status).toBe('configured');
+
+      const creds = new CredentialService(storeDir, (purpose) => deriveStructureRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('cloudflare_token')).toBe('cfat_test_token_123456789');
+      expect(creds.retrieveOrgCredential('cloudflare_account_id')).toBe(accountId);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('rejects Cloudflare connect when the account ID is missing', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, errors: [], result: { status: 'active' } }),
+    } as Response);
+
+    try {
+      const connection = await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/cloudflare/connect`,
+        { token: 'cfat_test_token_123456789' },
+      );
+      expect(connection.statusCode).toBe(400);
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const creds = new CredentialService(storeDir, (purpose) => deriveStructureRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('cloudflare_token')).toBeNull();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('rejects Cloudflare connect when the account ID is not 32-character hex', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, errors: [], result: { status: 'active' } }),
+    } as Response);
+
+    try {
+      const connection = await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/cloudflare/connect`,
+        { token: 'cfat_test_token_123456789', accountId: 'not-a-valid-account-id' },
+      );
+      expect(connection.statusCode).toBe(400);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('rejects Cloudflare connect when the token is not active', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, errors: [], result: { status: 'disabled' } }),
+    } as Response);
+
+    try {
+      const connection = await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/cloudflare/connect`,
+        { token: 'cfat_test_token_123456789', accountId: '0123456789abcdef0123456789abcdef' },
+      );
+      expect(connection.statusCode).toBe(400);
+
+      const creds = new CredentialService(storeDir, (purpose) => deriveStructureRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('cloudflare_token')).toBeNull();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('disables Cloudflare connection and clears both token and account ID credentials', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, errors: [], result: { status: 'active' } }),
+    } as Response);
+
+    try {
+      const accountId = '0123456789abcdef0123456789abcdef';
+      await postJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/cloudflare/connect`,
+        { token: 'cfat_test_token_123456789', accountId },
+      );
+      const disabled = await deleteJsonWithStatus(
+        `http://127.0.0.1:${port}/api/organization/integrations/cloudflare/connection`,
+      );
+      expect(disabled.statusCode).toBe(200);
+      const body = disabled.body as Record<string, unknown>;
+      expect(body.removed).toBe(true);
+
+      const organization = await getJson(`http://127.0.0.1:${port}/api/organization`) as {
+        integrations: Record<string, { status: string }>;
+      };
+      expect(organization.integrations.cloudflare.status).toBe('pending');
+
+      const creds = new CredentialService(storeDir, (purpose) => deriveStructureRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('cloudflare_token')).toBeNull();
+      expect(creds.retrieveOrgCredential('cloudflare_account_id')).toBeNull();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('rejects invalid reconcile direction', async () => {
     await new Promise<void>((resolve, reject) => {
       const body = JSON.stringify({ direction: 'invalid-direction' });

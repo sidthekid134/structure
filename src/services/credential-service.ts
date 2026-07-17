@@ -32,6 +32,7 @@ export type CredentialType =
   // ── Existing ──────────────────────────────────────────────────────────
   | 'github_pat'
   | 'cloudflare_token'
+  | 'cloudflare_account_id'
   | 'apple_p8'
   | 'apple_team_id'
   | 'google_play_key'
@@ -382,6 +383,9 @@ export class CredentialService {
       case 'cloudflare_token':
         this.validateCloudflareToken(value);
         break;
+      case 'cloudflare_account_id':
+        this.validateCloudflareAccountId(value);
+        break;
       case 'expo_token':
         this.validateExpoToken(value);
         break;
@@ -443,8 +447,17 @@ export class CredentialService {
     if (token.length < 30) {
       throw new CredentialError(
         'Cloudflare API token appears too short. ' +
-          'Generate a token at: https://dash.cloudflare.com/profile/api-tokens',
+          'Create an account-owned token at: Cloudflare dashboard → Manage Account → Account API Tokens',
         'validateCloudflareToken',
+      );
+    }
+  }
+
+  private validateCloudflareAccountId(accountId: string): void {
+    if (!/^[a-f0-9]{32}$/i.test(accountId.trim())) {
+      throw new CredentialError(
+        `Invalid Cloudflare Account ID "${accountId}". Must be a 32-character hex string, found in the Cloudflare dashboard sidebar.`,
+        'validateCloudflareAccountId',
       );
     }
   }

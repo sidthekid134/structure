@@ -30,9 +30,9 @@ const STEP_CREDENTIAL_REQUIREMENTS: Record<string, CredentialType[]> = {
   'apple:upload-apns-to-firebase': ['apple_p8', 'apple_team_id'],
   'apple:configure-signing': ['apple_p8', 'apple_team_id'],
   'google-play:configure-app': ['google_play_key'],
-  'cloudflare:add-domain-zone': ['cloudflare_token', 'domain_name'],
-  'cloudflare:configure-dns': ['cloudflare_token', 'domain_name'],
-  'cloudflare:configure-ssl': ['cloudflare_token', 'domain_name'],
+  'cloudflare:add-domain-zone': ['cloudflare_token', 'cloudflare_account_id', 'domain_name'],
+  'cloudflare:configure-dns': ['cloudflare_token', 'cloudflare_account_id', 'domain_name'],
+  'cloudflare:configure-ssl': ['cloudflare_token', 'cloudflare_account_id', 'domain_name'],
 };
 
 export interface MissingCredentialInfo {
@@ -64,9 +64,16 @@ const CREDENTIAL_INFO: Partial<Record<CredentialType, Omit<MissingCredentialInfo
   },
   cloudflare_token: {
     label: 'Cloudflare API Token',
-    description: 'Required for managing DNS records and SSL/TLS configuration for your domain.',
+    description:
+      'Account-owned API token (Manage Account -> Account API Tokens) required for managing DNS records and SSL/TLS configuration for your domain.',
     input_type: 'password',
-    help_url: 'https://dash.cloudflare.com/profile/api-tokens',
+    help_url: 'https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/',
+  },
+  cloudflare_account_id: {
+    label: 'Cloudflare Account ID',
+    description: 'The Cloudflare Account ID the API token belongs to, found in the dashboard sidebar.',
+    input_type: 'text',
+    help_url: 'https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/',
   },
   apple_p8: {
     label: 'Apple .p8 Key File',

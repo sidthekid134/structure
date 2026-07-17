@@ -466,13 +466,17 @@ export default function PlatformStructure() {
     }
     if (providerId === 'cloudflare') {
       const token = fields['cloudflareApiToken']?.trim();
+      const accountId = fields['cloudflareAccountId']?.trim();
       if (!token) {
         throw new Error('Cloudflare API token is required.');
+      }
+      if (!accountId) {
+        throw new Error('Cloudflare Account ID is required.');
       }
       await api('/api/organization/integrations/cloudflare/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ token, accountId }),
       });
       await refreshConnectedProviders();
       notify('Cloudflare integration connected', 'ok');

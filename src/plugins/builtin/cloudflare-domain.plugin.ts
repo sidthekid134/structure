@@ -15,7 +15,7 @@ export const cloudflareDomainPlugin: PluginDefinition = {
   providerMeta: {
     label: 'Cloudflare',
     scope: 'project',
-    secretKeys: ['api_token', 'zone_id'],
+    secretKeys: ['cloudflare_token', 'cloudflare_account_id'],
     dependsOnProviders: [],
     displayMeta: {
       label: 'Cloudflare',

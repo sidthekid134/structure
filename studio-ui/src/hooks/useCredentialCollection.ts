@@ -18,6 +18,7 @@ import { api } from '../components/studio/helpers';
 export type CredentialType =
   | 'github_pat'
   | 'cloudflare_token'
+  | 'cloudflare_account_id'
   | 'apple_p8'
   | 'apple_team_id'
   | 'google_play_key'

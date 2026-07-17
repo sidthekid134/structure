@@ -46,11 +46,11 @@ class FakeCloudflareClient implements CloudflareApiClient {
 
   async deleteDnsRecord(): Promise<void> {}
 
-  async setPageRule(): Promise<string> {
-    return 'page-rule-1';
+  async upsertRedirectRule(): Promise<string> {
+    return 'redirect-rule-1';
   }
 
-  async getPageRules(): Promise<Array<{ url: string; action: string }>> {
+  async getRedirectRules(): Promise<Array<{ url: string; action: string }>> {
     return [];
   }
 

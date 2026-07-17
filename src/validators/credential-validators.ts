@@ -80,12 +80,26 @@ export function validateCloudflareToken(token: string): ValidationResult {
   if (trimmed.length < 30) {
     throw new CredentialError(
       'Cloudflare API token appears too short. ' +
-        'Generate a scoped API token at: https://dash.cloudflare.com/profile/api-tokens\n' +
-        'Required permissions: Zone:DNS:Edit, Zone:Zone:Read.',
+        'Create an account-owned API token at: Cloudflare dashboard → Manage Account → Account API Tokens.\n' +
+        'Required permissions: Zone > DNS > Edit, Zone > Zone > Read, Zone > Single Redirect > Edit, Zone > Zone Settings > Edit.',
       'validateCloudflareToken',
     );
   }
   return { valid: true, metadata: { token_length: trimmed.length } };
+}
+
+export function validateCloudflareAccountId(accountId: string): ValidationResult {
+  if (!accountId || typeof accountId !== 'string') {
+    throw new CredentialError('Cloudflare Account ID must not be empty.', 'validateCloudflareAccountId');
+  }
+  const trimmed = accountId.trim();
+  if (!/^[a-f0-9]{32}$/i.test(trimmed)) {
+    throw new CredentialError(
+      `Invalid Cloudflare Account ID "${accountId}". Must be a 32-character hex string, found in the Cloudflare dashboard sidebar.`,
+      'validateCloudflareAccountId',
+    );
+  }
+  return { valid: true, metadata: {} };
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +252,8 @@ export function validateByType(
       return validateGitHubPAT(value);
     case 'cloudflare_token':
       return validateCloudflareToken(value);
+    case 'cloudflare_account_id':
+      return validateCloudflareAccountId(value);
     case 'expo_token':
       return validateExpoToken(value);
     case 'apple_p8':

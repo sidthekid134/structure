@@ -833,7 +833,11 @@ const apiBindDomainSslHandler = simpleHandler(
       context.credentialService?.retrieveCredential(context.projectId, 'cloudflare_token') ||
       context.credentialService?.retrieveCredential('__organization__', 'cloudflare_token')
     )?.trim();
-    if (!cfToken) return { reconciled: false, message: 'No Cloudflare token found. Complete user:provide-cloudflare-token before binding the API domain.' };
+    const cfAccountId = (
+      context.credentialService?.retrieveCredential(context.projectId, 'cloudflare_account_id') ||
+      context.credentialService?.retrieveCredential('__organization__', 'cloudflare_account_id')
+    )?.trim();
+    if (!cfToken || !cfAccountId) return { reconciled: false, message: 'No Cloudflare token found. Complete user:provide-cloudflare-token before binding the API domain.' };
     const zoneId = context.upstreamArtifacts['cloudflare_zone_id']?.trim();
     const zoneDomain = context.upstreamArtifacts['cloudflare_zone_domain']?.trim();
     if (!zoneId || !zoneDomain) return { reconciled: false, message: 'Missing Cloudflare zone info. Complete cloudflare:add-domain-zone before binding the API domain.' };
@@ -882,7 +886,7 @@ const apiBindDomainSslHandler = simpleHandler(
 
     const ipAddress = (await runCommand('gcloud', ['compute', 'forwarding-rules', 'describe', fwdRuleName, '--global', '--format=value(IPAddress)', '--project', gcpProjectId], process.cwd(), log)).trim();
 
-    const cfClient = new HttpCloudflareApiClient(cfToken);
+    const cfClient = new HttpCloudflareApiClient(cfToken, cfAccountId);
     const records = await cfClient.getDnsRecords(zoneId);
     const existing = records.filter((r) => r.name === apiDomain && (r.type === 'CNAME' || r.type === 'A'));
     if (!existing.find((r) => r.type === 'A' && r.content.trim() === ipAddress && r.proxied !== true)) {
@@ -990,7 +994,11 @@ const webBindDomainSslHandler = simpleHandler(
       context.credentialService?.retrieveCredential(context.projectId, 'cloudflare_token') ||
       context.credentialService?.retrieveCredential('__organization__', 'cloudflare_token')
     )?.trim();
-    if (!cfToken) return { reconciled: false, message: 'No Cloudflare token found. Complete user:provide-cloudflare-token before binding the web domain.' };
+    const cfAccountId = (
+      context.credentialService?.retrieveCredential(context.projectId, 'cloudflare_account_id') ||
+      context.credentialService?.retrieveCredential('__organization__', 'cloudflare_account_id')
+    )?.trim();
+    if (!cfToken || !cfAccountId) return { reconciled: false, message: 'No Cloudflare token found. Complete user:provide-cloudflare-token before binding the web domain.' };
     const zoneId = context.upstreamArtifacts['cloudflare_zone_id']?.trim();
     const appDomain = context.upstreamArtifacts['cloudflare_app_domain']?.trim();
     const zoneDomain = context.upstreamArtifacts['cloudflare_zone_domain']?.trim();
@@ -1041,7 +1049,7 @@ const webBindDomainSslHandler = simpleHandler(
     const ipAddress = (await runCommand('gcloud', ['compute', 'forwarding-rules', 'describe', fwdRuleName, '--global', '--format=value(IPAddress)', '--project', gcpProjectId], process.cwd(), log)).trim();
 
     const dnsRecordName = domainMode === 'zone-root' ? '@' : appDomain.slice(0, appDomain.length - zoneDomain.length - 1);
-    const cfClient = new HttpCloudflareApiClient(cfToken);
+    const cfClient = new HttpCloudflareApiClient(cfToken, cfAccountId);
     const records = await cfClient.getDnsRecords(zoneId);
     const existing = records.filter((r) => r.name === appDomain && (r.type === 'CNAME' || r.type === 'A'));
     if (!existing.find((r) => r.type === 'A' && r.content.trim() === ipAddress && r.proxied !== true)) {

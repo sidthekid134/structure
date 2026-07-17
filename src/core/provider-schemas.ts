@@ -347,7 +347,15 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
         required: true,
         source: 'integration',
         description:
-          'Token with zone-scoped permissions for DNS Edit, Zone Read, Page Rules Edit, and Zone Settings/SSL Edit used for ownership checks, DNS, SSL, and auth routing automation.',
+          'Account-owned token with zone-scoped permissions for DNS Edit, Zone Read, Single Redirect Edit, and Zone Settings/SSL Edit used for ownership checks, DNS, SSL, and auth routing automation.',
+      },
+      {
+        key: 'cloudflare_account_id',
+        label: 'Cloudflare Account ID',
+        required: true,
+        source: 'integration',
+        description:
+          'Account ID the account-owned Cloudflare API token belongs to; required to verify and authenticate the token.',
       },
       {
         key: 'project_domain',

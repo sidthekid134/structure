@@ -35,14 +35,22 @@ interface CloudflareStep {
 }
 
 const STEPS: CloudflareStep[] = [
-  { id: 'token-overview', title: 'Open API Tokens', subtitle: 'Start in Cloudflare dashboard' },
+  { id: 'token-overview', title: 'Open Account API Tokens', subtitle: 'Start in Cloudflare dashboard' },
   { id: 'token-permissions', title: 'Set permissions', subtitle: 'Use least-privilege zone access' },
   { id: 'paste-token', title: 'Paste token', subtitle: 'Connect in Structure organization scope' },
   { id: 'review', title: 'Review and connect', subtitle: 'Validate and store token' },
 ];
 
-function validateStep(stepId: CloudflareStepId, token: string): string | null {
+const ACCOUNT_ID_RE = /^[a-f0-9]{32}$/i;
+
+function validateStep(stepId: CloudflareStepId, token: string, accountId: string): string | null {
   if (stepId === 'paste-token') {
+    if (!accountId.trim()) {
+      return 'Cloudflare Account ID is required.';
+    }
+    if (!ACCOUNT_ID_RE.test(accountId.trim())) {
+      return 'Account ID looks wrong. It should be a 32-character hex string from the dashboard sidebar.';
+    }
     if (!token.trim()) {
       return 'Cloudflare API token is required.';
     }
@@ -61,6 +69,7 @@ export function CloudflareIntegrationFlow({
 }: CloudflareIntegrationFlowProps) {
   const [stepIndex, setStepIndex] = useState(0);
   const [token, setToken] = useState('');
+  const [accountId, setAccountId] = useState('');
   const [revealToken, setRevealToken] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -68,7 +77,10 @@ export function CloudflareIntegrationFlow({
   const [disconnecting, setDisconnecting] = useState(false);
 
   const currentStep = STEPS[stepIndex];
-  const fieldError = useMemo(() => validateStep(currentStep.id, token), [currentStep.id, token]);
+  const fieldError = useMemo(
+    () => validateStep(currentStep.id, token, accountId),
+    [currentStep.id, token, accountId],
+  );
 
   const handleBack = () => {
     setServerError(null);
@@ -85,7 +97,7 @@ export function CloudflareIntegrationFlow({
     setServerError(null);
     setSubmitting(true);
     try {
-      await onConnect({ cloudflareApiToken: token.trim() });
+      await onConnect({ cloudflareApiToken: token.trim(), cloudflareAccountId: accountId.trim() });
       setSubmitted(true);
       setTimeout(() => onClose(), 900);
     } catch (err) {
@@ -166,9 +178,11 @@ export function CloudflareIntegrationFlow({
                   <StepBody
                     step={currentStep}
                     token={token}
+                    accountId={accountId}
                     revealToken={revealToken}
                     setRevealToken={setRevealToken}
                     onTokenChange={setToken}
+                    onAccountIdChange={setAccountId}
                   />
 
                   {fieldError && currentStep.id !== 'review' && (
@@ -205,7 +219,7 @@ export function CloudflareIntegrationFlow({
                 <button
                   type="button"
                   onClick={() => void handleSubmit()}
-                  disabled={submitting || submitted || !token.trim()}
+                  disabled={submitting || submitted || !token.trim() || !accountId.trim()}
                   className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-5 py-2.5 rounded-lg text-sm font-bold hover:opacity-90 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {submitted ? (
@@ -288,15 +302,19 @@ function Stepper({ steps, currentIndex }: { steps: CloudflareStep[]; currentInde
 function StepBody({
   step,
   token,
+  accountId,
   revealToken,
   setRevealToken,
   onTokenChange,
+  onAccountIdChange,
 }: {
   step: CloudflareStep;
   token: string;
+  accountId: string;
   revealToken: boolean;
   setRevealToken: (value: boolean) => void;
   onTokenChange: (value: string) => void;
+  onAccountIdChange: (value: string) => void;
 }) {
   switch (step.id) {
     case 'token-overview':
@@ -304,15 +322,16 @@ function StepBody({
         <StepShell
           step={step}
           link={{
-            label: 'Open Cloudflare API Tokens',
-            href: 'https://dash.cloudflare.com/profile/api-tokens',
+            label: 'Open Cloudflare Account API Tokens',
+            href: 'https://dash.cloudflare.com/?to=/:account/api-tokens',
           }}
           instructions={[
-            'Sign in to Cloudflare Dashboard using an account with permission to create API tokens.',
-            'Open My Profile -> API Tokens.',
-            'Click Create Token to start a new token for Structure organization provisioning.',
+            'Sign in to Cloudflare Dashboard using an account with Super Administrator access.',
+            'Open Manage Account -> Account API Tokens (not My Profile -> API Tokens — that page issues user tokens, which Structure no longer uses).',
+            'Click Create Account Token to start a new account-owned token for Structure organization provisioning.',
+            'Copy your Account ID from the dashboard sidebar — you will need it in a later step.',
           ]}
-          note="This token is the organization-level default in Structure. Individual projects can provide their own scoped Cloudflare token override in Setup when stricter zone isolation is needed."
+          note="Account-owned tokens are not tied to any one person, so provisioning keeps working even if the person who created the token leaves your organization. Individual projects can provide their own scoped Cloudflare token override in Setup when stricter zone isolation is needed."
         >
           <div className="grid gap-2">
             <CopyableValue
@@ -321,7 +340,7 @@ function StepBody({
             />
             <CopyableValue
               label="Copyable token verify command"
-              value={'curl "https://api.cloudflare.com/client/v4/user/tokens/verify" --header "Authorization: Bearer <API_TOKEN>"'}
+              value={'curl "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/tokens/verify" --header "Authorization: Bearer <API_TOKEN>"'}
             />
           </div>
         </StepShell>
@@ -335,7 +354,7 @@ function StepBody({
             href: 'https://developers.cloudflare.com/fundamentals/api/reference/permissions',
           }}
           instructions={[
-            'Use either the Edit zone DNS template or Custom token.',
+            'Choose Custom token.',
             'In each permission row, set the first dropdown to Zone (not Account).',
             'Add the exact Zone permission rows listed below.',
             'Restrict Zone Resources to apex zones Structure should manage.',
@@ -350,7 +369,7 @@ function StepBody({
               value={
                 'Zone | DNS | Edit\n' +
                 'Zone | Zone | Read\n' +
-                'Zone | Page Rules | Edit\n' +
+                'Zone | Single Redirect | Edit\n' +
                 'Zone | Zone Settings | Edit'
               }
             />
@@ -377,12 +396,23 @@ function StepBody({
         <StepShell
           step={step}
           instructions={[
-            'Paste the Cloudflare API token generated in the previous step.',
-            'Structure verifies token validity before persisting it.',
-            'If verification fails, re-check permission groups and zone resource scope.',
-            'If you later add a project-scoped token in Setup, that token overrides this org default for that project.',
+            'Copy the Account ID from the Cloudflare dashboard sidebar and paste it below.',
+            'Paste the Cloudflare account-owned API token generated in the previous step.',
+            'Structure verifies the token against that account before persisting either value.',
+            'If verification fails, double check the Account ID and re-check permission groups and zone resource scope.',
+            'If you later add a project-scoped token in Setup, that token and account ID override the org default for that project.',
           ]}
         >
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-foreground">Cloudflare Account ID</label>
+            <input
+              type="text"
+              value={accountId}
+              onChange={(e) => onAccountIdChange(e.target.value.trim())}
+              placeholder="0123456789abcdef0123456789abcdef"
+              className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-mono text-[12px] focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all"
+            />
+          </div>
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-foreground">Cloudflare API token</label>
             <div className="relative">
@@ -390,7 +420,7 @@ function StepBody({
                 type={revealToken ? 'text' : 'password'}
                 value={token}
                 onChange={(e) => onTokenChange(e.target.value)}
-                placeholder="cf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                placeholder="cfat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                 className="w-full px-3 py-2.5 rounded-lg border border-border bg-background font-mono text-[12px] focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none transition-all pr-10"
               />
               <button
@@ -411,14 +441,18 @@ function StepBody({
             <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Final check</p>
             <h3 className="text-base font-bold tracking-tight mt-0.5">Review and connect</h3>
             <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-              Structure stores the token in the encrypted local vault at organization scope so Cloudflare DNS and zone
-              steps can run across projects.
+              Structure stores the account ID and token in the encrypted local vault at organization scope so Cloudflare
+              DNS and zone steps can run across projects.
             </p>
           </div>
           <div className="rounded-xl border border-border bg-muted/30 divide-y divide-border">
+            <SummaryRow label="Account ID" value={accountId.trim() ? accountId.trim() : 'Missing'} />
             <SummaryRow label="Token status" value={token.trim() ? 'Present' : 'Missing'} />
             <SummaryRow label="Storage scope" value="Organization vault" />
-            <SummaryRow label="Expected permissions" value="Zone:Read, Zone:Edit, DNS:Edit" />
+            <SummaryRow
+              label="Expected permissions"
+              value="Zone:Read, Zone:Edit, DNS:Edit, Single Redirect:Edit"
+            />
           </div>
           <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-300">
             <ShieldCheck size={13} className="shrink-0 mt-0.5" />

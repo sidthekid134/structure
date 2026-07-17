@@ -97,19 +97,24 @@ export const USER_ACTIONS: UserActionNode[] = [
   {
     type: 'user-action',
     key: 'user:provide-cloudflare-token',
-    label: 'Connect Cloudflare API Token',
+    label: 'Connect Cloudflare Account API Token',
     description:
-      'Provide a Cloudflare API token with Zone:Read and DNS:Edit permissions so Structure can manage domain, DNS, SSL, and auth routing.',
+      'Provide a Cloudflare account-owned API token (Manage Account -> Account API Tokens) with Zone:Read, DNS:Edit, and Single Redirect:Edit permissions, plus the Cloudflare Account ID it belongs to, so Structure can manage domain, DNS, SSL, and auth routing.',
     category: 'credential-upload',
     provider: 'cloudflare',
     verification: { type: 'credential-upload', secretKey: 'cloudflare_token' },
-    helpUrl: 'https://dash.cloudflare.com/profile/api-tokens',
+    helpUrl: 'https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/',
     dependencies: [],
     produces: [
       {
         key: 'cloudflare_token',
         label: 'Cloudflare Token',
-        description: 'Cloudflare API token stored in project credentials',
+        description: 'Cloudflare account-owned API token stored in project credentials',
+      },
+      {
+        key: 'cloudflare_account_id',
+        label: 'Cloudflare Account ID',
+        description: 'Cloudflare Account ID the token belongs to, stored in project credentials',
       },
     ],
   },
