@@ -8,7 +8,7 @@
 4. [Key Derivation](#key-derivation)
 5. [Row-Level Credential Encryption](#row-level-credential-encryption)
 6. [OAuth Security](#oauth-security)
-7. [Studio Session Security](#studio-session-security)
+7. [Structure Session Security](#structure-session-security)
 8. [File Permissions](#file-permissions)
 9. [What IS Protected](#what-is-protected)
 10. [What Is NOT Protected](#what-is-not-protected)
@@ -26,9 +26,9 @@ Structure is a **local-only process**, not a server. There is no cloud backend, 
 | Vault passphrase brute-force | Argon2id memory-hard KDF (64 MiB, 2 iterations); makes GPU/ASIC attacks economically infeasible |
 | OAuth token leakage via logs | Authorization codes and tokens are never logged; only field names and value shapes appear in server logs |
 | OAuth token leakage via disk | Tokens stored encrypted inside the vault, never written plaintext |
-| CSRF on the local Studio API | `sameSite=strict` session cookies; PKCE on all OAuth flows |
+| CSRF on the local Structure API | `sameSite=strict` session cookies; PKCE on all OAuth flows |
 | Another local process intercepts the loopback OAuth callback | Loopback address + short-lived state parameter; code exchanged immediately and not stored |
-| Passkey private-key exfiltration | Passkey private key lives entirely in the OS keychain (macOS Keychain, Windows Hello); Studio never touches it |
+| Passkey private-key exfiltration | Passkey private key lives entirely in the OS keychain (macOS Keychain, Windows Hello); Structure never touches it |
 
 Structure explicitly does **not** address:
 - Local root access (a root-privileged process on the same machine can read process memory)
@@ -99,7 +99,7 @@ At the interactive preset, key derivation takes approximately 100 ms on typical 
 
 ### Passkey PRF unlock
 
-When a WebAuthn passkey is enrolled, the Studio server uses the **PRF extension** (`prf.eval`) to derive a per-credential symmetric key. This key unlocks the vault DEK without the user ever entering a passphrase. The passkey private key never leaves the OS authenticator; only the PRF output (a 32-byte value) is returned to the JavaScript layer.
+When a WebAuthn passkey is enrolled, the Structure server uses the **PRF extension** (`prf.eval`) to derive a per-credential symmetric key. This key unlocks the vault DEK without the user ever entering a passphrase. The passkey private key never leaves the OS authenticator; only the PRF output (a 32-byte value) is returned to the JavaScript layer.
 
 ### PBKDF2 — removed
 
@@ -128,9 +128,9 @@ All OAuth 2.0 flows use:
 
 ---
 
-## Studio Session Security
+## Structure Session Security
 
-The Studio local web server (port 3737) uses session cookies with the following properties:
+The Structure local web server (port 3737) uses session cookies with the following properties:
 
 | Property | Value |
 |---|---|
@@ -146,8 +146,8 @@ WebSocket connections at `/ws/provisioning/:runId` require a short-lived ephemer
 ## File Permissions
 
 - The vault file (`credentials.enc`) is created with mode **0600** (owner read/write only).
-- The `storeDir` (default `~/.platform`) should not be world-readable. Studio does not currently enforce this at runtime, but you should verify: `chmod 700 ~/.platform`.
-- The Studio server binds to `127.0.0.1` by default; it does not listen on a public interface.
+- The `storeDir` (default `~/.platform`) should not be world-readable. Structure does not currently enforce this at runtime, but you should verify: `chmod 700 ~/.platform`.
+- The Structure server binds to `127.0.0.1` by default; it does not listen on a public interface.
 
 ---
 
@@ -156,21 +156,21 @@ WebSocket connections at `/ws/provisioning/:runId` require a short-lived ephemer
 - **Vault contents at rest** — all credentials, tokens, API keys, and service account JSON blobs are AES-256-GCM encrypted before being written to disk.
 - **Vault integrity** — GCM authentication tag detects any tampering or corruption of the encrypted file.
 - **Passphrase strength** — the Argon2id KDF makes brute-force attacks against a stolen vault file expensive in both time and memory.
-- **OAuth tokens in transit** — tokens are only sent to their provider's HTTPS token endpoint. They are never logged or transmitted to any Studio-controlled server.
+- **OAuth tokens in transit** — tokens are only sent to their provider's HTTPS token endpoint. They are never logged or transmitted to any Structure-controlled server.
 - **Authorization codes** — consumed immediately on callback receipt; not stored, not logged.
-- **Passkey private key** — never held by Studio; stays inside the OS keychain or hardware authenticator.
+- **Passkey private key** — never held by Structure; stays inside the OS keychain or hardware authenticator.
 
 ## What Is NOT Protected
 
-- **Local root** — a process running as root on the same machine can attach to the Studio process and read plaintext credentials from memory after the vault is unlocked.
+- **Local root** — a process running as root on the same machine can attach to the Structure process and read plaintext credentials from memory after the vault is unlocked.
 - **User-level malware** — malware running as the same OS user can read the vault file and, if the vault is unlocked in the same session, may be able to extract the in-memory DEK.
-- **Unlocked session window** — while the Studio server is running with an active passkey session, credentials are accessible via the local API. Lock the vault (or stop the server) when not in use.
-- **Provider-side security** — Studio cannot protect against compromised GCP projects, revoked Apple certificates, or leaked tokens that were already sent to external providers.
+- **Unlocked session window** — while the Structure server is running with an active passkey session, credentials are accessible via the local API. Lock the vault (or stop the server) when not in use.
+- **Provider-side security** — Structure cannot protect against compromised GCP projects, revoked Apple certificates, or leaked tokens that were already sent to external providers.
 
 ---
 
 ## Dependency Posture
 
 - **No telemetry** — the codebase contains no analytics, no crash-reporting SDKs, and no calls to any Anthropic or third-party telemetry endpoint.
-- **No phone-home** — Studio makes outbound network calls only when you explicitly trigger a provisioning step or configure an integration. See [privacy.md](./privacy.md) for the full list of external endpoints.
+- **No phone-home** — Structure makes outbound network calls only when you explicitly trigger a provisioning step or configure an integration. See [privacy.md](./privacy.md) for the full list of external endpoints.
 - **libsodium-wrappers-sumo** is used for Argon2id only. The sumo build is audited and published by the libsodium project.

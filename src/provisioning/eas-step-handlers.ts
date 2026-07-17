@@ -141,12 +141,12 @@ function projectEnvironments(context: StepHandlerContext): string[] {
   return (mod.project.environments ?? []).map((e) => e.trim()).filter((e) => e.length > 0);
 }
 
-function studioEnvToExpoSlot(env: string): string {
+function structureEnvToExpoSlot(env: string): string {
   const normalized = env.trim().toLowerCase();
   if (normalized === 'development') return 'DEVELOPMENT';
   if (normalized === 'preview') return 'PREVIEW';
   if (normalized === 'production') return 'PRODUCTION';
-  throw new Error(`Unsupported Studio environment "${env}".`);
+  throw new Error(`Unsupported Structure environment "${env}".`);
 }
 
 function envSlotPresent(
@@ -278,7 +278,7 @@ const configureBuildProfilesHandler: StepHandler = {
         message: 'configure-build-profiles is per-environment but no environment was supplied in the step context.',
       };
     }
-    await client.ensureStudioEasEnvironmentMarkerOnApp(expoAppId, env);
+    await client.ensureStructureEasEnvironmentMarkerOnApp(expoAppId, env);
     return { reconciled: true, resourcesProduced: {} };
   },
 
@@ -391,7 +391,7 @@ const syncRuntimeEnvHandler: StepHandler = {
       const visibility =
         PROJECT_RUNTIME_ENV_SECRET_TYPES[name as keyof typeof PROJECT_RUNTIME_ENV_SECRET_TYPES] ??
         'PUBLIC';
-      await client.reconcileAppEnvironmentVariableAcrossStudioEnvironments(
+      await client.reconcileAppEnvironmentVariableAcrossStructureEnvironments(
         expoAppId,
         name,
         value,
@@ -432,7 +432,7 @@ const syncRuntimeEnvHandler: StepHandler = {
     const runtime = runtimeEnvMap(context, firebaseApiKey);
     let removed = 0;
     for (const name of Object.keys(runtime.values)) {
-      removed += await client.removeAppEnvironmentVariableFromStudioEnvironment(expoAppId, env, name);
+      removed += await client.removeAppEnvironmentVariableFromStructureEnvironment(expoAppId, env, name);
     }
     return {
       reconciled: true,
@@ -469,7 +469,7 @@ const syncRuntimeEnvHandler: StepHandler = {
       expoAppId,
       expected.map(([name]) => name),
     );
-    const expoSlot = studioEnvToExpoSlot(env);
+    const expoSlot = structureEnvToExpoSlot(env);
     const mismatched = expected.filter(([name, value]) => {
       const normalized = value.trim();
       const slotVars = vars.filter(
@@ -539,7 +539,7 @@ const syncLlmSecretsHandler: StepHandler = {
         PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES[
           name as keyof typeof PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES
         ] ?? 'PUBLIC';
-      await client.reconcileAppEnvironmentVariableAcrossStudioEnvironments(
+      await client.reconcileAppEnvironmentVariableAcrossStructureEnvironments(
         expoAppId,
         name,
         value,
@@ -574,7 +574,7 @@ const syncLlmSecretsHandler: StepHandler = {
     let removed = 0;
     for (const env of targets) {
       for (const key of PROJECT_LLM_RUNTIME_ENV_KEYS) {
-        removed += await client.removeAppEnvironmentVariableFromStudioEnvironment(expoAppId, env, key);
+        removed += await client.removeAppEnvironmentVariableFromStructureEnvironment(expoAppId, env, key);
       }
     }
     return {
@@ -609,7 +609,7 @@ const syncLlmSecretsHandler: StepHandler = {
       expoAppId,
       expected.map(([name]) => name),
     );
-    const projectSlots = projectEnvironments(context).map((e) => studioEnvToExpoSlot(e));
+    const projectSlots = projectEnvironments(context).map((e) => structureEnvToExpoSlot(e));
     const mismatched = expected.filter(([name]) => {
       const matching = vars.filter((v) => v.name === name);
       // Secret values can be masked in readback, so existence in each target slot is enough.

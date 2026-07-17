@@ -33,10 +33,10 @@ function pickExpoAccountSlug(candidates: Array<string | undefined>): string {
 
 export function expoProjectManualDeleteAction(
   projectManager: ProjectManager,
-  studioProjectId: string,
+  structureProjectId: string,
   expoAccountCandidates: string[] = [],
 ): RevertManualAction {
-  const mod = projectManager.getProject(studioProjectId);
+  const mod = projectManager.getProject(structureProjectId);
   const projectSlug = projectResourceSlug(mod.project);
   const organization = projectManager.getOrganization();
   const account = pickExpoAccountSlug([
@@ -52,7 +52,7 @@ export function expoProjectManualDeleteAction(
     stepKey: 'eas:create-project',
     title: 'Delete the EAS project on expo.dev',
     body:
-      'Studio uses an Expo robot token for automation. Expo does not allow robot tokens to delete apps through the API. Sign in to expo.dev with a user account that can manage this project, open the project, and remove it from Settings if you no longer need it.',
+      'Structure uses an Expo robot token for automation. Expo does not allow robot tokens to delete apps through the API. Sign in to expo.dev with a user account that can manage this project, open the project, and remove it from Settings if you no longer need it.',
     primaryUrl,
     primaryLabel:
       account && projectSlug ? 'Open project settings on expo.dev' : 'Open Expo — pick your account and project',
@@ -64,12 +64,12 @@ export function appendExpoManualDeleteIfRobotBlocked(
   stepKey: string,
   message: string,
   projectManager: ProjectManager,
-  studioProjectId: string,
+  structureProjectId: string,
   expoAccountCandidates: string[] = [],
 ): void {
   if (stepKey !== 'eas:create-project' || !EXPO_ROBOT_DELETE_BLOCKED.test(message)) return;
   if (actions.some((a) => a.stepKey === 'eas:create-project')) return;
-  actions.push(expoProjectManualDeleteAction(projectManager, studioProjectId, expoAccountCandidates));
+  actions.push(expoProjectManualDeleteAction(projectManager, structureProjectId, expoAccountCandidates));
 }
 
 /**

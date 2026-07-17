@@ -21,7 +21,7 @@ import { createOperationLogger } from '../logger.js';
 import { OAuthManager } from './oauth-manager.js';
 import { GcpOAuthProvider } from './gcp/gcp-oauth-provider.js';
 
-const log = createOperationLogger('studio-gcp');
+const log = createOperationLogger('structure-gcp');
 import {
   GcpHttpError,
   gcpRequest,
@@ -45,7 +45,7 @@ import {
   provisionerSaEmail,
 } from './gcp/gcp-api-client.js';
 import {
-  buildStudioGcpProjectId,
+  buildStructureGcpProjectId,
   buildGcpProjectIdWithEntropy,
   getStoredGcpProjectId,
   storeGcpProjectId,
@@ -69,7 +69,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export type { GcpConnectionDetails, GcpProjectConnectionStatus };
-export { buildStudioGcpProjectId };
+export { buildStructureGcpProjectId };
 export const GCP_PROVISIONER_SERVICE_ACCOUNT_ID = 'platform-provisioner';
 
 export type GcpStepStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
@@ -177,7 +177,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
       projectId,
       async (accessToken, email) => {
         this.gcpProvider.storeConnectedEmail(this.credentialService, projectId, email);
-        const discover = await this.discoverStudioGcpProjectWithUserAccessToken(projectId, accessToken);
+        const discover = await this.discoverStructureGcpProjectWithUserAccessToken(projectId, accessToken);
         return { gcpProjectDiscover: discover };
       },
     );
@@ -239,31 +239,31 @@ export class GcpConnectionService implements GcpCredentialProvider {
   // GCP project discovery
   // ---------------------------------------------------------------------------
 
-  async discoverStudioGcpProjectWithStoredOAuth(studioProjectId: string): Promise<GcpOAuthProjectDiscoverResult> {
-    this.ensureProjectExists(studioProjectId);
-    const token = await this.getUserOAuthAccessToken(studioProjectId);
+  async discoverStructureGcpProjectWithStoredOAuth(structureProjectId: string): Promise<GcpOAuthProjectDiscoverResult> {
+    this.ensureProjectExists(structureProjectId);
+    const token = await this.getUserOAuthAccessToken(structureProjectId);
     if (!token) {
-      const expectedProjectId = buildStudioGcpProjectId(studioProjectId);
+      const expectedProjectId = buildStructureGcpProjectId(structureProjectId);
     return {
         outcome: 'error',
         expectedProjectId,
-        expectedDisplayName: `Studio ${studioProjectId}`,
+        expectedDisplayName: `Structure ${structureProjectId}`,
         message: 'No Google OAuth session stored. Run Connect with Google first.',
       };
     }
-    return this.discoverStudioGcpProjectWithUserAccessToken(studioProjectId, token);
+    return this.discoverStructureGcpProjectWithUserAccessToken(structureProjectId, token);
   }
 
-  async discoverStudioGcpProjectWithUserAccessToken(
-    studioProjectId: string,
+  async discoverStructureGcpProjectWithUserAccessToken(
+    structureProjectId: string,
     userAccessToken: string,
   ): Promise<GcpOAuthProjectDiscoverResult> {
-    const expectedProjectId = buildStudioGcpProjectId(studioProjectId);
-    const expectedDisplayName = `Studio ${studioProjectId}`;
-    const userEmail = this.gcpProvider.getConnectedEmail(this.credentialService, studioProjectId);
+    const expectedProjectId = buildStructureGcpProjectId(structureProjectId);
+    const expectedDisplayName = `Structure ${structureProjectId}`;
+    const userEmail = this.gcpProvider.getConnectedEmail(this.credentialService, structureProjectId);
 
     try {
-      const storedId = getStoredGcpProjectId(this.credentialService, studioProjectId);
+      const storedId = getStoredGcpProjectId(this.credentialService, structureProjectId);
 
       if (storedId) {
         const summary = await fetchGcpProjectSummary(userAccessToken, storedId);
@@ -285,7 +285,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
             message: `Stored GCP project "${storedId}" was not found in GCP.`,
           };
         }
-        applyGcpProjectLinked(this.projectManager, studioProjectId, storedId, userEmail);
+        applyGcpProjectLinked(this.projectManager, structureProjectId, storedId, userEmail);
         const nameNote = summary.name === expectedDisplayName
           ? `Display name matches "${expectedDisplayName}".`
           : `Note: display name is "${summary.name}" (expected "${expectedDisplayName}").`;
@@ -294,8 +294,8 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
       const byId = await fetchGcpProjectSummary(userAccessToken, expectedProjectId);
       if (byId.ok) {
-        storeGcpProjectId(this.credentialService, studioProjectId, expectedProjectId);
-        applyGcpProjectLinked(this.projectManager, studioProjectId, expectedProjectId, userEmail);
+        storeGcpProjectId(this.credentialService, structureProjectId, expectedProjectId);
+        applyGcpProjectLinked(this.projectManager, structureProjectId, expectedProjectId, userEmail);
         const nameNote = byId.name === expectedDisplayName
           ? `Linked project "${expectedProjectId}" (display name "${expectedDisplayName}").`
           : `Linked project "${expectedProjectId}". Display name is "${byId.name}" (expected "${expectedDisplayName}").`;
@@ -318,8 +318,8 @@ export class GcpConnectionService implements GcpCredentialProvider {
       }
 
       const chosen = matches[0]!;
-      storeGcpProjectId(this.credentialService, studioProjectId, chosen.projectId);
-      applyGcpProjectLinked(this.projectManager, studioProjectId, chosen.projectId, userEmail);
+      storeGcpProjectId(this.credentialService, structureProjectId, chosen.projectId);
+      applyGcpProjectLinked(this.projectManager, structureProjectId, chosen.projectId, userEmail);
       return {
         outcome: 'linked', gcpProjectId: chosen.projectId, expectedProjectId, expectedDisplayName,
         message: `Linked GCP project "${chosen.projectId}" (display name "${expectedDisplayName}").`,
@@ -333,49 +333,49 @@ export class GcpConnectionService implements GcpCredentialProvider {
   // Stored credentials
   // ---------------------------------------------------------------------------
 
-  getStoredGcpProjectId(studioProjectId: string): string | null {
-    this.ensureProjectExists(studioProjectId);
-    return getStoredGcpProjectId(this.credentialService, studioProjectId);
+  getStoredGcpProjectId(structureProjectId: string): string | null {
+    this.ensureProjectExists(structureProjectId);
+    return getStoredGcpProjectId(this.credentialService, structureProjectId);
   }
 
-  storeGcpProjectIdInVault(studioProjectId: string, gcpProjectId: string): void {
-    this.ensureProjectExists(studioProjectId);
-    storeGcpProjectId(this.credentialService, studioProjectId, gcpProjectId);
+  storeGcpProjectIdInVault(structureProjectId: string, gcpProjectId: string): void {
+    this.ensureProjectExists(structureProjectId);
+    storeGcpProjectId(this.credentialService, structureProjectId, gcpProjectId);
   }
 
-  storeProvisionerServiceAccountEmail(studioProjectId: string, email: string): void {
-    this.ensureProjectExists(studioProjectId);
-    storeSaEmail(this.credentialService, studioProjectId, email);
+  storeProvisionerServiceAccountEmail(structureProjectId: string, email: string): void {
+    this.ensureProjectExists(structureProjectId);
+    storeSaEmail(this.credentialService, structureProjectId, email);
   }
 
   recordProvisionerServiceAccountKey(
-    studioProjectId: string,
+    structureProjectId: string,
     gcpProjectId: string,
     saEmail: string,
     saKeyJson: string,
   ): GcpProjectConnectionStatus {
-    this.ensureProjectExists(studioProjectId);
+    this.ensureProjectExists(structureProjectId);
     return recordProvisionerServiceAccountKey(
       this.credentialService,
       this.projectManager,
-      studioProjectId,
+      structureProjectId,
       gcpProjectId,
       saEmail,
       saKeyJson,
     );
   }
 
-  hasStoredUserOAuthRefreshToken(studioProjectId: string): boolean {
-    return this.oauthManager.hasToken(this.gcpProvider, studioProjectId);
+  hasStoredUserOAuthRefreshToken(structureProjectId: string): boolean {
+    return this.oauthManager.hasToken(this.gcpProvider, structureProjectId);
   }
 
-  async hasGcpOAuthToken(studioProjectId: string): Promise<boolean> {
-    const token = await this.getUserOAuthAccessToken(studioProjectId);
+  async hasGcpOAuthToken(structureProjectId: string): Promise<boolean> {
+    const token = await this.getUserOAuthAccessToken(structureProjectId);
     return token !== null;
   }
 
-  async requireUserOAuthAccessToken(studioProjectId: string, context: string): Promise<string> {
-    return this.oauthManager.requireToken(this.gcpProvider, studioProjectId, context);
+  async requireUserOAuthAccessToken(structureProjectId: string, context: string): Promise<string> {
+    return this.oauthManager.requireToken(this.gcpProvider, structureProjectId, context);
   }
 
   // ---------------------------------------------------------------------------
@@ -421,9 +421,9 @@ export class GcpConnectionService implements GcpCredentialProvider {
   // ---------------------------------------------------------------------------
 
   /** @deprecated Use StepHandlerRegistry for graph-level steps. Kept for OAuthFlowPanel bootstrap phase UI. */
-  async syncOAuthPipelineFromLiveState(studioProjectId: string): Promise<GcpOAuthStep[]> {
-    this.ensureProjectExists(studioProjectId);
-    const result = await this.validateStep(studioProjectId, 'oauth_consent');
+  async syncOAuthPipelineFromLiveState(structureProjectId: string): Promise<GcpOAuthStep[]> {
+    this.ensureProjectExists(structureProjectId);
+    const result = await this.validateStep(structureProjectId, 'oauth_consent');
     return [{
         id: 'oauth_consent',
       label: 'Sign in with Google and approve access',
@@ -437,34 +437,34 @@ export class GcpConnectionService implements GcpCredentialProvider {
    * Called by plan/sync route. Delegates to GCP step handlers for each step key.
    */
   async syncProvisioningFirebaseGraphStep(
-    studioProjectId: string,
+    structureProjectId: string,
     stepKey: string,
   ): Promise<{ reconciled: boolean; message?: string; resourcesProduced?: Record<string, string>; suggestsReauth?: boolean } | null> {
     const { globalStepHandlerRegistry } = await import('../provisioning/step-handler-registry.js');
     const handler = globalStepHandlerRegistry.get(stepKey);
     if (!handler) return null;
 
-    const context = this.buildStepHandlerContext(studioProjectId);
+    const context = this.buildStepHandlerContext(structureProjectId);
     return handler.sync(context);
   }
 
-  async validateStep(studioProjectId: string, stepId: GcpBootstrapPhaseId): Promise<GcpStepValidationResult> {
-    this.ensureProjectExists(studioProjectId);
-    const hasOAuth = this.hasStoredUserOAuthRefreshToken(studioProjectId);
+  async validateStep(structureProjectId: string, stepId: GcpBootstrapPhaseId): Promise<GcpStepValidationResult> {
+    this.ensureProjectExists(structureProjectId);
+    const hasOAuth = this.hasStoredUserOAuthRefreshToken(structureProjectId);
 
     switch (stepId) {
       case 'oauth_consent': {
         if (hasOAuth) return { valid: true, message: 'Google OAuth refresh token is stored.' };
-        const d = getStoredConnectionDetails(this.credentialService, studioProjectId);
+        const d = getStoredConnectionDetails(this.credentialService, structureProjectId);
         if (!d) return { valid: false, message: 'No OAuth refresh token or service account connection. Sign in with Google or upload a service account key.' };
         return { valid: true, message: `Connection recorded for GCP project ${d.projectId} (${d.serviceAccountEmail}).` };
       }
       case 'gcp_project': {
-        const details = getStoredConnectionDetails(this.credentialService, studioProjectId);
-        const projectId = details?.projectId ?? getStoredGcpProjectId(this.credentialService, studioProjectId);
+        const details = getStoredConnectionDetails(this.credentialService, structureProjectId);
+        const projectId = details?.projectId ?? getStoredGcpProjectId(this.credentialService, structureProjectId);
         if (!projectId) return { valid: false, message: 'No GCP project id stored. Complete "Create GCP Project" first.' };
         try {
-          const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:gcp_project');
+          const token = await this.getAccessTokenForGcpOperations(structureProjectId, 'validate:gcp_project');
           const status = await getGcpProjectStatus(token, projectId);
           if (status === 'found') return { valid: true, message: `Project "${projectId}" exists and is reachable.` };
           if (status === 'not_found') return { valid: false, message: `Project "${projectId}" was not found in GCP.` };
@@ -474,20 +474,20 @@ export class GcpConnectionService implements GcpCredentialProvider {
         }
       }
       case 'service_account': {
-        const gcpProjectId = getStoredGcpProjectId(this.credentialService, studioProjectId);
-        const saEmail = getStoredSaEmail(this.credentialService, studioProjectId);
+        const gcpProjectId = getStoredGcpProjectId(this.credentialService, structureProjectId);
+        const saEmail = getStoredSaEmail(this.credentialService, structureProjectId);
         if (!gcpProjectId || !saEmail) return { valid: false, message: 'No service account email stored.' };
         const saPath = `/v1/projects/-/serviceAccounts/${encodeURIComponent(saEmail)}`;
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
-            const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:service_account');
+            const token = await this.getAccessTokenForGcpOperations(structureProjectId, 'validate:service_account');
             await gcpRequest('GET', 'iam.googleapis.com', saPath, token);
             return { valid: true, message: `Service account ${saEmail} exists.` };
           } catch (err) {
             if (err instanceof GcpHttpError && err.statusCode === 404) return { valid: false, message: 'Service account not found in project.' };
             const toEnable = parseDisabledApiServiceName(err);
             if (toEnable && attempt === 0) {
-              const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:service_account:enable-api');
+              const token = await this.getAccessTokenForGcpOperations(structureProjectId, 'validate:service_account:enable-api');
               const enabled = await enableProjectService(gcpProjectId, token, toEnable);
               if (enabled) { await sleep(4500); continue; }
             }
@@ -499,20 +499,20 @@ export class GcpConnectionService implements GcpCredentialProvider {
         return { valid: false, message: 'Service account check failed after attempting to enable required GCP APIs. Retry sync in a minute.' };
       }
       case 'iam_binding': {
-        const gcpProjectId = getStoredGcpProjectId(this.credentialService, studioProjectId);
-        const saEmail = getStoredSaEmail(this.credentialService, studioProjectId);
+        const gcpProjectId = getStoredGcpProjectId(this.credentialService, structureProjectId);
+        const saEmail = getStoredSaEmail(this.credentialService, structureProjectId);
         if (!gcpProjectId || !saEmail) return { valid: false, message: 'No connection metadata for IAM check.' };
         const member = `serviceAccount:${saEmail}`;
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
-            const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:iam_binding');
+            const token = await this.getAccessTokenForGcpOperations(structureProjectId, 'validate:iam_binding');
             const missing = await findMissingProvisionerRoles(token, gcpProjectId, member);
             if (missing.length === 0) return { valid: true, message: `All provisioner roles bound for ${member}.` };
             return { valid: false, message: `Missing IAM bindings: ${missing.join(', ')}` };
           } catch (err) {
             const toEnable = parseDisabledApiServiceName(err);
             if (toEnable && attempt === 0) {
-              const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:iam_binding:enable-api');
+              const token = await this.getAccessTokenForGcpOperations(structureProjectId, 'validate:iam_binding:enable-api');
               const enabled = await enableProjectService(gcpProjectId, token, toEnable);
               if (enabled) { await sleep(4500); continue; }
             }
@@ -524,7 +524,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
         return { valid: false, message: 'IAM policy check failed after attempting to enable required GCP APIs. Retry sync in a minute.' };
       }
       case 'vault': {
-        const raw = getStoredSaKeyJson(this.credentialService, studioProjectId);
+        const raw = getStoredSaKeyJson(this.credentialService, structureProjectId);
         if (!raw) return { valid: false, message: 'No service_account_json stored.' };
         try {
           const parsed = JSON.parse(raw) as { type?: string };
@@ -547,10 +547,10 @@ export class GcpConnectionService implements GcpCredentialProvider {
   }
 
   async revertSteps(
-    studioProjectId: string,
+    structureProjectId: string,
     cascadeStepIds: GcpBootstrapPhaseId[],
   ): Promise<GcpStepRevertResult[]> {
-    this.ensureProjectExists(studioProjectId);
+    this.ensureProjectExists(structureProjectId);
     const toRun = new Set(cascadeStepIds);
     const results: GcpStepRevertResult[] = [];
 
@@ -559,15 +559,15 @@ export class GcpConnectionService implements GcpCredentialProvider {
     const needsGcpToken = toRun.has('iam_binding') || toRun.has('service_account') || toRun.has('gcp_project');
     if (needsGcpToken) {
       try {
-        accessToken = await this.getAccessTokenForGcpOperations(studioProjectId, 'revert');
+        accessToken = await this.getAccessTokenForGcpOperations(structureProjectId, 'revert');
       } catch (err) {
         tokenError = (err as Error).message;
       }
     }
 
-    const details = getStoredConnectionDetails(this.credentialService, studioProjectId);
-    const revertProjectId = details?.projectId ?? getStoredGcpProjectId(this.credentialService, studioProjectId);
-    const revertSaEmail = details?.serviceAccountEmail ?? getStoredSaEmail(this.credentialService, studioProjectId);
+    const details = getStoredConnectionDetails(this.credentialService, structureProjectId);
+    const revertProjectId = details?.projectId ?? getStoredGcpProjectId(this.credentialService, structureProjectId);
+    const revertSaEmail = details?.serviceAccountEmail ?? getStoredSaEmail(this.credentialService, structureProjectId);
 
     if (toRun.has('iam_binding')) {
       if (!accessToken) {
@@ -616,10 +616,10 @@ export class GcpConnectionService implements GcpCredentialProvider {
     const needsLocalCleanup = (toRun.has('vault') || toRun.has('oauth_consent')) && gcpApiAllSucceeded;
 
     if (needsLocalCleanup) {
-      const removed = deleteGcpCredentials(this.credentialService, studioProjectId);
-      const project = this.projectManager.getProject(studioProjectId);
+      const removed = deleteGcpCredentials(this.credentialService, structureProjectId);
+      const project = this.projectManager.getProject(structureProjectId);
       if (project.integrations.firebase) {
-        this.projectManager.updateIntegration(studioProjectId, 'firebase', {
+        this.projectManager.updateIntegration(structureProjectId, 'firebase', {
           status: 'pending',
           notes: 'Firebase/GCP connection disabled for this project.',
           config: { gcp_project_id: '', service_account_email: '', connected_by: '', credential_scope: 'project' },
@@ -647,10 +647,10 @@ export class GcpConnectionService implements GcpCredentialProvider {
   // GCP API helpers (used by adapters / gate resolvers)
   // ---------------------------------------------------------------------------
 
-  async ensureProjectForStudioProject(accessToken: string, studioProjectId: string): Promise<string> {
-    const existingId = getStoredGcpProjectId(this.credentialService, studioProjectId);
-    const gcpProjectId = existingId ?? buildStudioGcpProjectId(studioProjectId);
-    log.info('ensureProjectForStudioProject', { studioProjectId, gcpProjectId, existing: Boolean(existingId) });
+  async ensureProjectForStructureProject(accessToken: string, structureProjectId: string): Promise<string> {
+    const existingId = getStoredGcpProjectId(this.credentialService, structureProjectId);
+    const gcpProjectId = existingId ?? buildStructureGcpProjectId(structureProjectId);
+    log.info('ensureProjectForStructureProject', { structureProjectId, gcpProjectId, existing: Boolean(existingId) });
 
     if (existingId) {
       const status = await getGcpProjectStatus(accessToken, gcpProjectId);
@@ -661,17 +661,17 @@ export class GcpConnectionService implements GcpCredentialProvider {
       );
     }
 
-    const createResult = await createGcpProject(accessToken, gcpProjectId, `Studio ${studioProjectId}`);
+    const createResult = await createGcpProject(accessToken, gcpProjectId, `Structure ${structureProjectId}`);
     if (createResult === 'created' || createResult === 'already_exists') {
       await waitForProjectActive(accessToken, gcpProjectId);
-      storeGcpProjectId(this.credentialService, studioProjectId, gcpProjectId);
+      storeGcpProjectId(this.credentialService, structureProjectId, gcpProjectId);
       return gcpProjectId;
     }
 
-    const retryId = buildGcpProjectIdWithEntropy(studioProjectId);
-    await createGcpProject(accessToken, retryId, `Studio ${studioProjectId}`);
+    const retryId = buildGcpProjectIdWithEntropy(structureProjectId);
+    await createGcpProject(accessToken, retryId, `Structure ${structureProjectId}`);
     await waitForProjectActive(accessToken, retryId);
-    storeGcpProjectId(this.credentialService, studioProjectId, retryId);
+    storeGcpProjectId(this.credentialService, structureProjectId, retryId);
     return retryId;
   }
 
@@ -692,18 +692,18 @@ export class GcpConnectionService implements GcpCredentialProvider {
   }
 
   /**
-   * Deletes the GCP project linked to this studio project using the stored OAuth token.
+   * Deletes the GCP project linked to this structure project using the stored OAuth token.
    * Useful for cleaning up orphaned projects that were created under a different console account.
    */
-  async deleteLinkedGcpProject(studioProjectId: string): Promise<{ gcpProjectId: string }> {
-    this.ensureProjectExists(studioProjectId);
-    const gcpProjectId = getStoredGcpProjectId(this.credentialService, studioProjectId);
+  async deleteLinkedGcpProject(structureProjectId: string): Promise<{ gcpProjectId: string }> {
+    this.ensureProjectExists(structureProjectId);
+    const gcpProjectId = getStoredGcpProjectId(this.credentialService, structureProjectId);
     if (!gcpProjectId) {
-      throw new Error(`No GCP project linked to studio project "${studioProjectId}". Nothing to delete.`);
+      throw new Error(`No GCP project linked to structure project "${structureProjectId}". Nothing to delete.`);
     }
-    const accessToken = await this.getAccessTokenForGcpOperations(studioProjectId, 'delete-linked-project');
+    const accessToken = await this.getAccessTokenForGcpOperations(structureProjectId, 'delete-linked-project');
     await deleteGcpProject(accessToken, gcpProjectId);
-    log.info('deleted linked GCP project', { studioProjectId, gcpProjectId });
+    log.info('deleted linked GCP project', { structureProjectId, gcpProjectId });
     return { gcpProjectId };
   }
 
@@ -711,12 +711,12 @@ export class GcpConnectionService implements GcpCredentialProvider {
   // Private
   // ---------------------------------------------------------------------------
 
-  private async getUserOAuthAccessToken(studioProjectId: string): Promise<string | null> {
-    return this.oauthManager.getToken(this.gcpProvider, studioProjectId);
+  private async getUserOAuthAccessToken(structureProjectId: string): Promise<string | null> {
+    return this.oauthManager.getToken(this.gcpProvider, structureProjectId);
   }
 
-  private async getServiceAccountAccessToken(studioProjectId: string): Promise<string> {
-    const saJson = getStoredSaKeyJson(this.credentialService, studioProjectId);
+  private async getServiceAccountAccessToken(structureProjectId: string): Promise<string> {
+    const saJson = getStoredSaKeyJson(this.credentialService, structureProjectId);
     if (!saJson) throw new Error('No service account key stored. Cannot call GCP APIs for validate/revert.');
     let credentials: Record<string, unknown>;
     try { credentials = JSON.parse(saJson) as Record<string, unknown>; }
@@ -730,26 +730,26 @@ export class GcpConnectionService implements GcpCredentialProvider {
     return token;
   }
 
-  private async getAccessTokenForGcpOperations(studioProjectId: string, context?: string): Promise<string> {
-    const userToken = await this.getUserOAuthAccessToken(studioProjectId);
+  private async getAccessTokenForGcpOperations(structureProjectId: string, context?: string): Promise<string> {
+    const userToken = await this.getUserOAuthAccessToken(structureProjectId);
     if (userToken) {
       if (context) log.info('using user OAuth token', { context });
       return userToken;
     }
     if (context) log.warn('falling back to service account key', { context });
-    return this.getServiceAccountAccessToken(studioProjectId);
+    return this.getServiceAccountAccessToken(structureProjectId);
   }
 
-  private buildStepHandlerContext(studioProjectId: string): import('../provisioning/step-handler-registry.js').StepHandlerContext {
+  private buildStepHandlerContext(structureProjectId: string): import('../provisioning/step-handler-registry.js').StepHandlerContext {
     return {
-      projectId: studioProjectId,
+      projectId: structureProjectId,
       upstreamArtifacts: {},
       getToken: async (providerId: string) => {
-        if (providerId === 'gcp') return this.getAccessTokenForGcpOperations(studioProjectId, `step-handler:${providerId}`);
+        if (providerId === 'gcp') return this.getAccessTokenForGcpOperations(structureProjectId, `step-handler:${providerId}`);
         throw new Error(`No token provider for "${providerId}".`);
       },
       hasToken: (providerId: string) => {
-        if (providerId === 'gcp') return this.hasStoredUserOAuthRefreshToken(studioProjectId);
+        if (providerId === 'gcp') return this.hasStoredUserOAuthRefreshToken(structureProjectId);
         return false;
       },
       credentialService: this.credentialService,

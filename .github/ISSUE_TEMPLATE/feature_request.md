@@ -24,7 +24,7 @@ example workflow. Don't worry about implementation details.
 
 - [ ] New plugin / integration (which one?)
 - [ ] New module under an existing plugin
-- [ ] Studio UI change
+- [ ] Structure UI change
 - [ ] CLI change
 - [ ] Documentation
 - [ ] Other:

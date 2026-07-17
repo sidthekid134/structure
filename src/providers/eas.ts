@@ -144,13 +144,13 @@ function parseGithubHttpsRepo(url: string): { owner: string; repo: string } {
   return { owner: m[1]!, repo: m[2]! };
 }
 
-function studioEnvToExpoSlot(env: string): string {
+function structureEnvToExpoSlot(env: string): string {
   const normalized = env.trim().toLowerCase();
   if (normalized === 'development') return 'DEVELOPMENT';
   if (normalized === 'preview') return 'PREVIEW';
   if (normalized === 'production') return 'PRODUCTION';
   throw new AdapterError(
-    `Unsupported Studio environment "${env}". Expected development, preview, or production.`,
+    `Unsupported Structure environment "${env}". Expected development, preview, or production.`,
     'eas',
     'checkStep',
   );
@@ -558,11 +558,11 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
       state.resource_ids['project_id'] = projectId;
       state.completed_steps.push('create_project');
 
-      // Step 2: Mark each Studio environment on the Expo app (EAS env-var slots).
+      // Step 2: Mark each Structure environment on the Expo app (EAS env-var slots).
       for (const env of config.environments) {
         try {
           if (this.apiClient instanceof ExpoGraphqlEasApiClient) {
-            await this.apiClient.ensureStudioEasEnvironmentMarkerOnApp(projectId, env);
+            await this.apiClient.ensureStructureEasEnvironmentMarkerOnApp(projectId, env);
           } else {
             await this.apiClient.uploadEnvFile(projectId, env, {});
           }
@@ -624,12 +624,12 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
         if (!appId) {
           throw new AdapterError('Create the EAS project first (missing eas_project_id).', 'eas', 'executeStep');
         }
-        await expo.ensureStudioEasEnvironmentMarkerOnApp(appId, env);
+        await expo.ensureStructureEasEnvironmentMarkerOnApp(appId, env);
         return {
           status: 'completed',
           resourcesProduced: {},
           userPrompt:
-            'Studio recorded which EAS environment slot matches this Studio environment. You must still maintain `eas.json` build profiles (development / preview / production) in your app repository — Expo builds read that file, not Studio.',
+            'Structure recorded which EAS environment slot matches this Structure environment. You must still maintain `eas.json` build profiles (development / preview / production) in your app repository — Expo builds read that file, not Structure.',
         };
       }
       case 'eas:sync-runtime-env': {
@@ -786,7 +786,7 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
             repo,
             'eas.json',
             content,
-            'chore: add eas.json (Studio bootstrap)',
+            'chore: add eas.json (Structure bootstrap)',
           );
           written.push('eas.json');
           this.log.info('Wrote default eas.json to repo', {
@@ -833,7 +833,7 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
               repo,
               appConfigPath,
               working,
-              'chore: configure Expo app for EAS build (Studio)',
+              'chore: configure Expo app for EAS build (Structure)',
             );
             written.push(appConfigPath);
             this.log.info('Patched app.config for EAS build', { owner, repo, easProjectId, file: appConfigPath });
@@ -867,7 +867,7 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
                 repo,
                 'app.json',
                 working,
-                'chore: configure Expo app for EAS build (Studio)',
+                'chore: configure Expo app for EAS build (Structure)',
               );
               written.push('app.json');
               this.log.info('Patched app.json for EAS build', { owner, repo, easProjectId });
@@ -900,7 +900,7 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
         const bundleId = config.bundle_id?.trim();
         if (!appId || !bundleId) {
           throw new AdapterError(
-            'Missing eas_project_id or bundle_id. Ensure the Studio project has a bundle id and the EAS project exists.',
+            'Missing eas_project_id or bundle_id. Ensure the Structure project has a bundle id and the EAS project exists.',
             'eas',
             'executeStep',
           );
@@ -952,7 +952,7 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
         const pkg = (config.android_package ?? config.bundle_id)?.trim();
         if (!appId || !pkg) {
           throw new AdapterError(
-            'Missing eas_project_id or Android application id. Set the Studio project bundle / package id.',
+            'Missing eas_project_id or Android application id. Set the Structure project bundle / package id.',
             'eas',
             'executeStep',
           );
@@ -1065,7 +1065,7 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
           projectId,
           expected.map(([name]) => name),
         );
-        const expoSlot = studioEnvToExpoSlot(env);
+        const expoSlot = structureEnvToExpoSlot(env);
         const mismatched = expected.filter(([name, value]) => {
           const normalized = value.trim();
           const slotVars = vars.filter(
@@ -1135,7 +1135,7 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
           projectId,
           expected.map(([name]) => name),
         );
-        const slots = config.environments.map((env) => studioEnvToExpoSlot(env));
+        const slots = config.environments.map((env) => structureEnvToExpoSlot(env));
         const mismatched = expected.filter(([name, value]) => {
           const normalized = value.trim();
           const envVars = vars.filter((v) => v.name === name);
@@ -1324,7 +1324,7 @@ export class EasAdapter implements ProviderAdapter<EasManifestConfig> {
           if (diff.conflict_type === 'missing_in_live' && diff.field.startsWith('environment.')) {
             const env = diff.field.replace('environment.', '') as Environment;
             if (this.apiClient instanceof ExpoGraphqlEasApiClient) {
-              await this.apiClient.ensureStudioEasEnvironmentMarkerOnApp(projectId, env);
+              await this.apiClient.ensureStructureEasEnvironmentMarkerOnApp(projectId, env);
             } else {
               await this.apiClient.uploadEnvFile(projectId, env, {});
             }

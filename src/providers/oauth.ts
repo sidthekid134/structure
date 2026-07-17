@@ -94,7 +94,7 @@ export class StubOAuthApiClient implements OAuthApiClient {
     webClientSecret: string;
   }> {
     throw new Error(
-      'StubOAuthApiClient cannot resolve real OAuth client IDs. Configure OAuthAdapter with StudioOAuthApiClient.',
+      'StubOAuthApiClient cannot resolve real OAuth client IDs. Configure OAuthAdapter with StructureOAuthApiClient.',
     );
   }
 
@@ -124,7 +124,7 @@ export class StubOAuthApiClient implements OAuthApiClient {
     _context?: StepContext,
   ): Promise<void> {
     throw new Error(
-      'StubOAuthApiClient cannot wire Firebase auth providers. Configure StudioOAuthApiClient.',
+      'StubOAuthApiClient cannot wire Firebase auth providers. Configure StructureOAuthApiClient.',
     );
   }
 
@@ -140,7 +140,7 @@ export class StubOAuthApiClient implements OAuthApiClient {
     _context?: StepContext,
   ): Promise<void> {
     throw new Error(
-      'StubOAuthApiClient cannot configure Apple Sign-In. Configure StudioOAuthApiClient.',
+      'StubOAuthApiClient cannot configure Apple Sign-In. Configure StructureOAuthApiClient.',
     );
   }
 
@@ -149,7 +149,7 @@ export class StubOAuthApiClient implements OAuthApiClient {
     _context?: StepContext,
   ): Promise<string[]> {
     throw new Error(
-      'StubOAuthApiClient cannot read Firebase auth provider state. Configure StudioOAuthApiClient.',
+      'StubOAuthApiClient cannot read Firebase auth provider state. Configure StructureOAuthApiClient.',
     );
   }
 
@@ -159,7 +159,7 @@ export class StubOAuthApiClient implements OAuthApiClient {
     _context?: StepContext,
   ): Promise<void> {
     throw new Error(
-      'StubOAuthApiClient cannot configure redirect domains. Configure StudioOAuthApiClient.',
+      'StubOAuthApiClient cannot configure redirect domains. Configure StructureOAuthApiClient.',
     );
   }
 
@@ -168,15 +168,15 @@ export class StubOAuthApiClient implements OAuthApiClient {
     _context?: StepContext,
   ): Promise<string[]> {
     throw new Error(
-      'StubOAuthApiClient cannot read Firebase authorized domains. Configure StudioOAuthApiClient.',
+      'StubOAuthApiClient cannot read Firebase authorized domains. Configure StructureOAuthApiClient.',
     );
   }
 }
 
-export class StudioOAuthApiClient implements OAuthApiClient {
+export class StructureOAuthApiClient implements OAuthApiClient {
   constructor(
     private readonly getAccessTokenForProject: (
-      studioProjectId: string,
+      structureProjectId: string,
       reason: string,
     ) => Promise<string>,
   ) {}
@@ -190,14 +190,14 @@ export class StudioOAuthApiClient implements OAuthApiClient {
     webClientId: string;
     webClientSecret: string;
   }> {
-    const studioProjectId = context.projectId;
+    const structureProjectId = context.projectId;
     const gcpProjectId =
       context.upstreamResources['gcp_project_id']?.trim() ||
       context.upstreamResources['firebase_project_id']?.trim() ||
-      (await context.vaultRead(`${studioProjectId}/gcp_project_id`))?.trim();
+      (await context.vaultRead(`${structureProjectId}/gcp_project_id`))?.trim();
     if (!gcpProjectId) {
       throw new Error(
-        `Missing gcp_project_id for "${studioProjectId}". Complete "Create GCP Project" before registering OAuth client IDs.`,
+        `Missing gcp_project_id for "${structureProjectId}". Complete "Create GCP Project" before registering OAuth client IDs.`,
       );
     }
 
@@ -206,14 +206,14 @@ export class StudioOAuthApiClient implements OAuthApiClient {
     // (and vice versa).
     const iosAppId =
       context.upstreamResources['firebase_ios_app_id']?.trim() ||
-      (await context.vaultRead(`${studioProjectId}/firebase_ios_app_id`))?.trim() ||
+      (await context.vaultRead(`${structureProjectId}/firebase_ios_app_id`))?.trim() ||
       '';
     const androidAppId =
       context.upstreamResources['firebase_android_app_id']?.trim() ||
-      (await context.vaultRead(`${studioProjectId}/firebase_android_app_id`))?.trim() ||
+      (await context.vaultRead(`${structureProjectId}/firebase_android_app_id`))?.trim() ||
       '';
     const token = await this.getAccessTokenForProject(
-      studioProjectId,
+      structureProjectId,
       'oauth:register-oauth-client-ids',
     );
 
@@ -268,7 +268,7 @@ export class StudioOAuthApiClient implements OAuthApiClient {
     context?: StepContext,
   ): Promise<{ clientId: string; clientSecret: string }> {
     if (provider !== 'google') {
-      throw new Error(`Studio OAuth client creation is only implemented for provider "${provider}".`);
+      throw new Error(`Structure OAuth client creation is only implemented for provider "${provider}".`);
     }
     if (!context) {
       throw new Error('StepContext is required to resolve OAuth client IDs for Google.');
@@ -292,11 +292,11 @@ export class StudioOAuthApiClient implements OAuthApiClient {
     context?: StepContext,
   ): Promise<void> {
     if (provider === 'github') {
-      throw new Error('GitHub auth wiring is not implemented in StudioOAuthApiClient.');
+      throw new Error('GitHub auth wiring is not implemented in StructureOAuthApiClient.');
     }
-    const studioProjectId = context?.projectId?.trim() || firebaseProjectId;
+    const structureProjectId = context?.projectId?.trim() || firebaseProjectId;
     const token = await this.getAccessTokenForProject(
-      studioProjectId,
+      structureProjectId,
       'oauth:wire-firebase-auth-provider',
     );
     const firebaseProvider = provider === 'google' ? 'google.com' : 'apple.com';
@@ -314,9 +314,9 @@ export class StudioOAuthApiClient implements OAuthApiClient {
     },
     context?: StepContext,
   ): Promise<void> {
-    const studioProjectId = context?.projectId?.trim() || firebaseProjectId;
+    const structureProjectId = context?.projectId?.trim() || firebaseProjectId;
     const token = await this.getAccessTokenForProject(
-      studioProjectId,
+      structureProjectId,
       'oauth:configure-apple-sign-in',
     );
     await configureAppleSignInProvider(
@@ -334,9 +334,9 @@ export class StudioOAuthApiClient implements OAuthApiClient {
     firebaseProjectId: string,
     context?: StepContext,
   ): Promise<string[]> {
-    const studioProjectId = context?.projectId?.trim() || firebaseProjectId;
+    const structureProjectId = context?.projectId?.trim() || firebaseProjectId;
     const token = await this.getAccessTokenForProject(
-      studioProjectId,
+      structureProjectId,
       'oauth:get-firebase-auth-providers',
     );
     const config = await getFirebaseAuthConfig(token, firebaseProjectId) as {
@@ -364,9 +364,9 @@ export class StudioOAuthApiClient implements OAuthApiClient {
     domains: string[],
     context?: StepContext,
   ): Promise<void> {
-    const studioProjectId = context?.projectId?.trim() || firebaseProjectId;
+    const structureProjectId = context?.projectId?.trim() || firebaseProjectId;
     const token = await this.getAccessTokenForProject(
-      studioProjectId,
+      structureProjectId,
       'oauth:configure-redirect-uris',
     );
     for (const domain of domains) {
@@ -378,9 +378,9 @@ export class StudioOAuthApiClient implements OAuthApiClient {
     firebaseProjectId: string,
     context?: StepContext,
   ): Promise<string[]> {
-    const studioProjectId = context?.projectId?.trim() || firebaseProjectId;
+    const structureProjectId = context?.projectId?.trim() || firebaseProjectId;
     const token = await this.getAccessTokenForProject(
-      studioProjectId,
+      structureProjectId,
       'oauth:get-authorized-domains',
     );
     const config = await getFirebaseAuthConfig(token, firebaseProjectId) as {
@@ -572,7 +572,7 @@ export class OAuthAdapter implements ProviderAdapter<OAuthManifestConfig> {
         }
         if (!this.apiClient.resolveGoogleClientIds) {
           throw new AdapterError(
-            `OAuthAdapter is missing a real OAuth API client. Configure StudioOAuthApiClient for ${stepKey}.`,
+            `OAuthAdapter is missing a real OAuth API client. Configure StructureOAuthApiClient for ${stepKey}.`,
             'oauth',
             'executeStep',
           );
@@ -699,7 +699,7 @@ export class OAuthAdapter implements ProviderAdapter<OAuthManifestConfig> {
       {
         if (!this.apiClient.configureRedirectDomains || !this.apiClient.getAuthorizedDomains) {
           throw new AdapterError(
-            'OAuthAdapter is missing redirect-domain support. Configure StudioOAuthApiClient for oauth:configure-redirect-uris.',
+            'OAuthAdapter is missing redirect-domain support. Configure StructureOAuthApiClient for oauth:configure-redirect-uris.',
             'oauth',
             'executeStep',
           );
@@ -764,7 +764,7 @@ export class OAuthAdapter implements ProviderAdapter<OAuthManifestConfig> {
       {
         if (!this.apiClient.configureRedirectDomains || !this.apiClient.getAuthorizedDomains) {
           throw new AdapterError(
-            'OAuthAdapter is missing redirect-domain support. Configure StudioOAuthApiClient for oauth:link-deep-link-domain.',
+            'OAuthAdapter is missing redirect-domain support. Configure StructureOAuthApiClient for oauth:link-deep-link-domain.',
             'oauth',
             'executeStep',
           );
@@ -919,7 +919,7 @@ export class OAuthAdapter implements ProviderAdapter<OAuthManifestConfig> {
             status: 'failed',
             resourcesProduced: {},
             error:
-              'OAuthAdapter is missing authorized-domain read support. Configure StudioOAuthApiClient for oauth:configure-redirect-uris.',
+              'OAuthAdapter is missing authorized-domain read support. Configure StructureOAuthApiClient for oauth:configure-redirect-uris.',
           };
         }
         const gcpProjectId =
@@ -991,7 +991,7 @@ export class OAuthAdapter implements ProviderAdapter<OAuthManifestConfig> {
             status: 'failed',
             resourcesProduced: {},
             error:
-              'OAuthAdapter is missing authorized-domain read support. Configure StudioOAuthApiClient for oauth:link-deep-link-domain.',
+              'OAuthAdapter is missing authorized-domain read support. Configure StructureOAuthApiClient for oauth:link-deep-link-domain.',
           };
         }
         const gcpProjectId =

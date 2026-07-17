@@ -1,5 +1,5 @@
 import { Activity, Download, Layers, Plus, User } from 'lucide-react';
-import type { ProjectSummary, StudioView } from './types';
+import type { ProjectSummary, StructureView } from './types';
 
 export function Sidebar({
   projects,
@@ -12,9 +12,9 @@ export function Sidebar({
 }: {
   projects: ProjectSummary[];
   activeProjectId: string | null;
-  view: StudioView;
+  view: StructureView;
   onSelectProject: (projectId: string) => void;
-  onViewChange: (view: StudioView) => void;
+  onViewChange: (view: StructureView) => void;
   onShowCreate: () => void;
   onShowImport: () => void;
 }) {
@@ -97,7 +97,7 @@ export function Sidebar({
             <User size={14} />
           </div>
           <div className="min-w-0">
-            <p className="text-xs font-semibold truncate">Studio Operator</p>
+            <p className="text-xs font-semibold truncate">Structure Operator</p>
             <p className="text-[10px] text-muted-foreground">Admin Access</p>
           </div>
         </div>

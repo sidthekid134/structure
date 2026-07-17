@@ -1,14 +1,14 @@
 import envPaths from 'env-paths';
 
 /**
- * Resolve the Studio persistent data directory.
+ * Resolve the Structure persistent data directory.
  *
  * Priority:
  * 1) STRUCTURE_STORE_DIR explicit override
  * 2) STRUCTURE_PROFILE namespaced app-data directory
  * 3) default app-data directory
  */
-export function resolveStudioStoreDir(env: NodeJS.ProcessEnv): string {
+export function resolveStructureStoreDir(env: NodeJS.ProcessEnv): string {
   const explicit = env['STRUCTURE_STORE_DIR']?.trim();
   if (explicit) return explicit;
 

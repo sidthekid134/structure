@@ -1,6 +1,6 @@
 import type * as React from 'react';
 
-export type StudioView =
+export type StructureView =
   | 'overview'
   | 'project'
   | 'project-setup'
@@ -406,7 +406,7 @@ export interface ModuleDefinition {
   label: string;
   description: string;
   provider: string;
-  /** Studio: group under a capability heading in the module wizard. */
+  /** Structure: group under a capability heading in the module wizard. */
   functionGroupId: ModuleFunctionGroupId;
   requiredModules: ModuleId[];
   optionalModules: ModuleId[];
@@ -465,7 +465,7 @@ export interface RegistryPlugin {
   id: string;
   name: string;
   provider: string;
-  providerId: ProviderId | 'studio' | 'other';
+  providerId: ProviderId | 'structure' | 'other';
   description: string;
   categories: string[];
   version: string;
@@ -640,7 +640,7 @@ export interface ProjectDetail {
 }
 
 export interface ProjectMigrationBundle {
-  format: 'studio-project-migration';
+  format: 'structure-project-migration';
   version: 1;
   projectId: string;
   encryptedPayload: string;

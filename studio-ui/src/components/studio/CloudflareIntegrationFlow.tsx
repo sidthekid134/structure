@@ -37,7 +37,7 @@ interface CloudflareStep {
 const STEPS: CloudflareStep[] = [
   { id: 'token-overview', title: 'Open API Tokens', subtitle: 'Start in Cloudflare dashboard' },
   { id: 'token-permissions', title: 'Set permissions', subtitle: 'Use least-privilege zone access' },
-  { id: 'paste-token', title: 'Paste token', subtitle: 'Connect in Studio organization scope' },
+  { id: 'paste-token', title: 'Paste token', subtitle: 'Connect in Structure organization scope' },
   { id: 'review', title: 'Review and connect', subtitle: 'Validate and store token' },
 ];
 
@@ -310,14 +310,14 @@ function StepBody({
           instructions={[
             'Sign in to Cloudflare Dashboard using an account with permission to create API tokens.',
             'Open My Profile -> API Tokens.',
-            'Click Create Token to start a new token for Studio organization provisioning.',
+            'Click Create Token to start a new token for Structure organization provisioning.',
           ]}
-          note="This token is the organization-level default in Studio. Individual projects can provide their own scoped Cloudflare token override in Setup when stricter zone isolation is needed."
+          note="This token is the organization-level default in Structure. Individual projects can provide their own scoped Cloudflare token override in Setup when stricter zone isolation is needed."
         >
           <div className="grid gap-2">
             <CopyableValue
               label="Copyable token name"
-              value="Studio Org Default Cloudflare Token"
+              value="Structure Org Default Cloudflare Token"
             />
             <CopyableValue
               label="Copyable token verify command"
@@ -338,7 +338,7 @@ function StepBody({
             'Use either the Edit zone DNS template or Custom token.',
             'In each permission row, set the first dropdown to Zone (not Account).',
             'Add the exact Zone permission rows listed below.',
-            'Restrict Zone Resources to apex zones Studio should manage.',
+            'Restrict Zone Resources to apex zones Structure should manage.',
             'For subdomain apps (for example flow.example.com), include the root zone (example.com).',
             'Create token and copy the secret immediately (Cloudflare only shows it once).',
           ]}
@@ -367,7 +367,7 @@ function StepBody({
             />
             <CopyableValue
               label="Per-project override naming convention"
-              value="Studio Project Cloudflare Token - <project-slug>"
+              value="Structure Project Cloudflare Token - <project-slug>"
             />
           </div>
         </StepShell>
@@ -378,7 +378,7 @@ function StepBody({
           step={step}
           instructions={[
             'Paste the Cloudflare API token generated in the previous step.',
-            'Studio verifies token validity before persisting it.',
+            'Structure verifies token validity before persisting it.',
             'If verification fails, re-check permission groups and zone resource scope.',
             'If you later add a project-scoped token in Setup, that token overrides this org default for that project.',
           ]}
@@ -411,7 +411,7 @@ function StepBody({
             <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Final check</p>
             <h3 className="text-base font-bold tracking-tight mt-0.5">Review and connect</h3>
             <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-              Studio stores the token in the encrypted local vault at organization scope so Cloudflare DNS and zone
+              Structure stores the token in the encrypted local vault at organization scope so Cloudflare DNS and zone
               steps can run across projects.
             </p>
           </div>

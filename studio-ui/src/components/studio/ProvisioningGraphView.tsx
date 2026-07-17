@@ -50,7 +50,7 @@ import { ProviderLogo, providerBrandColor } from './ProviderLogo';
 
 // ---------------------------------------------------------------------------
 // Provider metadata — sourced from /api/plugin-catalog (plan.providerDisplayMeta).
-// Studio Core no longer hardcodes provider colors; new providers/integrations
+// Structure Core no longer hardcodes provider colors; new providers/integrations
 // pick up rendering automatically when the backend registers them.
 // ---------------------------------------------------------------------------
 

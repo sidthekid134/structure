@@ -230,7 +230,7 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
         key: 'provisioner_service_account_key',
         label: 'Provisioner Service Account Key',
         description: 'JSON key generated once and stored in the encrypted local vault.',
-        naming: '<studio-project-id>/service_account_json',
+        naming: '<structure-project-id>/service_account_json',
       },
     ],
   },
@@ -250,7 +250,7 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
       {
         key: 'github_identity',
         label: 'GitHub Identity Sync',
-        description: 'Studio verifies username and org memberships for automation context.',
+        description: 'Structure verifies username and org memberships for automation context.',
         naming: 'credential_vault/github::*',
       },
     ],
@@ -278,7 +278,7 @@ export const PROVIDER_INTEGRATION_BLUEPRINTS: Readonly<
       {
         key: 'expo_identity',
         label: 'Expo Identity Sync',
-        description: 'Studio verifies account identity and available account memberships.',
+        description: 'Structure verifies account identity and available account memberships.',
         naming: 'credential_vault/eas::*',
       },
     ],

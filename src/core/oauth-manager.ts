@@ -434,7 +434,7 @@ export class OAuthManager {
     const icon = success ? '&#10003;' : '&#10007;';
     return `<!DOCTYPE html>
 <html>
-<head><title>Studio — Authorization</title></head>
+<head><title>Structure — Authorization</title></head>
 <body style="font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#fafafa;">
   <div style="text-align:center;max-width:400px;padding:2rem;">
     <div style="font-size:3rem;color:${color};margin-bottom:1rem;">${icon}</div>

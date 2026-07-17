@@ -12,7 +12,7 @@ const EXPO_GRAPHQL_URL =
     : 'https://api.expo.dev/graphql';
 
 const CURRENT_ACTOR_QUERY = `
-  query StudioCurrentActor {
+  query StructureCurrentActor {
     meActor {
       __typename
       accounts {
@@ -24,7 +24,7 @@ const CURRENT_ACTOR_QUERY = `
 `;
 
 const APP_BY_FULL_NAME_QUERY = `
-  query StudioAppByFullName($fullName: String!) {
+  query StructureAppByFullName($fullName: String!) {
     app {
       byFullName(fullName: $fullName) {
         id
@@ -34,7 +34,7 @@ const APP_BY_FULL_NAME_QUERY = `
 `;
 
 const CREATE_APP_MUTATION = `
-  mutation StudioCreateApp($appInput: AppInput!) {
+  mutation StructureCreateApp($appInput: AppInput!) {
     app {
       createApp(appInput: $appInput) {
         id
@@ -44,7 +44,7 @@ const CREATE_APP_MUTATION = `
 `;
 
 const SCHEDULE_APP_DELETION_MUTATION = `
-  mutation StudioScheduleAppDeletion($appId: ID!) {
+  mutation StructureScheduleAppDeletion($appId: ID!) {
     app {
       scheduleAppDeletion(appId: $appId) {
         id
@@ -54,7 +54,7 @@ const SCHEDULE_APP_DELETION_MUTATION = `
 `;
 
 const APP_BY_ID_FOR_AUTOMATION = `
-  query StudioAppByIdAutomation($appId: String!) {
+  query StructureAppByIdAutomation($appId: String!) {
     app {
       byId(appId: $appId) {
         id
@@ -81,7 +81,7 @@ const APP_BY_ID_FOR_AUTOMATION = `
 `;
 
 const ACCOUNT_GITHUB_INSTALLATIONS = `
-  query StudioAccountGithubInstallations($accountId: String!) {
+  query StructureAccountGithubInstallations($accountId: String!) {
     account {
       byId(accountId: $accountId) {
         id
@@ -99,7 +99,7 @@ const ACCOUNT_GITHUB_INSTALLATIONS = `
 `;
 
 const ACCOUNT_APPLE_IDS = `
-  query StudioAccountAppleAppIdentifiers($accountId: String!) {
+  query StructureAccountAppleAppIdentifiers($accountId: String!) {
     account {
       byId(accountId: $accountId) {
         appleAppIdentifiers {
@@ -112,7 +112,7 @@ const ACCOUNT_APPLE_IDS = `
 `;
 
 const ACCOUNT_ASC_KEYS = `
-  query StudioAccountAscKeys($accountId: String!) {
+  query StructureAccountAscKeys($accountId: String!) {
     account {
       byId(accountId: $accountId) {
         appStoreConnectApiKeys {
@@ -126,7 +126,7 @@ const ACCOUNT_ASC_KEYS = `
 `;
 
 const CREATE_GITHUB_REPO_LINK = `
-  mutation StudioCreateGitHubRepository($data: CreateGitHubRepositoryInput!) {
+  mutation StructureCreateGitHubRepository($data: CreateGitHubRepositoryInput!) {
     githubRepository {
       createGitHubRepository(githubRepositoryData: $data) {
         id
@@ -136,7 +136,7 @@ const CREATE_GITHUB_REPO_LINK = `
 `;
 
 const CREATE_ENV_VAR_FOR_APP = `
-  mutation StudioCreateEnvVarForApp($appId: ID!, $input: CreateEnvironmentVariableInput!) {
+  mutation StructureCreateEnvVarForApp($appId: ID!, $input: CreateEnvironmentVariableInput!) {
     environmentVariable {
       createEnvironmentVariableForApp(appId: $appId, environmentVariableData: $input) {
         id
@@ -147,7 +147,7 @@ const CREATE_ENV_VAR_FOR_APP = `
 `;
 
 const APP_ENV_VARS_BY_NAME = `
-  query StudioAppEnvVarsByName($appId: String!, $filterNames: [String!]) {
+  query StructureAppEnvVarsByName($appId: String!, $filterNames: [String!]) {
     app {
       byId(appId: $appId) {
         id
@@ -163,7 +163,7 @@ const APP_ENV_VARS_BY_NAME = `
 `;
 
 const DELETE_ENV_VAR = `
-  mutation StudioDeleteEnvVar($id: ID!) {
+  mutation StructureDeleteEnvVar($id: ID!) {
     environmentVariable {
       deleteEnvironmentVariable(id: $id) {
         id
@@ -173,7 +173,7 @@ const DELETE_ENV_VAR = `
 `;
 
 const CREATE_ASC_API_KEY = `
-  mutation StudioCreateAscApiKey($accountId: ID!, $input: AppStoreConnectApiKeyInput!) {
+  mutation StructureCreateAscApiKey($accountId: ID!, $input: AppStoreConnectApiKeyInput!) {
     appStoreConnectApiKey {
       createAppStoreConnectApiKey(accountId: $accountId, appStoreConnectApiKeyInput: $input) {
         id
@@ -183,7 +183,7 @@ const CREATE_ASC_API_KEY = `
 `;
 
 const CREATE_IOS_APP_CREDENTIALS = `
-  mutation StudioCreateIosAppCredentials(
+  mutation StructureCreateIosAppCredentials(
     $appId: ID!
     $appleAppIdentifierId: ID!
     $input: IosAppCredentialsInput!
@@ -201,7 +201,7 @@ const CREATE_IOS_APP_CREDENTIALS = `
 `;
 
 const SET_ASC_FOR_IOS_SUBMIT = `
-  mutation StudioSetAscForIosSubmit($iosAppCredentialsId: ID!, $ascApiKeyId: ID!) {
+  mutation StructureSetAscForIosSubmit($iosAppCredentialsId: ID!, $ascApiKeyId: ID!) {
     iosAppCredentials {
       setAppStoreConnectApiKeyForSubmissions(id: $iosAppCredentialsId, ascApiKeyId: $ascApiKeyId) {
         id
@@ -211,7 +211,7 @@ const SET_ASC_FOR_IOS_SUBMIT = `
 `;
 
 const CREATE_GOOGLE_SA_KEY = `
-  mutation StudioCreateGoogleServiceAccountKey($accountId: ID!, $input: GoogleServiceAccountKeyInput!) {
+  mutation StructureCreateGoogleServiceAccountKey($accountId: ID!, $input: GoogleServiceAccountKeyInput!) {
     googleServiceAccountKey {
       createGoogleServiceAccountKey(accountId: $accountId, googleServiceAccountKeyInput: $input) {
         id
@@ -221,7 +221,7 @@ const CREATE_GOOGLE_SA_KEY = `
 `;
 
 const CREATE_ANDROID_APP_CREDENTIALS = `
-  mutation StudioCreateAndroidAppCredentials(
+  mutation StructureCreateAndroidAppCredentials(
     $appId: ID!
     $applicationIdentifier: String!
     $input: AndroidAppCredentialsInput!
@@ -239,7 +239,7 @@ const CREATE_ANDROID_APP_CREDENTIALS = `
 `;
 
 const SET_ANDROID_SA_FOR_SUBMIT = `
-  mutation StudioSetAndroidSaForSubmit($androidCredentialsId: ID!, $googleServiceAccountKeyId: ID!) {
+  mutation StructureSetAndroidSaForSubmit($androidCredentialsId: ID!, $googleServiceAccountKeyId: ID!) {
     androidAppCredentials {
       setGoogleServiceAccountKeyForSubmissions(
         id: $androidCredentialsId
@@ -262,7 +262,7 @@ const SET_ANDROID_SA_FOR_SUBMIT = `
 // upgrade @expo/apple-utils alongside this file.
 
 const APPLE_TEAM_BY_IDENTIFIER_QUERY = `
-  query StudioAppleTeamByIdentifier($accountId: ID!, $appleTeamIdentifier: String!) {
+  query StructureAppleTeamByIdentifier($accountId: ID!, $appleTeamIdentifier: String!) {
     appleTeam {
       byAppleTeamIdentifier(accountId: $accountId, identifier: $appleTeamIdentifier) {
         id
@@ -272,7 +272,7 @@ const APPLE_TEAM_BY_IDENTIFIER_QUERY = `
 `;
 
 const CREATE_APPLE_TEAM_MUTATION = `
-  mutation StudioCreateAppleTeam($appleTeamInput: AppleTeamInput!, $accountId: ID!) {
+  mutation StructureCreateAppleTeam($appleTeamInput: AppleTeamInput!, $accountId: ID!) {
     appleTeam {
       createAppleTeam(appleTeamInput: $appleTeamInput, accountId: $accountId) {
         id
@@ -282,7 +282,7 @@ const CREATE_APPLE_TEAM_MUTATION = `
 `;
 
 const APPLE_APP_IDENTIFIER_BY_BUNDLE_ID_QUERY = `
-  query StudioAppleAppIdentifierByBundle($accountName: String!, $bundleIdentifier: String!) {
+  query StructureAppleAppIdentifierByBundle($accountName: String!, $bundleIdentifier: String!) {
     account {
       byName(accountName: $accountName) {
         id
@@ -296,7 +296,7 @@ const APPLE_APP_IDENTIFIER_BY_BUNDLE_ID_QUERY = `
 `;
 
 const CREATE_APPLE_APP_IDENTIFIER_MUTATION = `
-  mutation StudioCreateAppleAppIdentifier(
+  mutation StructureCreateAppleAppIdentifier(
     $appleAppIdentifierInput: AppleAppIdentifierInput!
     $accountId: ID!
   ) {
@@ -312,7 +312,7 @@ const CREATE_APPLE_APP_IDENTIFIER_MUTATION = `
 `;
 
 const IOS_APP_BUILD_CREDENTIALS_QUERY = `
-  query StudioIosBuildCredsByAppleIdentifier(
+  query StructureIosBuildCredsByAppleIdentifier(
     $appId: String!
     $appleAppIdentifierId: String!
     $iosDistributionType: IosDistributionType
@@ -341,7 +341,7 @@ const IOS_APP_BUILD_CREDENTIALS_QUERY = `
 `;
 
 const CREATE_APPLE_DIST_CERT_MUTATION = `
-  mutation StudioCreateAppleDistCert(
+  mutation StructureCreateAppleDistCert(
     $appleDistributionCertificateInput: AppleDistributionCertificateInput!
     $accountId: ID!
   ) {
@@ -357,7 +357,7 @@ const CREATE_APPLE_DIST_CERT_MUTATION = `
 `;
 
 const CREATE_APPLE_PROVISIONING_PROFILE_MUTATION = `
-  mutation StudioCreateAppleProvisioningProfile(
+  mutation StructureCreateAppleProvisioningProfile(
     $appleProvisioningProfileInput: AppleProvisioningProfileInput!
     $accountId: ID!
     $appleAppIdentifierId: ID!
@@ -375,7 +375,7 @@ const CREATE_APPLE_PROVISIONING_PROFILE_MUTATION = `
 `;
 
 const CREATE_IOS_APP_BUILD_CREDS_MUTATION = `
-  mutation StudioCreateIosAppBuildCreds(
+  mutation StructureCreateIosAppBuildCreds(
     $iosAppBuildCredentialsInput: IosAppBuildCredentialsInput!
     $iosAppCredentialsId: ID!
   ) {
@@ -391,7 +391,7 @@ const CREATE_IOS_APP_BUILD_CREDS_MUTATION = `
 `;
 
 const SET_DIST_CERT_ON_BUILD_CREDS_MUTATION = `
-  mutation StudioSetDistCertOnBuildCreds(
+  mutation StructureSetDistCertOnBuildCreds(
     $iosAppBuildCredentialsId: ID!
     $distributionCertificateId: ID!
   ) {
@@ -407,7 +407,7 @@ const SET_DIST_CERT_ON_BUILD_CREDS_MUTATION = `
 `;
 
 const SET_PROVISIONING_PROFILE_ON_BUILD_CREDS_MUTATION = `
-  mutation StudioSetProvisioningProfileOnBuildCreds(
+  mutation StructureSetProvisioningProfileOnBuildCreds(
     $iosAppBuildCredentialsId: ID!
     $provisioningProfileId: ID!
   ) {
@@ -473,7 +473,7 @@ async function expoGraphqlRequest<T>(token: string, query: string, variables: Re
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
       // Some CDNs/API gateways treat missing UA as bot traffic.
-      'User-Agent': 'StructureStudio/1.0 (EAS provisioning)',
+      'User-Agent': 'Structure/1.0 (EAS provisioning)',
     },
     body: JSON.stringify({ query, variables }),
   });
@@ -515,21 +515,21 @@ function isAppNotFoundGraphqlError(err: unknown): boolean {
   );
 }
 
-/** Maps Studio plan environment names to Expo EAS env-var slot names (GraphQL scalar). */
-function studioEnvironmentToExpoVariableEnvironments(studioEnv: string): string[] {
-  const e = studioEnv.toLowerCase();
+/** Maps Structure plan environment names to Expo EAS env-var slot names (GraphQL scalar). */
+function structureEnvironmentToExpoVariableEnvironments(structureEnv: string): string[] {
+  const e = structureEnv.toLowerCase();
   if (e === 'development') return ['DEVELOPMENT'];
   if (e === 'preview') return ['PREVIEW'];
   if (e === 'production') return ['PRODUCTION'];
   throw new Error(
-    `Unsupported Studio environment "${studioEnv}". Supported environments: development, preview, production.`,
+    `Unsupported Structure environment "${structureEnv}". Supported environments: development, preview, production.`,
   );
 }
 
-function studioEnvironmentsToExpoVariableEnvironments(studioEnvironments: string[]): string[] {
+function structureEnvironmentsToExpoVariableEnvironments(structureEnvironments: string[]): string[] {
   const out: string[] = [];
-  for (const env of studioEnvironments) {
-    const mapped = studioEnvironmentToExpoVariableEnvironments(env);
+  for (const env of structureEnvironments) {
+    const mapped = structureEnvironmentToExpoVariableEnvironments(env);
     for (const slot of mapped) {
       if (!out.includes(slot)) out.push(slot);
     }
@@ -563,7 +563,7 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     if (accounts.length > 1) {
       throw new Error(
         `Multiple Expo accounts are linked to this token (${accounts.map((a) => a.name).join(', ')}). ` +
-        'Set the Expo account / org slug on this Studio project so EAS knows which account should own the app.',
+        'Set the Expo account / org slug on this Structure project so EAS knows which account should own the app.',
       );
     }
     return { accountId: accounts[0]!.id, accountName: accounts[0]!.name };
@@ -642,7 +642,7 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
       throw new Error(`Expo app "${input.expoAppId}" was not found for this token.`);
     }
     if (app.ownerAccount.id !== accountId) {
-      throw new Error('Expo app owner account does not match the configured Expo organization for this Studio project.');
+      throw new Error('Expo app owner account does not match the configured Expo organization for this Structure project.');
     }
     const linked = app.githubRepository;
     return !!(
@@ -716,13 +716,13 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
   }
 
   /**
-   * Creates a non-secret EAS environment variable marking which Studio environment this Expo build channel maps to.
+   * Creates a non-secret EAS environment variable marking which Structure environment this Expo build channel maps to.
    * Full `eas.json` build profiles must still live in the app repository (or use Expo "Configure EAS" from the dashboard).
    */
-  async ensureStudioEasEnvironmentMarkerOnApp(expoAppId: string, studioEnvironment: string): Promise<void> {
-    const expoSlot = studioEnvironmentToExpoVariableEnvironments(studioEnvironment);
+  async ensureStructureEasEnvironmentMarkerOnApp(expoAppId: string, structureEnvironment: string): Promise<void> {
+    const expoSlot = structureEnvironmentToExpoVariableEnvironments(structureEnvironment);
     const name = 'STRUCTURE_EAS_ENV';
-    const value = studioEnvironment;
+    const value = structureEnvironment;
     try {
       type M = { environmentVariable: { createEnvironmentVariableForApp: { id: string } } };
       await expoGraphqlRequest<M>(this.expoToken, CREATE_ENV_VAR_FOR_APP, {
@@ -746,14 +746,14 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
 
   async upsertAppEnvironmentVariable(
     expoAppId: string,
-    studioEnvironment: string | string[],
+    structureEnvironment: string | string[],
     name: string,
     value: string,
     visibility: 'PUBLIC' | 'SENSITIVE' | 'SECRET' = 'PUBLIC',
   ): Promise<void> {
-    const expoSlot = Array.isArray(studioEnvironment)
-      ? studioEnvironmentsToExpoVariableEnvironments(studioEnvironment)
-      : studioEnvironmentToExpoVariableEnvironments(studioEnvironment);
+    const expoSlot = Array.isArray(structureEnvironment)
+      ? structureEnvironmentsToExpoVariableEnvironments(structureEnvironment)
+      : structureEnvironmentToExpoVariableEnvironments(structureEnvironment);
     type M = { environmentVariable: { createEnvironmentVariableForApp: { id: string } } };
     await expoGraphqlRequest<M>(this.expoToken, CREATE_ENV_VAR_FOR_APP, {
       appId: expoAppId,
@@ -841,15 +841,15 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
   }
 
   /**
-   * Removes the `STRUCTURE_EAS_ENV` marker from the Expo app for a specific Studio
-   * environment (matching by Expo env slot — e.g. studio "development" → DEVELOPMENT).
+   * Removes the `STRUCTURE_EAS_ENV` marker from the Expo app for a specific Structure
+   * environment (matching by Expo env slot — e.g. structure "development" → DEVELOPMENT).
    * Idempotent: returns the number of variables actually deleted.
    */
-  async removeStudioEasEnvironmentMarkerOnApp(
+  async removeStructureEasEnvironmentMarkerOnApp(
     expoAppId: string,
-    studioEnvironment: string,
+    structureEnvironment: string,
   ): Promise<number> {
-    const expoSlot = studioEnvironmentToExpoVariableEnvironments(studioEnvironment)[0];
+    const expoSlot = structureEnvironmentToExpoVariableEnvironments(structureEnvironment)[0];
     const vars = await this.listAppEnvironmentVariablesByName(expoAppId, 'STRUCTURE_EAS_ENV');
     const matching = vars.filter((v) => (v.environments ?? []).includes(expoSlot!));
     for (const v of matching) {
@@ -858,12 +858,12 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     return matching.length;
   }
 
-  async removeAppEnvironmentVariableFromStudioEnvironment(
+  async removeAppEnvironmentVariableFromStructureEnvironment(
     expoAppId: string,
-    studioEnvironment: string,
+    structureEnvironment: string,
     name: string,
   ): Promise<number> {
-    const expoSlot = studioEnvironmentToExpoVariableEnvironments(studioEnvironment)[0];
+    const expoSlot = structureEnvironmentToExpoVariableEnvironments(structureEnvironment)[0];
     const vars = await this.listAppEnvironmentVariablesByName(expoAppId, name);
     const matching = vars.filter((v) => (v.environments ?? []).includes(expoSlot!));
     for (const v of matching) {
@@ -872,12 +872,12 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     return matching.length;
   }
 
-  async reconcileAppEnvironmentVariableAcrossStudioEnvironments(
+  async reconcileAppEnvironmentVariableAcrossStructureEnvironments(
     expoAppId: string,
     name: string,
     value: string,
     visibility: 'PUBLIC' | 'SENSITIVE' | 'SECRET',
-    studioEnvironments: string[],
+    structureEnvironments: string[],
   ): Promise<void> {
     const existing = await this.listAppEnvironmentVariablesByName(expoAppId, name);
     for (const row of existing) {
@@ -885,7 +885,7 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     }
     const trimmed = value.trim();
     if (!trimmed) return;
-    await this.upsertAppEnvironmentVariable(expoAppId, studioEnvironments, name, trimmed, visibility);
+    await this.upsertAppEnvironmentVariable(expoAppId, structureEnvironments, name, trimmed, visibility);
   }
 
   async configureIosEasSubmit(input: {
@@ -950,7 +950,7 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
           issuerIdentifier: input.issuerIdentifier,
           keyIdentifier: input.keyIdentifier,
           keyP8: input.keyP8,
-          name: `Studio ${input.bundleId}`,
+          name: `Structure ${input.bundleId}`,
         },
       });
       ascKeyId = created.appStoreConnectApiKey.createAppStoreConnectApiKey.id;
@@ -1425,7 +1425,7 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     for (const [name, value] of Object.entries(envVars)) {
       if (!name.trim()) continue;
       const visibility = options?.visibilityByName?.[name] ?? 'PUBLIC';
-      await this.reconcileAppEnvironmentVariableAcrossStudioEnvironments(
+      await this.reconcileAppEnvironmentVariableAcrossStructureEnvironments(
         projectId,
         name,
         value,

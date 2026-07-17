@@ -98,7 +98,7 @@ export interface ProjectLlmRuntimeEnvResolveInput {
   upstream: Record<string, string>;
   readVault?: (providerId: string, key: string) => string | undefined;
   /**
-   * Optional: Studio stores LLM API keys in SQLite (`llm_*_api_key` credential types).
+   * Optional: Structure stores LLM API keys in SQLite (`llm_*_api_key` credential types).
    * Values are merged vault-first (vault is retired; SQLite wins in practice).
    */
   retrieveProjectCredential?: (type: CredentialType) => string | null;

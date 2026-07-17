@@ -1,7 +1,7 @@
 /**
- * Auth middleware for the Studio HTTP API — session cookies + legacy bearer token.
+ * Auth middleware for the Structure HTTP API — session cookies + legacy bearer token.
  *
- * Production UI authenticates via HttpOnly `studio_session` cookie (60m idle).
+ * Production UI authenticates via HttpOnly `structure_session` cookie (60m idle).
  * One-shot CLI handoff tokens mint a session. Legacy per-install bearer token
  * (`api-token` file) remains accepted for tests and automation.
  *
@@ -22,7 +22,7 @@ import {
 
 const TOKEN_FILE_NAME = 'api-token';
 const TOKEN_BYTES = 32;
-export const SESSION_COOKIE_NAME = 'studio_session';
+export const SESSION_COOKIE_NAME = 'structure_session';
 const SESSION_IDLE_MS = 60 * 60 * 1000;
 export const SESSION_COOKIE_MAX_AGE_SEC = Math.floor(SESSION_IDLE_MS / 1000);
 
@@ -223,7 +223,7 @@ export function createAuthMiddlewares(opts: AuthOptions): {
     const cookies = parseCookies(req.headers.cookie);
     const sid = cookies[SESSION_COOKIE_NAME];
     if (sid && touchSession(sid)) {
-      (req as import('express').Request & { studioSessionId?: string }).studioSessionId = sid;
+      (req as import('express').Request & { structureSessionId?: string }).structureSessionId = sid;
       return next();
     }
 

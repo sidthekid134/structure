@@ -43,7 +43,7 @@ import type {
  * but render with the generic "View Plugin Contract" affordance instead of
  * an integration card.
  */
-const BACKEND_TO_UI_PROVIDER_ID: Record<string, ProviderId | 'studio' | 'other'> = {
+const BACKEND_TO_UI_PROVIDER_ID: Record<string, ProviderId | 'structure' | 'other'> = {
   gcp: 'firebase',
   firebase: 'firebase',
   github: 'github',
@@ -55,7 +55,7 @@ const BACKEND_TO_UI_PROVIDER_ID: Record<string, ProviderId | 'studio' | 'other'>
   oauth: 'other',
 };
 
-function mapProviderId(backendProvider: string): ProviderId | 'studio' | 'other' {
+function mapProviderId(backendProvider: string): ProviderId | 'structure' | 'other' {
   return BACKEND_TO_UI_PROVIDER_ID[backendProvider] ?? 'other';
 }
 
@@ -141,7 +141,7 @@ function convertCatalog(catalog: PluginCatalog): ConvertedCatalog {
 
   const providerPluginMap: Record<string, string[]> = {};
   for (const plugin of plugins) {
-    if (plugin.providerId === 'studio' || plugin.providerId === 'other') continue;
+    if (plugin.providerId === 'structure' || plugin.providerId === 'other') continue;
     const key = plugin.providerId as string;
     (providerPluginMap[key] ??= []).push(plugin.id);
   }

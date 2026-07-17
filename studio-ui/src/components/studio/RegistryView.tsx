@@ -8,7 +8,7 @@ import { usePluginCatalog } from './usePluginCatalog';
 import type { ConnectedProviders, IntegrationConfig, ProviderId, RegistryPlugin } from './types';
 
 function isPluginConnected(plugin: RegistryPlugin, connectedProviders: ConnectedProviders): boolean {
-  if (plugin.providerId === 'studio') return true;
+  if (plugin.providerId === 'structure') return true;
   if (plugin.providerId === 'firebase') return connectedProviders.firebase;
   if (plugin.providerId === 'expo') return connectedProviders.expo;
   if (plugin.providerId === 'github') return connectedProviders.github;
@@ -158,7 +158,7 @@ export function RegistryView({
                     providerConfig?.scope === 'project' &&
                     !activeProjectId;
                   const crossCategories = plugin.categories.filter((c) => c !== category.id);
-                  const isStudio = plugin.providerId === 'studio';
+                  const isStructure = plugin.providerId === 'structure';
                   return (
                     <div
                       key={`${category.id}-${plugin.id}`}
@@ -185,7 +185,7 @@ export function RegistryView({
                               <span>CONNECTED</span>
                             </span>
                           )}
-                          {!plugin.future && !connected && !isStudio && (
+                          {!plugin.future && !connected && !isStructure && (
                             projectScopedAvailable ? (
                               <span className="text-[9px] font-bold text-blue-600 dark:text-blue-400 bg-blue-500/10 border border-blue-500/30 px-1.5 py-0.5 rounded-full">
                                 AVAILABLE
@@ -223,7 +223,7 @@ export function RegistryView({
                           className="w-full py-2 text-xs font-bold border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors flex items-center justify-center gap-1.5"
                         >
                           <CheckCircle2 size={12} />
-                          <span>{isStudio ? 'View Plugin Contract' : 'View Integration'}</span>
+                          <span>{isStructure ? 'View Plugin Contract' : 'View Integration'}</span>
                         </button>
                       ) : providerConfig ? (
                         <button

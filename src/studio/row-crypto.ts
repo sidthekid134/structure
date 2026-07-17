@@ -5,7 +5,7 @@
 import * as crypto from 'crypto';
 import { getVaultSession, VaultSealedError } from './vault-session.js';
 
-export function deriveStudioRowKey(_storeDir: string, purpose: string): Buffer {
+export function deriveStructureRowKey(_storeDir: string, purpose: string): Buffer {
   try {
     const dek = getVaultSession().getVaultDEK();
     return Buffer.from(crypto.hkdfSync('sha256', dek, Buffer.alloc(0), Buffer.from(purpose, 'utf8'), 32));

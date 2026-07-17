@@ -2,7 +2,7 @@
  * Registry mapping provisioning step keys → the credential-stored secret values
  * those steps upload to a third-party system (GitHub repo/env secrets, etc.).
  *
- * Used by the Studio API to expose:
+ * Used by the Structure API to expose:
  *   - GET  .../provisioning/steps/:stepKey/secrets         (metadata only)
  *   - POST .../provisioning/steps/:stepKey/secrets/:name/reveal  (plaintext)
  */

@@ -13,7 +13,7 @@
 
 <!--
 How you verified the change. Be specific. Don't say "tested locally" — say
-"started Studio, ran the Firebase create flow, watched logs, confirmed no
+"started Structure, ran the Firebase create flow, watched logs, confirmed no
 token leakage."
 -->
 

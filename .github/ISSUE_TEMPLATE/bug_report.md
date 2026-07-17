@@ -33,7 +33,7 @@ labels: bug
 ## Logs
 
 <!--
-Paste relevant Studio output. Be careful not to paste tokens, API keys, or
+Paste relevant Structure output. Be careful not to paste tokens, API keys, or
 session cookies. The structured logger redacts known sensitive keys, but
 review before posting.
 -->

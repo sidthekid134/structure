@@ -1,5 +1,5 @@
 /**
- * Configurable Studio presentation for completed provisioning steps:
+ * Configurable Structure presentation for completed provisioning steps:
  * sensitivity, primary links, and related console/docs URLs.
  *
  * Merge order: defaults by resource key → graph `resource.presentation` (from API).

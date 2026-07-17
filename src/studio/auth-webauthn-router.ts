@@ -28,7 +28,7 @@ import {
 } from './key-wrappers.js';
 import { writeVaultMeta } from './vault-meta.js';
 import { SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE_SEC, mintSession, revokeSession } from './auth.js';
-import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
+import { destroyLocalStructureInstall } from './studio-local-data-destroy.js';
 import { deriveDevVaultDek, isDevVaultAutoUnlockEnabled } from './dev-vault.js';
 
 function profileLabelFromEnv(env: NodeJS.ProcessEnv): 'Dev' | 'Prod' {
@@ -76,7 +76,7 @@ function hostnameFromRequest(req: Request): string | null {
   }
 }
 
-/** Allowed Studio hosts for rpID (loopback + Tauri embedded UI). */
+/** Allowed Structure hosts for rpID (loopback + Tauri embedded UI). */
 function rpIdFromRequest(req: Request): string | null {
   const hostname = hostnameFromRequest(req);
   if (!hostname) return null;
@@ -233,7 +233,7 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
     if (!rpId) {
       res.status(400).json({
         error:
-          'Could not determine WebAuthn RP ID from Origin/Host. Open Studio at http://localhost:<port> (recommended) or ensure Origin matches the host (127.0.0.1 vs localhost are different origins).',
+          'Could not determine WebAuthn RP ID from Origin/Host. Open Structure at http://localhost:<port> (recommended) or ensure Origin matches the host (127.0.0.1 vs localhost are different origins).',
       });
       return;
     }
@@ -761,7 +761,7 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
       return;
     }
     try {
-      destroyLocalStudioInstall(storeDir);
+      destroyLocalStructureInstall(storeDir);
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
       return;

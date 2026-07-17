@@ -12,14 +12,14 @@
 import type { ProvisioningPlan, ProvisioningNode } from '../provisioning/graph.types.js';
 import type { ProjectModule } from './project-manager.js';
 import { projectPrimaryDomain, projectResourceSlug } from './project-identity.js';
-import { buildStudioGcpProjectId } from '../core/gcp-connection.js';
+import { buildStructureGcpProjectId } from '../core/gcp-connection.js';
 import { resolveDeployContractFromInputs } from './deploy-contract.js';
 
 export interface ManualInstructionDownload {
   /**
    * Filename the browser should save the file as, *exactly* as the upstream
    * portal expects to see it (e.g. Apple's `AuthKey_<KEYID>.p8` convention,
-   * which Studio also reads back to derive the Key ID from the filename).
+   * which Structure also reads back to derive the Key ID from the filename).
    */
   filename: string;
   /**
@@ -41,7 +41,7 @@ export interface ManualInstructionStep {
   copyText?: string;
   /**
    * Files the user needs while performing this step (typically things they
-   * uploaded to Studio earlier and now have to re-upload to a third-party
+   * uploaded to Structure earlier and now have to re-upload to a third-party
    * portal). Rendered as download buttons inline with the step.
    */
   downloads?: ManualInstructionDownload[];
@@ -88,7 +88,7 @@ export interface AppleAuthKeyRegistrySnapshot {
 }
 
 interface InstructionContext {
-  /** Studio project id — used for building download URLs that point back at this project's vault. */
+  /** Structure project id — used for building download URLs that point back at this project's vault. */
   projectId: string;
   upstream: Record<string, string>;
   /**
@@ -150,9 +150,9 @@ function buildLlmIntegrationPromptInstructions(
     `Project context: slug="${ctx.slug}", domain="${domainLabel}", bundleId="${bundleId}", ` +
     `platforms=${platformLabel}, environments=${envLabel}. ` +
     `Read credentials from ${envKeys.map((k) => `process.env.${k}`).join(', ')} ` +
-    `(synced by Studio to Expo EAS env slots ${envLabel}); fallback source in Studio vault slots: ${vaultSlots.join(', ')}. ` +
+    `(synced by Structure to Expo EAS env slots ${envLabel}); fallback source in Structure vault slots: ${vaultSlots.join(', ')}. ` +
     `Keep tokens server-side only, never log or hardcode them, and add a provider health check plus clear error reporting.` +
-    (defaultModel ? ` Default model currently pinned by Studio: "${defaultModel}".` : '');
+    (defaultModel ? ` Default model currently pinned by Structure: "${defaultModel}".` : '');
 
   return {
     intro:
@@ -161,7 +161,7 @@ function buildLlmIntegrationPromptInstructions(
       {
         title: `Review where ${providerLabel} credentials are available`,
         detail:
-          `Expo EAS runtime env vars: ${envKeys.join(', ')}. Studio vault slots: ${vaultSlots.join(', ')}.`,
+          `Expo EAS runtime env vars: ${envKeys.join(', ')}. Structure vault slots: ${vaultSlots.join(', ')}.`,
       },
       {
         title: 'Copy this prompt into your project coding LLM',
@@ -206,7 +206,7 @@ function buildCicdIntegrationPromptInstructions(ctx: InstructionContext): Manual
   const region = ctx.upstream['gcp_region']?.trim() || 'us-central1';
   const webService = ctx.upstream['web_cloud_run_service']?.trim() || `${ctx.slug}-web`;
   const apiService = ctx.upstream['api_cloud_run_service']?.trim() || `${ctx.slug}-api`;
-  const artifactRepo = ctx.upstream['artifact_registry_repo']?.trim() || `${region}-docker.pkg.dev/${projectId}/studio-serverless`;
+  const artifactRepo = ctx.upstream['artifact_registry_repo']?.trim() || `${region}-docker.pkg.dev/${projectId}/structure-serverless`;
   const envLabel = ctx.environments.length > 0 ? ctx.environments.join(', ') : 'preview, production';
   const deployContract = resolveDeployContractFromInputs(ctx.githubDeployInputs);
 
@@ -228,14 +228,14 @@ function buildCicdIntegrationPromptInstructions(ctx: InstructionContext): Manual
   }
 
   const prompt =
-    `Refactor and align this repository for Studio-managed GitHub CI/CD deployment.\n` +
+    `Refactor and align this repository for Structure-managed GitHub CI/CD deployment.\n` +
     `Project context:\n` +
     `- App name: "${ctx.appName}"\n` +
     `- Project slug: "${ctx.slug}"\n` +
     `- Domain: "${ctx.domain || `${ctx.slug}.example.com`}"\n` +
     `- Bundle ID: "${ctx.bundleId || `com.example.${ctx.slug}`}"\n` +
     `- GitHub repo: "${repoUrl}"\n` +
-    `- Studio environments: ${envLabel}\n` +
+    `- Structure environments: ${envLabel}\n` +
     `- CI targets: ${selectedTargets.join(', ')}\n` +
     `- GCP project: "${projectId}" region "${region}"\n` +
     `- Artifact Registry: "${artifactRepo}"\n` +
@@ -303,7 +303,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
       {
         title: 'If organization Cloudflare is already connected, reuse it and continue',
         detail:
-          'No new token is required for this project. Studio will use the org-level token automatically.',
+          'No new token is required for this project. Structure will use the org-level token automatically.',
       },
       {
         title: 'Optional override only: create a project token in Cloudflare',
@@ -339,7 +339,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
     return {
       intro:
         'Domain ownership is confirmed only when the root zone is Active in Cloudflare. ' +
-        'Until activation completes, Studio cannot safely continue DNS, SSL, deep-link landing routes, or OAuth callback routing.',
+        'Until activation completes, Structure cannot safely continue DNS, SSL, deep-link landing routes, or OAuth callback routing.',
       steps: [
         {
           title: 'Part A - Open zone overview in Cloudflare',
@@ -378,9 +378,9 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
             'Refresh the zone Overview page. Once Active, Cloudflare has authoritative control and this gate can be completed. Troubleshooting activation: https://developers.cloudflare.com/dns/zone-setups/troubleshooting/',
         },
         {
-          title: 'Re-run this Studio gate after status is Active',
+          title: 'Re-run this Structure gate after status is Active',
           detail:
-            'Studio will verify ownership through the API and persist zone status outputs for downstream steps.',
+            'Structure will verify ownership through the API and persist zone status outputs for downstream steps.',
         },
         {
           title: `Part D - Continue provisioning DNS and routing for app host "${appDomain}"`,
@@ -405,7 +405,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
       intro:
         "Apple's App Store Connect API does not allow creating apps — only GET / UPDATE. " +
         'Create the listing once in App Store Connect using the values below; ' +
-        'on the next run Studio detects it via filter[bundleId] and stores asc_app_id automatically.',
+        'on the next run Structure detects it via filter[bundleId] and stores asc_app_id automatically.',
       steps: [
         {
           title: 'Open App Store Connect → Apps',
@@ -426,7 +426,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
         {
           title: `Name: "${appName}"`,
           detail:
-            'Must be unique across the App Store. If taken, append a short qualifier — Studio will pick up whatever name you save.',
+            'Must be unique across the App Store. If taken, append a short qualifier — Structure will pick up whatever name you save.',
         },
         {
           title: `SKU: "${bundleId}"`,
@@ -438,7 +438,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
         {
           title: 'Click "Create", then return here and re-run this step',
           detail:
-            'Studio queries /v1/apps?filter[bundleId]=… and stores the new asc_app_id once Apple returns the listing.',
+            'Structure queries /v1/apps?filter[bundleId]=… and stores the new asc_app_id once Apple returns the listing.',
         },
       ],
       note:
@@ -454,15 +454,15 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
       ctx.upstream['apple_bundle_id']?.trim() || ctx.bundleId || `com.example.${ctx.slug}`;
     return {
       intro:
-        'Studio mints the iOS Distribution Certificate + App Store Provisioning Profile and uploads them to EAS automatically — no manual portal work needed. ' +
+        'Structure mints the iOS Distribution Certificate + App Store Provisioning Profile and uploads them to EAS automatically — no manual portal work needed. ' +
         'BUT EAS has a known bug (https://github.com/expo/eas-cli/issues/3202) where credentials uploaded via its GraphQL API are flagged "not validated for non-interactive builds". ' +
         'Until the flag is flipped, every CI run of `eas build --non-interactive` fails with "Distribution Certificate is not validated for non-interactive builds. Failed to set up credentials." ' +
-        'A one-time interactive `eas credentials` session on a developer machine is required to flip the flag. Do this AFTER Studio finishes the step.',
+        'A one-time interactive `eas credentials` session on a developer machine is required to flip the flag. Do this AFTER Structure finishes the step.',
       steps: [
         {
           title: 'In your app repo, run `npx eas-cli@latest credentials -p ios`',
           detail:
-            'Set EXPO_TOKEN to the same robot/user token your GitHub Action uses (so EAS resolves to the same account that owns the credentials Studio just uploaded). ' +
+            'Set EXPO_TOKEN to the same robot/user token your GitHub Action uses (so EAS resolves to the same account that owns the credentials Structure just uploaded). ' +
             `If you have multiple Expo projects, pick the one matching bundle id "${bundleId}".`,
         },
         {
@@ -471,14 +471,14 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
             'EAS will list every profile defined in your eas.json. Choose the one your CI builds (`production` is the default; pick whichever matches your `eas build --profile <name>` invocation in the workflow).',
         },
         {
-          title: 'Choose "Use existing Distribution Certificate" → confirm Studio\'s upload',
+          title: 'Choose "Use existing Distribution Certificate" → confirm Structure\'s upload',
           detail:
-            'EAS will show the cert Studio just uploaded (matching serial number visible in expo.dev → your app → Credentials → iOS). Select it instead of letting EAS mint a new one — Apple caps each team at 2 active iOS Distribution certs.',
+            'EAS will show the cert Structure just uploaded (matching serial number visible in expo.dev → your app → Credentials → iOS). Select it instead of letting EAS mint a new one — Apple caps each team at 2 active iOS Distribution certs.',
         },
         {
-          title: 'Choose "Use existing Provisioning Profile" → confirm Studio\'s upload',
+          title: 'Choose "Use existing Provisioning Profile" → confirm Structure\'s upload',
           detail:
-            'Same idea — pick the profile Studio uploaded. EAS hits Apple via the App Store Connect API key to verify both, and that verification call is what flips the "validated for non-interactive builds" flag.',
+            'Same idea — pick the profile Structure uploaded. EAS hits Apple via the App Store Connect API key to verify both, and that verification call is what flips the "validated for non-interactive builds" flag.',
         },
         {
           title: 'Exit (Ctrl+C or pick "Go back" until you exit), then re-run your failing GitHub Action',
@@ -493,7 +493,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
       ],
       note:
         'You only have to do this once per cert (i.e. again in ~1 year when the cert is rotated). ' +
-        'Until Expo ships an explicit `validateCredentials` GraphQL mutation, Studio cannot flip the flag from the server side.',
+        'Until Expo ships an explicit `validateCredentials` GraphQL mutation, Structure cannot flip the flag from the server side.',
     };
   },
   'apple:upload-apns-to-firebase': (ctx) => {
@@ -532,7 +532,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
             filename: `AuthKey_${apnsKeyId}.p8`,
             url: `/api/projects/${encodeURIComponent(ctx.projectId)}/apple/auth-keys/${encodeURIComponent(apnsKeyId)}/p8`,
             description:
-              'Re-download the .p8 Studio vaulted when you ran "Generate APNs Key" \u2014 saved with the exact AuthKey_<KEYID>.p8 filename Apple expects (so Firebase can derive the Key ID from it).',
+              'Re-download the .p8 Structure vaulted when you ran "Generate APNs Key" \u2014 saved with the exact AuthKey_<KEYID>.p8 filename Apple expects (so Firebase can derive the Key ID from it).',
           },
         ]
       : [];
@@ -540,7 +540,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
     return {
       intro:
         'Firebase needs the Apple APNs Authentication Key (.p8) so FCM can deliver pushes through Apple\u2019s servers. ' +
-        'The .p8 itself was vaulted by the upstream "Generate APNs Key" step \u2014 download it from Studio below and re-upload it to Firebase.',
+        'The .p8 itself was vaulted by the upstream "Generate APNs Key" step \u2014 download it from Structure below and re-upload it to Firebase.',
       steps: [
         {
           title: 'Open Firebase Console \u2192 Project settings \u2192 Cloud Messaging (iOS app)',
@@ -553,11 +553,11 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
         },
         {
           title: apnsKeyId
-            ? `Use the AuthKey_${apnsKeyId}.p8 file Studio has vaulted (download below) for both rows`
+            ? `Use the AuthKey_${apnsKeyId}.p8 file Structure has vaulted (download below) for both rows`
             : 'Locate the AuthKey_<KEYID>.p8 file you downloaded when you generated the APNs key (use it for both rows)',
           detail: apnsKeyId
-            ? 'Studio re-emits the original PEM bytes with the AuthKey_<KEYID>.p8 filename Apple expects \u2014 Firebase reads the Key ID directly from the filename. The same download is uploaded twice (development row + production row).'
-            : 'Run "Generate APNs Key" first so Studio has the .p8 vaulted; this step will then offer it as a one-click download.',
+            ? 'Structure re-emits the original PEM bytes with the AuthKey_<KEYID>.p8 filename Apple expects \u2014 Firebase reads the Key ID directly from the filename. The same download is uploaded twice (development row + production row).'
+            : 'Run "Generate APNs Key" first so Structure has the .p8 vaulted; this step will then offer it as a one-click download.',
           downloads: apnsDownloads,
         },
         {
@@ -565,13 +565,13 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
             ? `Key ID: "${apnsKeyId}" (Firebase pre-fills it from the filename)${teamId ? `; Team ID: "${teamId}"` : ''}`
             : `Key ID: read it from the AuthKey_<KEYID>.p8 filename${teamId ? `; Team ID: "${teamId}"` : ''}`,
           detail: teamId
-            ? `Studio pre-fills Team ID "${teamId}" from the org-level Apple integration so you only need to confirm it matches in both rows.`
+            ? `Structure pre-fills Team ID "${teamId}" from the org-level Apple integration so you only need to confirm it matches in both rows.`
             : 'Team ID will be pre-filled once the org-level Apple integration is connected.',
         },
         {
           title: 'After both rows show "Uploaded", return here and mark this step complete',
           detail:
-            'Firebase persists the key against your iOS app; you do not need to re-upload it for additional Studio environments (development / preview / production all share the same APNs key).',
+            'Firebase persists the key against your iOS app; you do not need to re-upload it for additional Structure environments (development / preview / production all share the same APNs key).',
         },
       ],
       note:
@@ -657,7 +657,7 @@ const MANUAL_INSTRUCTION_REGISTRY: Record<string, InstructionBuilder> = {
       },
     ],
     note:
-      'This gate is a user verification checkpoint so Studio does not treat app-repo auth wiring as complete until you explicitly confirm it.',
+      'This gate is a user verification checkpoint so Structure does not treat app-repo auth wiring as complete until you explicitly confirm it.',
   }),
   'user:share-openai-integration-prompt': (ctx) =>
     buildLlmIntegrationPromptInstructions(ctx, 'openai', 'OpenAI'),
@@ -685,7 +685,7 @@ const CAPABILITY_LABEL: Record<Capability, string> = {
  * shapes:
  *
  *   create-mode: the project does not yet have an Apple Auth Key, OR the
- *     user typed a Key ID Studio has never seen. Full create-key checklist
+ *     user typed a Key ID Structure has never seen. Full create-key checklist
  *     (10+ steps), enforces a `<App Name> Auth Key` naming convention so
  *     all capabilities for this project live on a single .p8. Apple's Key
  *     Name field rejects anything other than letters, numbers, and spaces
@@ -812,7 +812,7 @@ function buildAppleAuthKeyInstructions(
       intro:
         `This project already has an Apple Auth Key vaulted${reuseTargetKeyId ? ` ("${reuseTargetKeyId}")` : ''}.${otherCapsBlurb} ` +
         `One .p8 can carry any combination of capabilities, so add "${capabilityLabel}" to it instead of creating a second key. ` +
-        'No .p8 re-upload is needed \u2014 click the existing Key ID chip above and Studio records the new capability annotation against the vaulted key.',
+        'No .p8 re-upload is needed \u2014 click the existing Key ID chip above and Structure records the new capability annotation against the vaulted key.',
       steps: [
         ...(isSiwa ? siwaPrerequisiteSteps : []),
         { title: isSiwa ? 'Part C \u2014 Toggle the capability on the existing key' : 'Part A \u2014 Toggle the capability on the existing key' },
@@ -833,18 +833,18 @@ function buildAppleAuthKeyInstructions(
             'Binding to a specific App ID limits blast radius if the key leaks; required for SIWA.',
         },
         { title: 'Click Save' },
-        { title: isSiwa ? 'Part D \u2014 Save in Studio' : 'Part C \u2014 Save in Studio' },
+        { title: isSiwa ? 'Part D \u2014 Save in Structure' : 'Part C \u2014 Save in Structure' },
         {
           title: `Click the "${reuseTargetKeyId ?? 'existing Key ID'}" chip in the "Reuse an existing key" picker above${
             isSiwa ? `, and confirm "${requestedServiceId}" is in "Apple Services ID"` : ''
           }`,
           detail:
-            'The .p8 upload is hidden when reuse is selected because Studio already has the PEM in this project\'s Apple Auth Key registry.',
+            'The .p8 upload is hidden when reuse is selected because Structure already has the PEM in this project\'s Apple Auth Key registry.',
         },
         {
           title: 'Click "Save Configuration", then re-run this step',
           detail:
-            'Studio updates the registry to record the new capability against the existing key.',
+            'Structure updates the registry to record the new capability against the existing key.',
         },
       ],
       note:
@@ -889,15 +889,15 @@ function buildAppleAuthKeyInstructions(
       {
         title: 'Click "Download" IMMEDIATELY on the next screen',
         detail:
-          'Apple will only let you download the .p8 once. If you navigate away first, you have to revoke the key and start over. Keep the original AuthKey_<KEYID>.p8 filename \u2014 Studio extracts the Key ID from it.',
+          'Apple will only let you download the .p8 once. If you navigate away first, you have to revoke the key and start over. Keep the original AuthKey_<KEYID>.p8 filename \u2014 Structure extracts the Key ID from it.',
       },
-      { title: isSiwa ? 'Part D \u2014 Save in Studio' : 'Part C \u2014 Save in Studio' },
+      { title: isSiwa ? 'Part D \u2014 Save in Structure' : 'Part C \u2014 Save in Structure' },
       {
         title:
           'Drop the AuthKey_<KEYID>.p8 file into the upload above' +
           (isSiwa ? `, and confirm "${requestedServiceId}" is in "Apple Services ID"` : ''),
         detail:
-          'Studio reads the .p8 in-browser, validates it as PEM, extracts the 10-character Key ID directly from the filename Apple set, and stores everything encrypted in this project\'s unified Apple Auth Key registry. No need to type the Key ID separately.',
+          'Structure reads the .p8 in-browser, validates it as PEM, extracts the 10-character Key ID directly from the filename Apple set, and stores everything encrypted in this project\'s unified Apple Auth Key registry. No need to type the Key ID separately.',
       },
       {
         title: 'Click "Save Configuration", then re-run this step',
@@ -996,7 +996,7 @@ export function buildManualInstructionsByNodeKey(
   // Mirror the same fallback chain used in api.ts when constructing the
   // Apple manifest's app_name and in planned-output-previews.
   const appName = project.name?.trim() || slug || plan.projectId;
-  const expectedGcpId = buildStudioGcpProjectId(plan.projectId);
+  const expectedGcpId = buildStructureGcpProjectId(plan.projectId);
   const upstream = mergeCompletedUpstream(plan);
   const appleAuthKeys = buildAppleAuthKeyRegistrySnapshot(plan);
 

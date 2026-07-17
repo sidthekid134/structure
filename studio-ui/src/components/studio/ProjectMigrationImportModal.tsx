@@ -59,12 +59,12 @@ export function ProjectMigrationImportModal({
                 .then((text) => {
                   const parsed = JSON.parse(text) as ProjectMigrationBundle;
                   if (
-                    parsed.format !== 'studio-project-migration' ||
+                    parsed.format !== 'structure-project-migration' ||
                     parsed.version !== 1 ||
                     typeof parsed.projectId !== 'string' ||
                     typeof parsed.encryptedPayload !== 'string'
                   ) {
-                    throw new Error('This file is not a valid Studio migration bundle.');
+                    throw new Error('This file is not a valid Structure migration bundle.');
                   }
                   setBundle(parsed);
                 })

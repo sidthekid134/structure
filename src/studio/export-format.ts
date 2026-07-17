@@ -9,7 +9,7 @@
  */
 
 import { encrypt, decrypt, deriveKeyArgon2id } from '../encryption.js';
-import { deriveStudioRowKey } from './row-crypto.js';
+import { deriveStructureRowKey } from './row-crypto.js';
 
 export const STRUCTURE_EXPORT_PURPOSE = 'structure-export-envelope:v1';
 
@@ -20,7 +20,7 @@ export async function sealMigrationExport(
 ): Promise<string> {
   const key = passphrase
     ? await deriveKeyArgon2id(passphrase, STRUCTURE_EXPORT_PURPOSE)
-    : deriveStudioRowKey(storeDir, STRUCTURE_EXPORT_PURPOSE);
+    : deriveStructureRowKey(storeDir, STRUCTURE_EXPORT_PURPOSE);
   return encrypt(JSON.stringify(payload), key, { providerId: 'structure-export' });
 }
 
@@ -40,6 +40,6 @@ export async function openMigrationExport(
       // passphrase didn't match — fall through and try the vault key
     }
   }
-  const vaultKey = deriveStudioRowKey(storeDir, STRUCTURE_EXPORT_PURPOSE);
+  const vaultKey = deriveStructureRowKey(storeDir, STRUCTURE_EXPORT_PURPOSE);
   return JSON.parse(decrypt(ciphertext, vaultKey, { providerId: 'structure-export' })) as unknown;
 }

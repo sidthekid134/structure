@@ -24,7 +24,7 @@ export const FEATURE_ITEMS = [
     icon: Layers,
     color: 'text-amber-500',
     bg: 'bg-amber-500/10',
-    label: 'Web UI Studio',
+    label: 'Web UI Structure',
     description:
       'Full visual interface to configure, trigger, and monitor all provisioning workflows',
   },

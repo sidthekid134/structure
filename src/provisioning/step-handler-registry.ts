@@ -22,7 +22,7 @@ import type { CredentialService } from '../services/credential-service.js';
 export interface StepHandlerContext {
   projectId: string;
   /**
-   * Studio environment for per-environment steps (e.g. `'development'`,
+   * Structure environment for per-environment steps (e.g. `'development'`,
    * `'preview'`, `'production'`). Undefined for global-scope steps and for
    * delete operations (revert is invoked once per base step, not per env).
    * Per-env handlers that need to clean up across all envs during delete

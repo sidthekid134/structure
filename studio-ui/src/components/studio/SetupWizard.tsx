@@ -1651,9 +1651,9 @@ export function SetupWizard({
           <div className="rounded-lg border border-amber-500/35 bg-amber-500/5 p-3 space-y-2">
             <p className="text-xs font-semibold text-amber-950 dark:text-amber-100">Imported organization credentials</p>
             <p className="text-[11px] text-amber-900/90 dark:text-amber-200/90">
-              The setup timeline came from another Studio. Steps can show &quot;complete&quot; while this machine
+              The setup timeline came from another Structure. Steps can show &quot;complete&quot; while this machine
               still uses different or missing GitHub / Expo / Apple vault entries. Applying copies the{' '}
-              <em>exported</em> organization tokens into this Studio&apos;s vault (replacing any you already had for
+              <em>exported</em> organization tokens into this Structure&apos;s vault (replacing any you already had for
               those providers).
             </p>
             <ul className="text-[11px] space-y-0.5 list-disc list-inside text-amber-900/85 dark:text-amber-200/85">
@@ -1661,7 +1661,7 @@ export function SetupWizard({
                 <li key={p.providerId}>
                   <span className="font-medium text-amber-950 dark:text-amber-50">{p.label}</span>
                   {p.localMissing ? ' — missing here' : null}
-                  {p.conflicting ? ' — differs from this Studio' : null}
+                  {p.conflicting ? ' — differs from this Structure' : null}
                 </li>
               ))}
             </ul>
@@ -1727,12 +1727,12 @@ export function SetupWizard({
 
         {showMigratedHistoryWithoutOrgGithub ? (
           <div className="rounded-lg border border-border bg-muted/35 p-3 space-y-1.5">
-            <p className="text-xs font-semibold text-foreground">GitHub step looks done, but this Studio is not connected</p>
+            <p className="text-xs font-semibold text-foreground">GitHub step looks done, but this Structure is not connected</p>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
               The <strong className="text-foreground">complete</strong> state was imported from another machine. There
-              is no GitHub PAT in <em>this</em> Studio&apos;s vault yet, so revalidate and downstream GitHub automation
+              is no GitHub PAT in <em>this</em> Structure&apos;s vault yet, so revalidate and downstream GitHub automation
               will fail until you connect one. Use <strong className="text-foreground">Organization → GitHub</strong>{' '}
-              to add a PAT, or export the project again from an updated Studio so the bundle can offer{' '}
+              to add a PAT, or export the project again from an updated Structure so the bundle can offer{' '}
               <strong className="text-foreground">Apply imported integrations</strong>.
             </p>
           </div>
@@ -2678,7 +2678,7 @@ export function SetupWizard({
                       <li>Apply the required configuration exactly as described.</li>
                       <li>
                         {userNode.verification.type === 'api-check'
-                          ? 'Return here and click Verify installation — Studio checks Expo before completing this step.'
+                          ? 'Return here and click Verify installation — Structure checks Expo before completing this step.'
                           : 'Return here and mark the step complete.'}
                       </li>
                     </ol>
@@ -2741,7 +2741,7 @@ export function SetupWizard({
                 Manual step required
               </h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Studio could not complete this cleanup with your current Expo token.
+                Structure could not complete this cleanup with your current Expo token.
               </p>
             </div>
             <button

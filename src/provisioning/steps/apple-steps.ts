@@ -33,9 +33,9 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
   //   - EAS Build manages certificates + provisioning profiles
   //     automatically using the same App Store Connect Team Key configured
   //     at the org level (see apple:store-signing-in-eas).
-  //   - Dev profiles also require ≥1 registered device UDID, which Studio
+  //   - Dev profiles also require ≥1 registered device UDID, which Structure
   //     does not collect — making full automation impractical.
-  // If you need to re-introduce Studio-owned profile creation, restore the
+  // If you need to re-introduce Structure-owned profile creation, restore the
   // step definitions from git history and the executeStep handlers in
   // src/providers/apple.ts.
   // Both apple:generate-apns-key and apple:create-sign-in-key share a
@@ -54,7 +54,7 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
     key: 'apple:generate-apns-key',
     label: 'Register APNs Capability on Apple Auth Key',
     description:
-      "Adds (or confirms) APNs on the project's Apple Auth Key. Apple does not expose key creation or capability toggles via any public API — the .p8 download is one-time-only and capability checkboxes are toggled in Apple Developer → Keys. If you've already vaulted an Apple Auth Key in this project (e.g. via Sign In with Apple), reuse it from the picker and only the capability annotation is recorded. Otherwise, create a fresh key, check the APNs capability, and drop the AuthKey_<KEYID>.p8 here — Studio extracts the Key ID from the filename automatically.",
+      "Adds (or confirms) APNs on the project's Apple Auth Key. Apple does not expose key creation or capability toggles via any public API — the .p8 download is one-time-only and capability checkboxes are toggled in Apple Developer → Keys. If you've already vaulted an Apple Auth Key in this project (e.g. via Sign In with Apple), reuse it from the picker and only the capability annotation is recorded. Otherwise, create a fresh key, check the APNs capability, and drop the AuthKey_<KEYID>.p8 here — Structure extracts the Key ID from the filename automatically.",
     provider: 'apple',
     environmentScope: 'global',
     automationLevel: 'assisted',
@@ -65,7 +65,7 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
         key: 'apple_auth_key_p8',
         label: 'Apple Auth Key',
         description:
-          'Drop the AuthKey_<KEYID>.p8 file Apple let you download once — Studio extracts the 10-character Key ID from the filename, validates the PEM in-browser, and stores it encrypted in the project vault. If the project already has a vaulted key, the picker above lets you add this capability without re-uploading.',
+          'Drop the AuthKey_<KEYID>.p8 file Apple let you download once — Structure extracts the 10-character Key ID from the filename, validates the PEM in-browser, and stores it encrypted in the project vault. If the project already has a vaulted key, the picker above lets you add this capability without re-uploading.',
         type: 'p8',
         required: false,
       },
@@ -111,7 +111,7 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
         key: 'apple_auth_key_p8',
         label: 'Apple Auth Key',
         description:
-          'Drop the AuthKey_<KEYID>.p8 file Apple let you download once — Studio extracts the 10-character Key ID from the filename, validates the PEM in-browser, and stores it encrypted in the project vault. The .p8 must come from a key that has the Sign in with Apple capability checked AND is bound to your App ID. If the project already has a vaulted key, the picker above lets you add this capability without re-uploading.',
+          'Drop the AuthKey_<KEYID>.p8 file Apple let you download once — Structure extracts the 10-character Key ID from the filename, validates the PEM in-browser, and stores it encrypted in the project vault. The .p8 must come from a key that has the Sign in with Apple capability checked AND is bound to your App ID. If the project already has a vaulted key, the picker above lets you add this capability without re-uploading.',
         type: 'p8',
         required: false,
       },
@@ -162,7 +162,7 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
     key: 'apple:create-app-store-listing',
     label: 'Create App Store Connect Listing',
     description:
-      'Apple does not allow App Store Connect apps to be created via API — only GET / UPDATE. Create the listing once in App Store Connect (Apps → "+" → New App) using your registered bundle ID; Studio detects it via filter[bundleId] and stores asc_app_id. Optional project-vault override at <projectId>/asc_app_id is honored when set.',
+      'Apple does not allow App Store Connect apps to be created via API — only GET / UPDATE. Create the listing once in App Store Connect (Apps → "+" → New App) using your registered bundle ID; Structure detects it via filter[bundleId] and stores asc_app_id. Optional project-vault override at <projectId>/asc_app_id is honored when set.',
     provider: 'apple',
     environmentScope: 'global',
     automationLevel: 'assisted',
@@ -199,7 +199,7 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
     key: 'apple:configure-testflight-group',
     label: 'Create TestFlight Beta Group',
     description:
-      "Creates (or reuses) a TestFlight beta group on the App Store Connect listing and optionally seeds it with tester emails. Required so that EAS Submit / manual TestFlight builds have a default group to assign new builds to. Defaults to an INTERNAL group (skips Beta App Review, builds available immediately) — internal testers must be existing App Store Connect users; Studio verifies that and fails fast if any tester email isn't an ASC user. Switch to EXTERNAL if you want to invite arbitrary emails (Beta App Review required on first build of each version). Idempotent: re-running with the same group name reuses the existing group and only adds testers that aren't already members.",
+      "Creates (or reuses) a TestFlight beta group on the App Store Connect listing and optionally seeds it with tester emails. Required so that EAS Submit / manual TestFlight builds have a default group to assign new builds to. Defaults to an INTERNAL group (skips Beta App Review, builds available immediately) — internal testers must be existing App Store Connect users; Structure verifies that and fails fast if any tester email isn't an ASC user. Switch to EXTERNAL if you want to invite arbitrary emails (Beta App Review required on first build of each version). Idempotent: re-running with the same group name reuses the existing group and only adds testers that aren't already members.",
     provider: 'apple',
     environmentScope: 'global',
     automationLevel: 'full',
@@ -232,7 +232,7 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
         key: 'testflight_tester_emails',
         label: 'Tester emails (optional)',
         description:
-          "Comma- or newline-separated email addresses to add as testers in this group. For INTERNAL groups, each email must already be an App Store Connect user (Users and Access in ASC) — Studio looks them up and fails loudly if any aren't. For EXTERNAL groups, any email is accepted and gets a TestFlight invite once a build is assigned. Leave blank to create an empty group.",
+          "Comma- or newline-separated email addresses to add as testers in this group. For INTERNAL groups, each email must already be an App Store Connect user (Users and Access in ASC) — Structure looks them up and fails loudly if any aren't. For EXTERNAL groups, any email is accepted and gets a TestFlight invite once a build is assigned. Leave blank to create an empty group.",
         type: 'text',
         placeholder: 'qa@example.com, founder@example.com',
         required: false,
@@ -257,7 +257,7 @@ export const APPLE_STEPS: ProvisioningStepNode[] = [
     key: 'apple:store-signing-in-eas',
     label: 'Configure EAS-Managed iOS Signing',
     description:
-      'Mints an iOS Distribution certificate + App Store provisioning profile against Apple App Store Connect (using the org-level Team Key) and uploads them to EAS as the app\'s APP_STORE iosAppBuildCredentials. Subsequent `eas build --platform ios` runs reuse these credentials without prompting. Idempotent: skips minting if EAS already has both attached. Apple Developer dev/ad-hoc profiles are out of scope (require device UDIDs Studio does not collect).',
+      'Mints an iOS Distribution certificate + App Store provisioning profile against Apple App Store Connect (using the org-level Team Key) and uploads them to EAS as the app\'s APP_STORE iosAppBuildCredentials. Subsequent `eas build --platform ios` runs reuse these credentials without prompting. Idempotent: skips minting if EAS already has both attached. Apple Developer dev/ad-hoc profiles are out of scope (require device UDIDs Structure does not collect).',
     provider: 'apple',
     environmentScope: 'global',
     automationLevel: 'full',

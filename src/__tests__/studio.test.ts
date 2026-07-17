@@ -1,8 +1,8 @@
 /**
- * Tests for Phase 3: Studio UI Web Dashboard
+ * Tests for Phase 3: Structure UI Web Dashboard
  *
  * Tests cover:
- *   - StudioServer startup and shutdown
+ *   - StructureServer startup and shutdown
  *   - REST API endpoints (health, provisioning, secrets, drift, architecture)
  *   - WsHandler connection management and broadcasting
  *   - EventLog listOperations() additions
@@ -12,14 +12,14 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { StudioServer } from '../studio/server';
+import { StructureServer } from '../studio/server';
 import { WsHandler } from '../studio/ws-handler';
 import { EventLog } from '../orchestration/event-log';
 import { VaultManager } from '../vault';
 import { writeVaultMeta } from '../studio/vault-meta';
 import { getVaultSession } from '../studio/vault-session';
 import { CredentialService } from '../services/credential-service';
-import { deriveStudioRowKey } from '../studio/row-crypto';
+import { deriveStructureRowKey } from '../studio/row-crypto';
 import { GitHubConnectionService } from '../core/github-connection';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -28,7 +28,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 // ---------------------------------------------------------------------------
 
 function makeTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'studio-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'structure-test-'));
 }
 
 // Module-level token threaded through helpers below. Set in each `beforeEach`
@@ -161,11 +161,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// StudioServer lifecycle
+// StructureServer lifecycle
 // ---------------------------------------------------------------------------
 
-describe('StudioServer', () => {
-  let server: StudioServer;
+describe('StructureServer', () => {
+  let server: StructureServer;
   let port: number;
   let storeDir: string;
   /** Matches encrypted vault on disk for this suite. */
@@ -181,7 +181,7 @@ describe('StudioServer', () => {
     const vm = new VaultManager(vaultPath);
     vm.saveVaultFromMasterKey(testVaultDek, vm.loadVaultFromMasterKey(testVaultDek));
     writeVaultMeta(storeDir, { vaultKeyMode: 'dek-v1' });
-    server = new StudioServer({ port, host: '127.0.0.1', storeDir });
+    server = new StructureServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
     getVaultSession().setVaultDEK(testVaultDek);
     setApiToken(server.apiToken);
@@ -450,7 +450,7 @@ describe('StudioServer', () => {
       expect(organization.integrations.eas.status).toBe('configured');
       expect(organization.integrations.eas.config.token_source).toBe('credential_vault');
 
-      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      const creds = new CredentialService(storeDir, (purpose) => deriveStructureRowKey(storeDir, purpose));
       expect(creds.retrieveOrgCredential('expo_token')).toBe('test-token');
       expect(creds.retrieveOrgCredential('expo_username')).toBe('sidmoparthi');
       expect(creds.retrieveOrgCredential('expo_user_id')).toBe('expo-user-id-123');
@@ -494,7 +494,7 @@ describe('StudioServer', () => {
       expect(organization.integrations.eas.status).toBe('pending');
       expect(organization.integrations.eas.config.expo_username).toBeUndefined();
 
-      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      const creds = new CredentialService(storeDir, (purpose) => deriveStructureRowKey(storeDir, purpose));
       expect(creds.retrieveOrgCredential('expo_token')).toBeNull();
       expect(creds.retrieveOrgCredential('expo_username')).toBeNull();
       expect(creds.retrieveOrgCredential('expo_user_id')).toBeNull();
@@ -532,7 +532,7 @@ describe('StudioServer', () => {
       expect(organization.integrations.github.config.token_source).toBe('credential_vault');
       expect(organization.integrations.github.config.username).toBe('sidmoparthi');
 
-      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      const creds = new CredentialService(storeDir, (purpose) => deriveStructureRowKey(storeDir, purpose));
       expect(creds.retrieveOrgCredential('github_pat')).toBe('ghp_test_token_123');
       expect(creds.retrieveOrgCredential('github_username')).toBe('sidmoparthi');
       expect(creds.retrieveOrgCredential('github_user_id')).toBe('12345');
@@ -573,7 +573,7 @@ describe('StudioServer', () => {
       expect(organization.integrations.github.status).toBe('pending');
       expect(organization.integrations.github.config.username).toBeUndefined();
 
-      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      const creds = new CredentialService(storeDir, (purpose) => deriveStructureRowKey(storeDir, purpose));
       expect(creds.retrieveOrgCredential('github_pat')).toBeNull();
       expect(creds.retrieveOrgCredential('github_username')).toBeNull();
       expect(creds.retrieveOrgCredential('github_user_id')).toBeNull();
@@ -624,8 +624,8 @@ describe('StudioServer', () => {
 // Provisioning run with EventLog seeding
 // ---------------------------------------------------------------------------
 
-describe('StudioServer with seeded EventLog', () => {
-  let server: StudioServer;
+describe('StructureServer with seeded EventLog', () => {
+  let server: StructureServer;
   let port: number;
   let storeDir: string;
 
@@ -640,7 +640,7 @@ describe('StudioServer with seeded EventLog', () => {
     log.close();
 
     port = 30000 + Math.floor(Math.random() * 5000);
-    server = new StudioServer({ port, host: '127.0.0.1', storeDir });
+    server = new StructureServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
     setApiToken(server.apiToken);
   });
@@ -701,7 +701,7 @@ describe('StudioServer with seeded EventLog', () => {
     log.close();
 
     await server.close();
-    server = new StudioServer({ port, host: '127.0.0.1', storeDir });
+    server = new StructureServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
     setApiToken(server.apiToken);
 
@@ -720,7 +720,7 @@ describe('StudioServer with seeded EventLog', () => {
     log.close();
 
     await server.close();
-    server = new StudioServer({ port, host: '127.0.0.1', storeDir });
+    server = new StructureServer({ port, host: '127.0.0.1', storeDir });
     await server.listen();
     setApiToken(server.apiToken);
 
@@ -748,14 +748,14 @@ describe('StudioServer with seeded EventLog', () => {
   });
 });
 
-describe('StudioServer serve UI from source', () => {
-  let server: StudioServer;
+describe('StructureServer serve UI from source', () => {
+  let server: StructureServer;
   let port: number;
 
   beforeEach(async () => {
     const storeDir = makeTempDir();
     port = 33000 + Math.floor(Math.random() * 5000);
-    server = new StudioServer({ port, host: '127.0.0.1', storeDir, serveUiFromSource: true });
+    server = new StructureServer({ port, host: '127.0.0.1', storeDir, serveUiFromSource: true });
     await server.listen();
     setApiToken(server.apiToken);
   });

@@ -221,7 +221,7 @@ export function ProjectDetailView({
         const payload = await api<{
           fileName: string;
           bundle: {
-            format: 'studio-project-migration';
+            format: 'structure-project-migration';
             version: 1;
             projectId: string;
             encryptedPayload: string;
@@ -290,7 +290,7 @@ export function ProjectDetailView({
           <AlertCircle size={14} className="mt-0.5 shrink-0" />
           <span>
             A pending migration included organization-level credentials (GitHub, Expo, or Apple). Unlock your vault to
-            compare them with this Studio or apply them to this machine.
+            compare them with this Structure or apply them to this machine.
           </span>
         </div>
       ) : null}
@@ -299,16 +299,16 @@ export function ProjectDetailView({
         <div className="rounded-lg border border-border bg-card p-4 space-y-2">
           <p className="text-sm font-semibold">Imported instance integrations</p>
           <p className="text-xs text-muted-foreground">
-            Provisioning history came from another Studio, but this machine&apos;s organization vault does not match
-            the exported GitHub, Expo, or Apple material. Apply the import to align this Studio with the source, or
+            Provisioning history came from another Structure, but this machine&apos;s organization vault does not match
+            the exported GitHub, Expo, or Apple material. Apply the import to align this Structure with the source, or
             dismiss if you intentionally use different tokens here.
           </p>
           <ul className="text-xs space-y-1 list-disc list-inside text-muted-foreground">
             {projectDetail.instanceVaultSync.providers.map((p) => (
               <li key={p.providerId}>
                 <span className="font-medium text-foreground">{p.label}</span>
-                {p.localMissing ? ' — not configured on this Studio' : null}
-                {p.conflicting ? ' — differs from credentials on this Studio' : null}
+                {p.localMissing ? ' — not configured on this Structure' : null}
+                {p.conflicting ? ' — differs from credentials on this Structure' : null}
               </li>
             ))}
           </ul>

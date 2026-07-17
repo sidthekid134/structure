@@ -416,7 +416,7 @@ export function buildTeardownPlan(
         label: `Review ${mod.label} Cleanup`,
         description:
           `${mod.description} Review the provider console for resources, credentials, webhooks, domains, ` +
-          'environment variables, workflow files, or generated artifacts that Studio does not remove automatically.',
+          'environment variables, workflow files, or generated artifacts that Structure does not remove automatically.',
         provider: mod.provider,
         environmentScope: 'global',
         automationLevel: 'manual',

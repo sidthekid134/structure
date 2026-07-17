@@ -37,12 +37,12 @@ import type {
   ProjectMigrationBundle,
   ProviderId,
   RegistryPlugin,
-  StudioView,
+  StructureView,
 } from './types';
 
 const DEFAULT_PROJECT_SUBTAB: ProjectSubtab = 'modules';
 const PROJECT_SUBTABS: readonly ProjectSubtab[] = ['modules', 'setup', 'teardown', 'dashboard', 'settings'];
-const PROJECT_SCOPED_VIEWS: readonly StudioView[] = [
+const PROJECT_SCOPED_VIEWS: readonly StructureView[] = [
   'project',
   'project-setup',
   'project-teardown',
@@ -57,9 +57,9 @@ const PROJECT_SCOPED_VIEWS: readonly StudioView[] = [
 const isProjectSubtab = (value: string | null | undefined): value is ProjectSubtab =>
   typeof value === 'string' && PROJECT_SUBTABS.includes(value as ProjectSubtab);
 
-const parseStudioHashRoute = (
+const parseStructureHashRoute = (
   hash: string,
-): { view: StudioView; activeProjectId: string | null; projectSubtab: ProjectSubtab } => {
+): { view: StructureView; activeProjectId: string | null; projectSubtab: ProjectSubtab } => {
   const cleaned = hash.startsWith('#') ? hash.slice(1) : hash;
   const [section, projectIdRaw, projectSubtabRaw] = cleaned
     .split('/')
@@ -81,7 +81,7 @@ const parseStudioHashRoute = (
   return { view: 'overview', activeProjectId: null, projectSubtab: DEFAULT_PROJECT_SUBTAB };
 };
 
-const buildStudioHashRoute = (view: StudioView, activeProjectId: string | null, projectSubtab: ProjectSubtab): string => {
+const buildStructureHashRoute = (view: StructureView, activeProjectId: string | null, projectSubtab: ProjectSubtab): string => {
   if (view === 'registry') {
     return '#/registry';
   }
@@ -91,7 +91,7 @@ const buildStudioHashRoute = (view: StudioView, activeProjectId: string | null, 
   return '#/overview';
 };
 
-const PASSKEY_TEST_STORAGE_KEY = 'studio:test-passkey';
+const PASSKEY_TEST_STORAGE_KEY = 'structure:test-passkey';
 
 /**
  * The daemon mints an HttpOnly session via CLI handoff (`#handoff=…`) or,
@@ -136,7 +136,7 @@ type AuthBarrierState =
 async function refreshAuthBarrierState(
   setAuthBarrier: Dispatch<SetStateAction<AuthBarrierState>>,
   setVaultIncompatibleMessage: Dispatch<SetStateAction<string | null>>,
-  setStudioProfile: Dispatch<SetStateAction<string>>,
+  setStructureProfile: Dispatch<SetStateAction<string>>,
   setAppVersion: Dispatch<SetStateAction<string>>,
 ): Promise<'none' | 'register' | 'passkey' | 'vaultUnlock' | 'vaultIncompatible'> {
   try {
@@ -148,7 +148,7 @@ async function refreshAuthBarrierState(
       structureProfile?: string;
       appVersion?: string;
     };
-    setStudioProfile(typeof ver.structureProfile === 'string' && ver.structureProfile.trim() ? ver.structureProfile : 'default');
+    setStructureProfile(typeof ver.structureProfile === 'string' && ver.structureProfile.trim() ? ver.structureProfile : 'default');
     setAppVersion(typeof ver.appVersion === 'string' && ver.appVersion.trim() ? ver.appVersion : 'dev');
     const canDecryptVault = Boolean(ver.canDecryptVault ?? ver.hasCredentials);
     const needsVaultKeySetup = Boolean(ver.needsVaultKeySetup ?? ver.needsRegistration ?? !canDecryptVault);
@@ -171,7 +171,7 @@ async function refreshAuthBarrierState(
           const body = (await vaultRes.json().catch(() => ({}))) as { error?: string; code?: string };
           if (vaultRes.status === 503 || body.code === 'VAULT_LAYOUT_UNSUPPORTED') {
             setVaultIncompatibleMessage(
-              body.error ?? 'This Studio data directory is not compatible with this version.',
+              body.error ?? 'This Structure data directory is not compatible with this version.',
             );
             setAuthBarrier('vaultIncompatible');
             return 'vaultIncompatible';
@@ -216,14 +216,14 @@ async function refreshAuthBarrierState(
   }
 }
 
-export default function PlatformStudio() {
-  const initialRoute = useMemo(() => parseStudioHashRoute(window.location.hash), []);
+export default function PlatformStructure() {
+  const initialRoute = useMemo(() => parseStructureHashRoute(window.location.hash), []);
   const [isDark, setIsDark] = useState(() => {
-    const stored = localStorage.getItem('studio-theme');
+    const stored = localStorage.getItem('structure-theme');
     if (stored !== null) return stored === 'dark';
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
-  const [view, setView] = useState<StudioView>(initialRoute.view);
+  const [view, setView] = useState<StructureView>(initialRoute.view);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(initialRoute.activeProjectId);
   const [projectSubtab, setProjectSubtab] = useState<ProjectSubtab>(initialRoute.projectSubtab);
@@ -236,7 +236,7 @@ export default function PlatformStudio() {
   const [apiBootstrapDone, setApiBootstrapDone] = useState(false);
   const [isMigrationImporting, setIsMigrationImporting] = useState(false);
   const [wsStatus, setWsStatus] = useState<'offline' | 'connecting' | 'live' | 'error'>('offline');
-  const [structureProfile, setStudioProfile] = useState('default');
+  const [structureProfile, setStructureProfile] = useState('default');
   const [appVersion, setAppVersion] = useState('dev');
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
   const [createForm, setCreateForm] = useState<CreateProjectForm>({
@@ -281,10 +281,10 @@ export default function PlatformStudio() {
   };
   useEffect(() => {
     const onVaultSealed = () => {
-      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile, setAppVersion);
+      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStructureProfile, setAppVersion);
     };
-    window.addEventListener('studio:vault-sealed', onVaultSealed);
-    return () => window.removeEventListener('studio:vault-sealed', onVaultSealed);
+    window.addEventListener('structure:vault-sealed', onVaultSealed);
+    return () => window.removeEventListener('structure:vault-sealed', onVaultSealed);
   }, []);
 
   const hasConfiguredIntegration = (
@@ -672,7 +672,7 @@ export default function PlatformStudio() {
     }
   };
   const isPluginConnected = (plugin: RegistryPlugin): boolean => {
-    if (plugin.providerId === 'studio') return true;
+    if (plugin.providerId === 'structure') return true;
     if (plugin.providerId === 'firebase') return connectedProviders.firebase;
     if (plugin.providerId === 'expo') return connectedProviders.expo;
     if (plugin.providerId === 'github') return connectedProviders.github;
@@ -697,9 +697,9 @@ export default function PlatformStudio() {
     return null;
   };
   const activeIntegrationConfig = activeIntegration ? (integrationConfigs?.find((c) => c.id === activeIntegration) ?? null) : null;
-  const navigateStudio = useCallback(
+  const navigateStructure = useCallback(
     (next: {
-      view?: StudioView;
+      view?: StructureView;
       activeProjectId?: string | null;
       projectSubtab?: ProjectSubtab;
       replaceHistory?: boolean;
@@ -712,7 +712,7 @@ export default function PlatformStudio() {
       setActiveProjectId(nextProjectId);
       setProjectSubtab(nextProjectSubtab);
 
-      const nextHash = buildStudioHashRoute(nextView, nextProjectId, nextProjectSubtab);
+      const nextHash = buildStructureHashRoute(nextView, nextProjectId, nextProjectSubtab);
       if (window.location.hash !== nextHash) {
         if (next.replaceHistory) {
           window.history.replaceState(null, '', nextHash);
@@ -726,11 +726,11 @@ export default function PlatformStudio() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
-    localStorage.setItem('studio-theme', isDark ? 'dark' : 'light');
+    localStorage.setItem('structure-theme', isDark ? 'dark' : 'light');
   }, [isDark]);
 
   useEffect(() => {
-    const expectedHash = buildStudioHashRoute(view, activeProjectId, projectSubtab);
+    const expectedHash = buildStructureHashRoute(view, activeProjectId, projectSubtab);
     if (window.location.hash !== expectedHash) {
       window.history.replaceState(null, '', expectedHash);
     }
@@ -738,7 +738,7 @@ export default function PlatformStudio() {
 
   useEffect(() => {
     const onHashChange = () => {
-      const route = parseStudioHashRoute(window.location.hash);
+      const route = parseStructureHashRoute(window.location.hash);
       setView(route.view);
       setActiveProjectId(route.activeProjectId);
       setProjectSubtab(route.projectSubtab);
@@ -814,7 +814,7 @@ export default function PlatformStudio() {
           }
         }
       }
-      const gate = await refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile, setAppVersion);
+      const gate = await refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStructureProfile, setAppVersion);
       if (gate === 'none') {
         await refreshProjects().catch((error: Error) => notify(error.message, 'error'));
       }
@@ -831,14 +831,14 @@ export default function PlatformStudio() {
 
   useEffect(() => {
     const onNeedAuth = (): void => {
-      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile, setAppVersion).then((gate) => {
+      void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStructureProfile, setAppVersion).then((gate) => {
         if (gate === 'none') {
           void refreshProjects().catch((error: Error) => notify(error.message, 'error'));
         }
       });
     };
-    window.addEventListener('studio:need-auth', onNeedAuth);
-    return () => window.removeEventListener('studio:need-auth', onNeedAuth);
+    window.addEventListener('structure:need-auth', onNeedAuth);
+    return () => window.removeEventListener('structure:need-auth', onNeedAuth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -851,7 +851,7 @@ export default function PlatformStudio() {
     const payload = await api<{ projects: ProjectSummary[] }>('/api/projects');
     setProjects(payload.projects);
     if (!activeProjectId && payload.projects.length > 0) {
-      navigateStudio({
+      navigateStructure({
         view: 'project',
         activeProjectId: payload.projects[0].id,
         projectSubtab: DEFAULT_PROJECT_SUBTAB,
@@ -949,7 +949,7 @@ export default function PlatformStudio() {
       modules: DEFAULT_MODULE_IDS,
     });
     await refreshProjects();
-    navigateStudio({
+    navigateStructure({
       view: 'project',
       activeProjectId: payload.project.id,
       projectSubtab: DEFAULT_PROJECT_SUBTAB,
@@ -962,7 +962,7 @@ export default function PlatformStudio() {
       throw new Error('Select a project first.');
     }
     const confirmed = window.confirm(
-      `Delete project "${projectDetail.project.name}" (${projectDetail.project.id})?\n\nThis removes the Studio project record only. Infrastructure teardown is not included yet.`,
+      `Delete project "${projectDetail.project.name}" (${projectDetail.project.id})?\n\nThis removes the Structure project record only. Infrastructure teardown is not included yet.`,
     );
     if (!confirmed) {
       return;
@@ -1009,7 +1009,7 @@ export default function PlatformStudio() {
       });
       await refreshProjects();
       await refreshProjectDetail(result.projectId);
-      navigateStudio({
+      navigateStructure({
         view: 'project',
         activeProjectId: result.projectId,
         projectSubtab: DEFAULT_PROJECT_SUBTAB,
@@ -1020,7 +1020,7 @@ export default function PlatformStudio() {
         notify(
           result.instanceVaultSync.vaultSealed
             ? 'Unlock the vault to review imported GitHub / Expo / Apple credentials for this project.'
-            : 'This import includes organization credentials that differ from this Studio — open the project banner to sync or dismiss.',
+            : 'This import includes organization credentials that differ from this Structure — open the project banner to sync or dismiss.',
           'ok',
         );
       }
@@ -1052,14 +1052,14 @@ export default function PlatformStudio() {
             <div className="flex items-start gap-3">
               <AlertTriangle className="w-6 h-6 text-destructive shrink-0 mt-0.5" />
               <div className="space-y-2">
-                <h2 className="text-lg font-semibold">Studio data needs reset</h2>
+                <h2 className="text-lg font-semibold">Structure data needs reset</h2>
                 <p className="text-sm text-muted-foreground whitespace-pre-wrap">
                   {vaultIncompatibleMessage ??
                     'This install’s encrypted store is not compatible with the current passkey-only vault model.'}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   From the repo root, run <code className="rounded bg-muted px-1.5 py-0.5">npm run reset:data</code> to
-                  wipe local Studio data, then restart the daemon and register a passkey again.
+                  wipe local Structure data, then restart the daemon and register a passkey again.
                 </p>
               </div>
             </div>
@@ -1072,7 +1072,7 @@ export default function PlatformStudio() {
           lockReason={authBarrier === 'vaultUnlock' ? 'vault-sealed' : 'default'}
           allowAlternateFlow={authBarrier !== 'vaultUnlock'}
           onInstallReset={() => {
-            void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStudioProfile, setAppVersion);
+            void refreshAuthBarrierState(setAuthBarrier, setVaultIncompatibleMessage, setStructureProfile, setAppVersion);
           }}
           onComplete={() => {
             setVaultIncompatibleMessage(null);
@@ -1088,9 +1088,9 @@ export default function PlatformStudio() {
           view={view}
           onShowCreate={() => setShowCreate(true)}
           onShowImport={() => setShowMigrationImport(true)}
-          onViewChange={(nextView) => navigateStudio({ view: nextView })}
+          onViewChange={(nextView) => navigateStructure({ view: nextView })}
           onSelectProject={(projectId) => {
-            navigateStudio({
+            navigateStructure({
               view: 'project',
               activeProjectId: projectId,
             });
@@ -1126,7 +1126,7 @@ export default function PlatformStudio() {
               <OrgOverview
                 projects={projects}
                 onSelectProject={(id) => {
-                  navigateStudio({
+                  navigateStructure({
                     view: 'project',
                     activeProjectId: id,
                   });
@@ -1143,7 +1143,7 @@ export default function PlatformStudio() {
                 projectDetail={projectDetail}
                 projectTab={projectSubtab}
                 onProjectTabChange={(tab) => {
-                  navigateStudio({
+                  navigateStructure({
                     view: 'project',
                     activeProjectId: activeProjectId ?? projectDetail.project.id,
                     projectSubtab: tab,
@@ -1198,7 +1198,7 @@ export default function PlatformStudio() {
                   // to Setup where their credential gates run.
                   const subtab: ProjectSubtab | null = pluginId.startsWith('llm-') ? 'setup' : null;
                   if (!subtab || !activeProjectId) return false;
-                  navigateStudio({
+                  navigateStructure({
                     view: 'project',
                     activeProjectId,
                     projectSubtab: subtab,

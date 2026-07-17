@@ -34,7 +34,7 @@ The following are considered valid security reports:
 - Cryptographic weaknesses: incorrect use of AES-GCM nonces, weak KDF
   parameters, missing authentication, downgrade attacks against the export
   envelope format.
-- Authentication bypass: unauthorized access to the Studio HTTP API,
+- Authentication bypass: unauthorized access to the Structure HTTP API,
   passkey-bypass, session-cookie hijacking that does not require local root.
 - Remote code execution via untrusted input (HTTP request body, project
   bundle import, plugin metadata).

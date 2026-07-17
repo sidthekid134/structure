@@ -52,7 +52,7 @@ import {
 //   <projectId>/apple/auth-keys → JSON { keys: { [keyId]: AppleAuthKeyRecord } }
 //
 // Legacy single-purpose paths are migrated on first read and then ignored
-// (per project-rule: no permanent fallback chains). The Studio REST endpoint
+// (per project-rule: no permanent fallback chains). The Structure REST endpoint
 // at /api/projects/:id/integrations/firebase/apple/upload-key still writes
 // the legacy paths for backwards compat with non-step flows; on next step
 // run those entries will be folded into the registry automatically.
@@ -104,7 +104,7 @@ function easCredentialsBootstrapReminder(bundleIdentifier: string): string {
     'ONE-TIME CI BOOTSTRAP REQUIRED before `eas build --non-interactive` will succeed: ' +
     'from your app repo run `EXPO_TOKEN=<robot token> npx eas-cli@latest credentials -p ios`, ' +
     'pick the production profile, then "Use existing Distribution Certificate" and ' +
-    '"Use existing Provisioning Profile" to confirm the ones Studio just uploaded. ' +
+    '"Use existing Provisioning Profile" to confirm the ones Structure just uploaded. ' +
     'This flips EAS\'s "validated for non-interactive builds" flag — it is a known EAS bug ' +
     '(https://github.com/expo/eas-cli/issues/3202) for credentials uploaded via the GraphQL API. ' +
     'You only have to do this once per cert (i.e. again when the cert is rotated next year).'
@@ -121,7 +121,7 @@ function isPlausibleRegistry(value: unknown): value is AppleAuthKeyRegistry {
  * Read the registry, transparently folding any legacy single-purpose entries
  * (`<projectId>/apns_key_id` etc.) into it. Writes the migrated registry back
  * to the vault if anything was folded in, then deletes the legacy entries by
- * overwriting them with empty strings — the reader at studio/api-helpers.ts
+ * overwriting them with empty strings — the reader at structure/api-helpers.ts
  * tries multiple provider buckets, so we cannot truly delete, but an empty
  * string is treated the same as "absent" by every call site.
  */
@@ -460,7 +460,7 @@ async function requestAppStoreConnect<T>(
                     `Apple's response: ${truncated}\n\n` +
                     `The .p8 parses as a valid PKCS#8 key, so Apple verified the JWT signature and rejected its claims. Likely causes (most common first):\n` +
                     `  1) Wrong Issuer ID — the App Store Connect Team Key issuer is shown at App Store Connect → Users and Access → Integrations → App Store Connect API → "Issuer ID" header. It is NOT the Apple Developer Team ID.\n` +
-                    `  2) Wrong Key ID — the Key ID in the org integration must match the .p8 you uploaded. Studio auto-fills it from the AuthKey_<KEYID>.p8 filename; if the file was renamed, set it manually.\n` +
+                    `  2) Wrong Key ID — the Key ID in the org integration must match the .p8 you uploaded. Structure auto-fills it from the AuthKey_<KEYID>.p8 filename; if the file was renamed, set it manually.\n` +
                     `  3) Wrong key type — App Store Connect Team Keys, "Sign In with Apple" keys, and APNs keys all download as AuthKey_<KEYID>.p8 but only Team Keys authenticate against /v1/* App Store Connect endpoints.\n` +
                     `Reconnect the org-level Apple integration with the correct Issuer ID, Key ID, and .p8 to retry.`,
                 ),
@@ -962,7 +962,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
     const auth = await this.readAscAuth(context);
     if (!auth) {
       throw new AdapterError(
-        'TestFlight group setup requires App Store Connect API credentials (asc_issuer_id, asc_api_key_id, asc_api_key_p8) from the org-level Apple integration. Reconnect the Apple integration in Studio and retry.',
+        'TestFlight group setup requires App Store Connect API credentials (asc_issuer_id, asc_api_key_id, asc_api_key_p8) from the org-level Apple integration. Reconnect the Apple integration in Structure and retry.',
         'apple',
         'apple:configure-testflight-group',
       );
@@ -1142,7 +1142,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         // Apple ever returns a different app, surface it loudly rather than
         // pretend everything worked.
         throw new AdapterError(
-          `Created TestFlight group "${group.name}" (id ${group.id}) is attached to ASC app "${linkedAppId}" but Studio expected "${ascAppId}". Aborting so you can investigate.`,
+          `Created TestFlight group "${group.name}" (id ${group.id}) is attached to ASC app "${linkedAppId}" but Structure expected "${ascAppId}". Aborting so you can investigate.`,
           'apple',
           'apple:configure-testflight-group',
         );
@@ -1378,7 +1378,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         userPrompt:
           `Missing Apple Auth Key. Open https://developer.apple.com/account/resources/authkeys/list (Team "${config.team_id}"), ` +
           `${isSignIn ? 'create or edit a key with the "Sign in with Apple" capability checked (after App ID + Services ID are configured)' : 'create or edit a key with the "Apple Push Notifications service (APNs)" capability checked'}, ` +
-          'then either drop the downloaded AuthKey_<KEYID>.p8 into the upload above (Studio derives the Key ID from the filename) or pick an existing key from the "Reuse an existing key" chips. Save, then re-run.',
+          'then either drop the downloaded AuthKey_<KEYID>.p8 into the upload above (Structure derives the Key ID from the filename) or pick an existing key from the "Reuse an existing key" chips. Save, then re-run.',
       };
     }
 
@@ -1515,7 +1515,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         const auth = await this.readAscAuth(context);
         if (!auth) {
           throw new AdapterError(
-            `Apple App ID registration requires App Store Connect API credentials (asc_issuer_id, asc_api_key_id, asc_api_key_p8) from the org-level Apple integration. Reconnect the integration in Studio and retry bundle "${providedBundleId}".`,
+            `Apple App ID registration requires App Store Connect API credentials (asc_issuer_id, asc_api_key_id, asc_api_key_p8) from the org-level Apple integration. Reconnect the integration in Structure and retry bundle "${providedBundleId}".`,
             'apple',
             'apple:register-app-id',
           );
@@ -1577,7 +1577,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         if (!apnsKey) {
           throw new AdapterError(
             'No Apple Auth Key with the APNs capability is registered for this project. ' +
-              'Run "Generate APNs Key" first so Studio has the .p8 vaulted, then re-run this step.',
+              'Run "Generate APNs Key" first so Structure has the .p8 vaulted, then re-run this step.',
             'apple',
             'upload-apns-to-firebase',
           );
@@ -1596,7 +1596,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         // ("The resource 'apps' does not allow 'CREATE'. Allowed operations
         // are: GET_COLLECTION, GET_INSTANCE, UPDATE"). New apps must be
         // created in the App Store Connect web UI by an Account Holder /
-        // Admin. Studio's job here is to *detect* the listing once it
+        // Admin. Structure's job here is to *detect* the listing once it
         // exists and link it to this project, not to create it.
         //
         // The user-supplied input field `asc_app_name` (defaulting to the
@@ -1628,7 +1628,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         const auth = await this.readAscAuth(context);
         if (!auth) {
           throw new AdapterError(
-            `Detecting the App Store Connect listing requires the org-level Apple integration (asc_issuer_id, asc_api_key_id, asc_api_key_p8). Reconnect the Apple integration in Studio and rerun this step for bundle "${bundleId}".`,
+            `Detecting the App Store Connect listing requires the org-level Apple integration (asc_issuer_id, asc_api_key_id, asc_api_key_p8). Reconnect the Apple integration in Structure and rerun this step for bundle "${bundleId}".`,
             'apple',
             'apple:create-app-store-listing',
           );
@@ -1643,7 +1643,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
         const bundle = await this.getBundleIdByIdentifier(auth, bundleId);
         if (!bundle) {
           throw new AdapterError(
-            `Bundle ID "${bundleId}" is not registered in Apple Developer. Run "Register App ID" first so Studio can detect the App Store Connect listing.`,
+            `Bundle ID "${bundleId}" is not registered in Apple Developer. Run "Register App ID" first so Structure can detect the App Store Connect listing.`,
             'apple',
             'apple:create-app-store-listing',
           );
@@ -1670,7 +1670,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
             nameMismatch,
           });
           const mismatchSuffix = nameMismatch
-            ? ` Note: the App Store Connect listing is named "${detectedName}", not "${requestedAscName}" — Studio recorded the actual name from Apple. Update the input above if you want this to match.`
+            ? ` Note: the App Store Connect listing is named "${detectedName}", not "${requestedAscName}" — Structure recorded the actual name from Apple. Update the input above if you want this to match.`
             : '';
           return {
             status: 'completed',
@@ -1696,7 +1696,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
           userPrompt:
             `App Store Connect listing for bundle ${bundleId} not found yet. Create it manually as "${requestedAscName}" ` +
             '(or any unique name — update the input field above if you have to use a different one), then re-run this step. ' +
-            'Studio will detect it via filter[bundleId] and store asc_app_id and asc_app_name automatically.',
+            'Structure will detect it via filter[bundleId] and store asc_app_id and asc_app_name automatically.',
         };
       }
       case 'apple:configure-testflight-group':
@@ -1732,7 +1732,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
 
   // Reminder shown after the step succeeds.
   //
-  // Why: EAS marks credentials uploaded via its GraphQL API (which Studio uses
+  // Why: EAS marks credentials uploaded via its GraphQL API (which Structure uses
   // here) as "not validated for non-interactive builds". The flag only flips
   // when an interactive `eas credentials` / `eas build` session re-checks the
   // cert against Apple. Until that happens, CI runs of
@@ -1763,7 +1763,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
   //      teardown step can revoke them in Apple Developer Portal.
   //
   // Dev profiles are intentionally out of scope — they require registered
-  // device UDIDs which Studio does not collect.
+  // device UDIDs which Structure does not collect.
   private async executeStoreSigningInEas(
     context: StepContext,
     config: AppleManifestConfig,
@@ -1868,7 +1868,7 @@ export class AppleAdapter implements ProviderAdapter<AppleManifestConfig> {
       });
     }
 
-    const profileName = `Studio App Store ${bundleIdentifier!} ${new Date().toISOString().slice(0, 10)}`;
+    const profileName = `Structure App Store ${bundleIdentifier!} ${new Date().toISOString().slice(0, 10)}`;
     let minted: AppleAppStoreSigningAssets;
     try {
       minted = await mintAppleAppStoreSigningAssets({

@@ -71,7 +71,7 @@ export const appleSigningPlugin: PluginDefinition = {
   ],
   assistedStepConfigs: {
     'apple:generate-apns-key': {
-      automatedPhaseDescription: 'Studio opens the Apple Developer Portal for you.',
+      automatedPhaseDescription: 'Structure opens the Apple Developer Portal for you.',
       userPhaseDescription: 'Download the .p8 key file — it can only be downloaded once.',
       timeConstraint: {
         message: 'The .p8 key can only be downloaded once from Apple. Save it immediately.',

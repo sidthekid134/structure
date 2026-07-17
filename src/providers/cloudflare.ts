@@ -398,13 +398,13 @@ export class CloudflareAdapter implements ProviderAdapter<CloudflareManifestConf
     opts: { createIfMissing: boolean },
   ): Promise<EnsureDnsRecordOutcome> {
     // Apex-host mode: the app host is the zone itself. This step is a no-op
-    // because Studio does not have enough context to safely create/replace the
+    // because Structure does not have enough context to safely create/replace the
     // apex A/AAAA/CNAME target (origin-specific).
     if (target.domainMode === 'zone-root') {
       return {
         created: false,
         skipped: true,
-        reason: `App host "${target.appDomain}" is zone apex; no subdomain DNS record is created by Studio.`,
+        reason: `App host "${target.appDomain}" is zone apex; no subdomain DNS record is created by Structure.`,
       };
     }
 

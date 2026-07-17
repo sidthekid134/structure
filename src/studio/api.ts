@@ -1,5 +1,5 @@
 /**
- * Studio UI REST API routes.
+ * Structure UI REST API routes.
  *
  * Core provisioning endpoints:
  *   POST /api/projects/:projectId/oauth/:providerId/start         — start unified OAuth session
@@ -68,7 +68,7 @@ import { EasConnectionService } from '../core/eas-connection.js';
 import { GitHubConnectionService } from '../core/github-connection.js';
 import {
   GcpConnectionService,
-  buildStudioGcpProjectId,
+  buildStructureGcpProjectId,
   GCP_PROVISIONER_SERVICE_ACCOUNT_ID,
   type GcpBootstrapPhaseId,
 } from '../core/gcp-connection.js';
@@ -85,7 +85,7 @@ import {
   type AppleAuthKeyRegistry,
 } from '../providers/apple.js';
 import { CloudflareAdapter, HttpCloudflareApiClient } from '../providers/cloudflare.js';
-import { OAuthAdapter, StudioOAuthApiClient } from '../providers/oauth.js';
+import { OAuthAdapter, StructureOAuthApiClient } from '../providers/oauth.js';
 import { resolveCloudflareDomainTarget } from '../core/cloudflare-domain-target.js';
 import { ExpoGraphqlEasApiClient } from '../providers/expo-graphql-eas-client.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -174,7 +174,7 @@ import type { GuidedFlowType } from '../models/guided-flow.js';
 import { GuidedFlowError } from '../models/guided-flow.js';
 import { CredentialRetrievalService } from '../services/credential-retrieval-service.js';
 import { encrypt, decrypt } from '../encryption.js';
-import { deriveStudioRowKey } from './row-crypto.js';
+import { deriveStructureRowKey } from './row-crypto.js';
 import { sealMigrationExport, openMigrationExport } from './export-format.js';
 import type { VaultManager } from '../vault.js';
 import { VaultToSqliteMigrator } from '../services/vault-migrator.js';
@@ -193,7 +193,7 @@ const GCP_BOOTSTRAP_PHASE_IDS: readonly GcpBootstrapPhaseId[] = [
   'vault',
 ];
 
-const PROJECT_MIGRATION_FORMAT = 'studio-project-migration';
+const PROJECT_MIGRATION_FORMAT = 'structure-project-migration';
 const PROJECT_MIGRATION_VERSION = 1;
 
 const INSTANCE_VAULT_MIGRATION_PROVIDER_IDS = ['github', 'eas', 'apple'] as const;
@@ -321,7 +321,7 @@ interface ProjectMigrationPayloadV1 {
   providerCredentials: MigrationProviderCredentialRow[];
   oauthSessions: MigrationOauthSessionRow[];
   vaultEntries: MigrationVaultProviderEntry[];
-  /** Organization-scoped vault material from the exporting Studio (GitHub PAT, Expo token, Apple ASC). */
+  /** Organization-scoped vault material from the exporting Structure (GitHub PAT, Expo token, Apple ASC). */
   instanceVaultEntries?: MigrationVaultProviderEntry[];
 }
 
@@ -338,7 +338,7 @@ function isGitHubAuthFailure(error: Error): boolean {
 }
 
 /** Structured [structure-api] lines for operator visibility (avoid logging raw secrets). */
-function logStudioApiAction(action: string, detail: Record<string, unknown>): void {
+function logStructureApiAction(action: string, detail: Record<string, unknown>): void {
   console.log(`[structure-api] ${action}`, JSON.stringify(detail));
 }
 
@@ -476,7 +476,7 @@ export function createApiRouter(
   const router = Router();
   const SERVER_STARTED_AT = Date.now();
   const projectManager = new ProjectManager(storeDir);
-  const rowSecret = (purpose: string) => deriveStudioRowKey(storeDir, purpose);
+  const rowSecret = (purpose: string) => deriveStructureRowKey(storeDir, purpose);
   const credentialStore = new CredentialStore(storeDir, rowSecret);
   const credentialService = new CredentialService(storeDir, rowSecret);
 
@@ -1227,7 +1227,7 @@ export function createApiRouter(
     if (!fs.existsSync(filePath)) {
       return null;
     }
-    const key = deriveStudioRowKey(storeDir, `${PENDING_INSTANCE_VAULT_ROW_PURPOSE}:${projectId}`);
+    const key = deriveStructureRowKey(storeDir, `${PENDING_INSTANCE_VAULT_ROW_PURPOSE}:${projectId}`);
     const plaintext = decrypt(fs.readFileSync(filePath, 'utf8').trim(), key, {
       providerId: 'pending-instance-vault-sync',
     });
@@ -1239,7 +1239,7 @@ export function createApiRouter(
   function writePendingInstanceVaultSyncEncrypted(projectId: string, entries: MigrationVaultProviderEntry[]): void {
     const dir = pendingInstanceVaultSyncDir(storeDir, projectId);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const key = deriveStudioRowKey(storeDir, `${PENDING_INSTANCE_VAULT_ROW_PURPOSE}:${projectId}`);
+    const key = deriveStructureRowKey(storeDir, `${PENDING_INSTANCE_VAULT_ROW_PURPOSE}:${projectId}`);
     const ciphertext = encrypt(JSON.stringify(entries), key, { providerId: 'pending-instance-vault-sync' });
     fs.writeFileSync(pendingInstanceVaultSyncFile(storeDir, projectId), ciphertext, { mode: 0o600 });
   }
@@ -1404,7 +1404,7 @@ export function createApiRouter(
         credential_type: row.credential_type,
         value: decrypt(
           row.encrypted_value,
-          deriveStudioRowKey(storeDir, `credential:${row.id}`),
+          deriveStructureRowKey(storeDir, `credential:${row.id}`),
           { providerId: 'project-migration-project-credentials' },
         ),
         metadata_json: row.metadata_json,
@@ -1444,7 +1444,7 @@ export function createApiRouter(
         client_id: row.client_id,
         client_secret: decrypt(
           row.encrypted_client_secret,
-          deriveStudioRowKey(storeDir, `oauth_client:${row.id}`),
+          deriveStructureRowKey(storeDir, `oauth_client:${row.id}`),
           { providerId: 'project-migration-oauth-clients' },
         ),
         redirect_uris_json: row.redirect_uris_json,
@@ -1470,7 +1470,7 @@ export function createApiRouter(
         provider_type: row.provider_type,
         credential_data_json: decrypt(
           row.encrypted_credential_data,
-          deriveStudioRowKey(storeDir, `provider_cred:${row.id}`),
+          deriveStructureRowKey(storeDir, `provider_cred:${row.id}`),
           { providerId: 'project-migration-provider-credentials' },
         ),
         credential_hash: row.credential_hash,
@@ -1567,7 +1567,7 @@ export function createApiRouter(
         for (const credential of payload.projectCredentials) {
           const encryptedValue = encrypt(
             credential.value,
-            deriveStudioRowKey(storeDir, `credential:${credential.id}`),
+            deriveStructureRowKey(storeDir, `credential:${credential.id}`),
             { providerId: 'project-migration-project-credentials' },
           );
           projectCredentialsDb
@@ -1613,7 +1613,7 @@ export function createApiRouter(
         for (const client of payload.oauthClients) {
           const encryptedClientSecret = encrypt(
             client.client_secret,
-            deriveStudioRowKey(storeDir, `oauth_client:${client.id}`),
+            deriveStructureRowKey(storeDir, `oauth_client:${client.id}`),
             { providerId: 'project-migration-oauth-clients' },
           );
           credentialsDb
@@ -1637,7 +1637,7 @@ export function createApiRouter(
         for (const credential of payload.providerCredentials) {
           const encryptedCredentialData = encrypt(
             credential.credential_data_json,
-            deriveStudioRowKey(storeDir, `provider_cred:${credential.id}`),
+            deriveStructureRowKey(storeDir, `provider_cred:${credential.id}`),
             { providerId: 'project-migration-provider-credentials' },
           );
           credentialsDb
@@ -1991,7 +1991,7 @@ export function createApiRouter(
     try {
       const { projectId } = req.params;
       const result = gcpConnectionService.getProjectConnectionStatus(projectId);
-      logStudioApiAction('integrations/firebase/connection', {
+      logStructureApiAction('integrations/firebase/connection', {
         projectId,
         connected: result.connected,
         firebaseIntegrationStatus: result.integration?.status ?? null,
@@ -2074,7 +2074,7 @@ export function createApiRouter(
     async (req: Request, res: Response) => {
       try {
         const { projectId } = req.params;
-        const result = await gcpConnectionService.discoverStudioGcpProjectWithStoredOAuth(projectId);
+        const result = await gcpConnectionService.discoverStructureGcpProjectWithStoredOAuth(projectId);
         res.json(result);
       } catch (err) {
         const message = (err as Error).message;
@@ -2147,7 +2147,7 @@ export function createApiRouter(
         res.status(400).json({ error: `Unsupported OAuth provider: "${providerId}".` });
         return;
       }
-      const result = await gcpConnectionService.discoverStudioGcpProjectWithStoredOAuth(projectId);
+      const result = await gcpConnectionService.discoverStructureGcpProjectWithStoredOAuth(projectId);
       res.json(result);
     } catch (err) {
       const message = (err as Error).message;
@@ -2201,7 +2201,7 @@ export function createApiRouter(
   });
 
   // POST /api/projects/:projectId/oauth/gcp/delete-linked-project
-  // Deletes the GCP project linked to this studio project using the stored OAuth token.
+  // Deletes the GCP project linked to this structure project using the stored OAuth token.
   // Useful for cleaning up orphaned GCP projects (e.g. created under a different console account).
   router.post('/projects/:projectId/oauth/gcp/delete-linked-project', async (req: Request, res: Response) => {
     try {
@@ -2663,7 +2663,7 @@ export function createApiRouter(
   //
   // The PEM is read from the unified Apple Auth Key registry vaulted at
   // `<projectId>/apple/auth-keys`, with a fallback to the legacy single-purpose
-  // paths used by the Studio REST upload endpoint above so projects that only
+  // paths used by the Structure REST upload endpoint above so projects that only
   // ever uploaded through the legacy form still get a working download.
   //
   // No JSON wrapping — the response body is the raw PEM and the browser
@@ -3456,7 +3456,7 @@ export function createApiRouter(
       const { projectId } = req.params;
       const module = projectManager.getProject(projectId);
       const organization = projectManager.getOrganization();
-      const defaultGcpProjectId = buildStudioGcpProjectId(projectId);
+      const defaultGcpProjectId = buildStructureGcpProjectId(projectId);
       const firebaseConfig = (module.integrations.firebase?.config ?? {}) as Record<string, string>;
       const gcpProjectId = firebaseConfig['gcp_project_id']?.trim() || defaultGcpProjectId;
       const gcpProvisionerEmail =
@@ -3556,7 +3556,7 @@ export function createApiRouter(
       const missingRequired = providers.flatMap((p) =>
         p.dependencies.filter((d) => d.status === 'missing').map((d) => `${p.provider}:${d.key}`),
       );
-      logStudioApiAction('integrations/dependencies', {
+      logStructureApiAction('integrations/dependencies', {
         projectId,
         projectSlug: module.project.slug,
         providerCount: providers.length,
@@ -3880,7 +3880,7 @@ export function createApiRouter(
       if ((planMutated || planResyncedWithModules) && !planHasInProgressStep) {
         savePersistedPlan(projectId, plan);
       }
-      logStudioApiAction('provisioning/plan GET', {
+      logStructureApiAction('provisioning/plan GET', {
         projectId,
         createdNewPlan,
         providersQuery: selectedProviders ?? null,
@@ -4165,8 +4165,8 @@ export function createApiRouter(
         registry.register(
           'oauth',
           new OAuthAdapter(
-            new StudioOAuthApiClient((studioProjectId, reason) =>
-              gcpConnectionService.getAccessToken(studioProjectId, reason),
+            new StructureOAuthApiClient((structureProjectId, reason) =>
+              gcpConnectionService.getAccessToken(structureProjectId, reason),
             ),
           ),
         );
@@ -4560,7 +4560,7 @@ export function createApiRouter(
         const { projectId, nodeKey } = req.params;
         const plan = loadPersistedPlan(projectId);
         if (!plan) {
-          logStudioApiAction('provisioning/plan/user-action/complete POST', {
+          logStructureApiAction('provisioning/plan/user-action/complete POST', {
             projectId,
             nodeKey,
             outcome: 'error',
@@ -4572,7 +4572,7 @@ export function createApiRouter(
 
         const state = plan.nodeStates.get(nodeKey);
         if (!state) {
-          logStudioApiAction('provisioning/plan/user-action/complete POST', {
+          logStructureApiAction('provisioning/plan/user-action/complete POST', {
             projectId,
             nodeKey,
             outcome: 'error',
@@ -4831,7 +4831,7 @@ export function createApiRouter(
         }
         savePersistedPlan(projectId, plan);
 
-        logStudioApiAction('provisioning/plan/user-action/complete POST', {
+        logStructureApiAction('provisioning/plan/user-action/complete POST', {
           projectId,
           nodeKey,
           outcome: 'ok',
@@ -4855,7 +4855,7 @@ export function createApiRouter(
         res.json({ nodeKey, status: 'completed', resourcesProduced: mergedProduced });
       } catch (err) {
         const message = (err as Error).message;
-        logStudioApiAction('provisioning/plan/user-action/complete POST', {
+        logStructureApiAction('provisioning/plan/user-action/complete POST', {
           projectId: req.params.projectId,
           nodeKey: req.params.nodeKey,
           outcome: 'error',
@@ -4909,7 +4909,7 @@ export function createApiRouter(
         plan.nodeStates.set(nodeKey, state);
         savePersistedPlan(projectId, plan);
 
-        logStudioApiAction('provisioning/plan/node/inputs PUT', { projectId, nodeKey, inputsChanged });
+        logStructureApiAction('provisioning/plan/node/inputs PUT', { projectId, nodeKey, inputsChanged });
         res.json({ nodeKey, inputs, needsReprovision: inputsChanged && state.status === 'not-started' });
       } catch (err) {
         res.status(500).json({ error: (err as Error).message });
@@ -5100,8 +5100,8 @@ export function createApiRouter(
         registry.register(
           'oauth',
           new OAuthAdapter(
-            new StudioOAuthApiClient((studioProjectId, reason) =>
-              gcpConnectionService.getAccessToken(studioProjectId, reason),
+            new StructureOAuthApiClient((structureProjectId, reason) =>
+              gcpConnectionService.getAccessToken(structureProjectId, reason),
             ),
           ),
         );
@@ -5198,7 +5198,7 @@ export function createApiRouter(
         }
       })();
 
-      logStudioApiAction('provisioning/plan/run POST', {
+      logStructureApiAction('provisioning/plan/run POST', {
         projectId,
         planProviders,
         executionIntent,
@@ -5393,7 +5393,7 @@ export function createApiRouter(
         }
       }
       savePersistedPlan(projectId, plan);
-      logStudioApiAction('provisioning/plan/run/nodes POST', {
+      logStructureApiAction('provisioning/plan/run/nodes POST', {
         projectId,
         executionIntent,
         requestedNodeKeys: nodeKeys,
@@ -5628,8 +5628,8 @@ export function createApiRouter(
             registry.register(
               'oauth',
               new OAuthAdapter(
-                new StudioOAuthApiClient((studioProjectId, reason) =>
-                  gcpConnectionService.getAccessToken(studioProjectId, reason),
+                new StructureOAuthApiClient((structureProjectId, reason) =>
+                  gcpConnectionService.getAccessToken(structureProjectId, reason),
                 ),
               ),
             );
@@ -6318,8 +6318,8 @@ export function createApiRouter(
         registry.register(
           'oauth',
           new OAuthAdapter(
-            new StudioOAuthApiClient((studioProjectId, reason) =>
-              gcpConnectionService.getAccessToken(studioProjectId, reason),
+            new StructureOAuthApiClient((structureProjectId, reason) =>
+              gcpConnectionService.getAccessToken(structureProjectId, reason),
             ),
           ),
         );
@@ -6549,7 +6549,7 @@ export function createApiRouter(
           }
         }
       }
-      logStudioApiAction('provisioning/plan/sync POST', {
+      logStructureApiAction('provisioning/plan/sync POST', {
         projectId,
         phase: 'start',
         githubTokenPresent: !!githubToken,
@@ -6606,8 +6606,8 @@ export function createApiRouter(
         registry.register(
           'oauth',
           new OAuthAdapter(
-            new StudioOAuthApiClient((studioProjectId, reason) =>
-              gcpConnectionService.getAccessToken(studioProjectId, reason),
+            new StructureOAuthApiClient((structureProjectId, reason) =>
+              gcpConnectionService.getAccessToken(structureProjectId, reason),
             ),
           ),
         );
@@ -6997,7 +6997,7 @@ export function createApiRouter(
         return;
       }
 
-      logStudioApiAction('provisioning/plan/sync POST', {
+      logStructureApiAction('provisioning/plan/sync POST', {
         projectId,
         phase: 'complete',
         firebaseSyncSteps: firebaseResults.length,

@@ -179,8 +179,8 @@ async function ensureWorkloadIdentityPool(
     `/v1/projects/${projectNumber}/locations/global/workloadIdentityPools?workloadIdentityPoolId=${encodeURIComponent(poolId)}`,
     token,
     JSON.stringify({
-      displayName: 'Studio GitHub Deploy Pool',
-      description: 'Workload identity pool for Studio-managed GitHub Actions deployments.',
+      displayName: 'Structure GitHub Deploy Pool',
+      description: 'Workload identity pool for Structure-managed GitHub Actions deployments.',
     }),
   );
 }
@@ -202,7 +202,7 @@ async function ensureWorkloadIdentityProvider(
     if (!(err instanceof GcpHttpError) || err.statusCode !== 404) throw err;
   }
 
-  const providerDisplayName = `Studio GHA ${owner}/${repo}`.slice(0, 32).trimEnd();
+  const providerDisplayName = `Structure GHA ${owner}/${repo}`.slice(0, 32).trimEnd();
   await gcpRequest(
     'POST',
     'iam.googleapis.com',
@@ -467,7 +467,7 @@ const ensureArtifactRegistryHandler = simpleHandler(
     const log = makeLog('gcp:ensure-artifact-registry', context.projectId);
     const projectId = requireGcpProjectId(context);
     const region = regionForContext(context);
-    const repo = context.userInputs?.['repository']?.trim() || 'studio-serverless';
+    const repo = context.userInputs?.['repository']?.trim() || 'structure-serverless';
     const token = await context.getToken('gcp');
 
     await enableProjectService(projectId, token, 'artifactregistry.googleapis.com');
@@ -481,7 +481,7 @@ const ensureArtifactRegistryHandler = simpleHandler(
         'artifactregistry.googleapis.com',
         `/v1/projects/${projectId}/locations/${region}/repositories?repositoryId=${encodeURIComponent(repo)}`,
         token,
-        JSON.stringify({ format: 'DOCKER', description: 'Studio serverless delivery images' }),
+        JSON.stringify({ format: 'DOCKER', description: 'Structure serverless delivery images' }),
       );
     }
     log(`✓ ensured artifact repository ${repo}`);
@@ -495,7 +495,7 @@ const ensureArtifactRegistryHandler = simpleHandler(
   async (context) => {
     const projectId = requireGcpProjectId(context);
     const region = regionForContext(context);
-    const repo = context.userInputs?.['repository']?.trim() || 'studio-serverless';
+    const repo = context.userInputs?.['repository']?.trim() || 'structure-serverless';
     const token = await context.getToken('gcp');
     try {
       await gcpRequest('GET', 'artifactregistry.googleapis.com', `/v1/projects/${projectId}/locations/${region}/repositories/${repo}`, token);
@@ -515,7 +515,7 @@ const ensureRuntimeServiceAccountHandler = simpleHandler(
   async (context) => {
     const projectId = requireGcpProjectId(context);
     const token = await context.getToken('gcp');
-    const accountId = `studio-runtime-${resourceSlug(context).slice(0, 20)}`;
+    const accountId = `structure-runtime-${resourceSlug(context).slice(0, 20)}`;
     const email = `${accountId}@${projectId}.iam.gserviceaccount.com`;
 
     try {
@@ -526,7 +526,7 @@ const ensureRuntimeServiceAccountHandler = simpleHandler(
         'iam.googleapis.com',
         `/v1/projects/${projectId}/serviceAccounts`,
         token,
-        JSON.stringify({ accountId, serviceAccount: { displayName: `Studio runtime ${context.projectId}` } }),
+        JSON.stringify({ accountId, serviceAccount: { displayName: `Structure runtime ${context.projectId}` } }),
       );
     }
 
@@ -535,7 +535,7 @@ const ensureRuntimeServiceAccountHandler = simpleHandler(
   async (context) => {
     const projectId = requireGcpProjectId(context);
     const token = await context.getToken('gcp');
-    const accountId = `studio-runtime-${resourceSlug(context).slice(0, 20)}`;
+    const accountId = `structure-runtime-${resourceSlug(context).slice(0, 20)}`;
     const email = `${accountId}@${projectId}.iam.gserviceaccount.com`;
     try {
       await gcpRequest('GET', 'iam.googleapis.com', `/v1/projects/-/serviceAccounts/${encodeURIComponent(email)}`, token);
@@ -633,7 +633,7 @@ const setupObservabilityBaselineHandler = simpleHandler(
         token,
         JSON.stringify({
           name: metricName,
-          description: 'Studio managed metric for Cloud Run 5xx responses',
+          description: 'Structure managed metric for Cloud Run 5xx responses',
           filter: 'resource.type="cloud_run_revision" AND httpRequest.status>=500',
         }),
       );
@@ -674,7 +674,7 @@ const apiBuildContainerHandler = simpleHandler(
     const projectId = requireGcpProjectId(context);
     const region = regionForContext(context);
     const repo = context.upstreamArtifacts['artifact_registry_repo']?.trim()
-      || `${region}-docker.pkg.dev/${projectId}/studio-serverless`;
+      || `${region}-docker.pkg.dev/${projectId}/structure-serverless`;
     const image = `${repo}/${resourceSlug(context)}-api:${Date.now()}`;
     const cwd = process.cwd();
     const contract = resolveDeployContractFromInputs(githubDeployInputsForContext(context));
@@ -710,7 +710,7 @@ const apiBuildContainerHandler = simpleHandler(
       ],
       images: [image],
     };
-    const configPath = path.join(os.tmpdir(), `studio-cloudbuild-${context.projectId}-${Date.now()}.json`);
+    const configPath = path.join(os.tmpdir(), `structure-cloudbuild-${context.projectId}-${Date.now()}.json`);
     fs.writeFileSync(configPath, JSON.stringify(cloudBuildConfig, null, 2));
     try {
       await runCommand(
@@ -1220,8 +1220,8 @@ const cicdConfigureIdentityHandler = simpleHandler(
     const token = await context.getToken('gcp');
     const projectNumber = await getGcpProjectNumber(token, projectId);
     const slug = resourceSlug(context);
-    const poolId = 'studio-github';
-    const providerId = `studio-${slug.slice(0, 20)}`;
+    const poolId = 'structure-github';
+    const providerId = `structure-${slug.slice(0, 20)}`;
     await ensureWorkloadIdentityPool(token, projectNumber, poolId);
     const providerResource = await ensureWorkloadIdentityProvider(token, projectNumber, poolId, providerId, owner, repo);
 

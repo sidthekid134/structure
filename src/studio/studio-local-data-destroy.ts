@@ -1,5 +1,5 @@
 /**
- * Wipes local Studio install files under `storeDir` (vault, passkey registry, projects, etc.).
+ * Wipes local Structure install files under `storeDir` (vault, passkey registry, projects, etc.).
  * Used by `POST /api/vault/destroy` and `POST /api/auth/reset-local-data`.
  */
 
@@ -18,7 +18,7 @@ const WIPE_FILES = [
 
 const WIPE_DIRS = ['projects'] as const;
 
-export function destroyLocalStudioInstall(storeDir: string): void {
+export function destroyLocalStructureInstall(storeDir: string): void {
   for (const name of WIPE_FILES) {
     const p = path.join(storeDir, name);
     try {

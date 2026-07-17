@@ -92,7 +92,7 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
 
   constructor(
     private readonly apiClient: FirebaseApiClient = new StubFirebaseApiClient(),
-    private readonly studioGcp: GcpConnectionService | undefined = undefined,
+    private readonly structureGcp: GcpConnectionService | undefined = undefined,
     loggingCallback?: LoggingCallback,
   ) {
     this.log = createOperationLogger('FirebaseAdapter', loggingCallback);
@@ -228,16 +228,16 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
     config: FirebaseManifestConfig,
     context: StepContext,
   ): Promise<StepResult> {
-    if (this.studioGcp) {
-      const accessToken = await this.studioGcp.getAccessToken(context.projectId, 'step:create-gcp-project');
+    if (this.structureGcp) {
+      const accessToken = await this.structureGcp.getAccessToken(context.projectId, 'step:create-gcp-project');
       let gcpProjectId: string;
       if (config.existing_project_id) {
         gcpProjectId = config.existing_project_id;
-        this.studioGcp.storeGcpProjectIdInVault(context.projectId, gcpProjectId);
-        await this.studioGcp.ensureRequiredProjectApis(accessToken, gcpProjectId);
+        this.structureGcp.storeGcpProjectIdInVault(context.projectId, gcpProjectId);
+        await this.structureGcp.ensureRequiredProjectApis(accessToken, gcpProjectId);
       } else {
-        gcpProjectId = await this.studioGcp.ensureProjectForStudioProject(accessToken, context.projectId);
-        await this.studioGcp.ensureRequiredProjectApis(accessToken, gcpProjectId);
+        gcpProjectId = await this.structureGcp.ensureProjectForStructureProject(accessToken, context.projectId);
+        await this.structureGcp.ensureRequiredProjectApis(accessToken, gcpProjectId);
       }
       return {
         status: 'completed',
@@ -245,7 +245,7 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
       };
     }
     throw new AdapterError(
-      'Firebase step execution requires a connected GCP/Firebase control plane (studioGcp).',
+      'Firebase step execution requires a connected GCP/Firebase control plane (structureGcp).',
       'firebase',
       'create-gcp-project',
     );
@@ -257,9 +257,9 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
   ): Promise<StepResult> {
     const projectId = context.upstreamResources['gcp_project_id'];
     if (!projectId) throw new AdapterError('Missing gcp_project_id', 'firebase', 'enable-firebase');
-    if (this.studioGcp) {
-      const accessToken = await this.studioGcp.getAccessToken(context.projectId, 'step:enable-firebase');
-      await this.studioGcp.ensureRequiredProjectApis(accessToken, projectId);
+    if (this.structureGcp) {
+      const accessToken = await this.structureGcp.getAccessToken(context.projectId, 'step:enable-firebase');
+      await this.structureGcp.ensureRequiredProjectApis(accessToken, projectId);
     }
     return {
       status: 'completed',
@@ -273,20 +273,20 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
   ): Promise<StepResult> {
     const projectId = context.upstreamResources['gcp_project_id'] ?? context.upstreamResources['firebase_project_id'];
     if (!projectId) throw new AdapterError('Missing project_id', 'firebase', 'create-provisioner-sa');
-    if (this.studioGcp) {
-      const accessToken = await this.studioGcp.requireUserOAuthAccessToken(
+    if (this.structureGcp) {
+      const accessToken = await this.structureGcp.requireUserOAuthAccessToken(
         context.projectId,
         'step:create-provisioner-sa',
       );
-      const email = await this.studioGcp.ensureProvisionerServiceAccount(accessToken, projectId);
-      this.studioGcp.storeProvisionerServiceAccountEmail(context.projectId, email);
+      const email = await this.structureGcp.ensureProvisionerServiceAccount(accessToken, projectId);
+      this.structureGcp.storeProvisionerServiceAccountEmail(context.projectId, email);
       return {
         status: 'completed',
         resourcesProduced: { provisioner_sa_email: email },
       };
     }
     throw new AdapterError(
-      'Creating provisioner service accounts requires studioGcp. Connect GCP OAuth first.',
+      'Creating provisioner service accounts requires structureGcp. Connect GCP OAuth first.',
       'firebase',
       'create-provisioner-sa',
     );
@@ -302,15 +302,15 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
     if (!saEmail) {
       throw new AdapterError('Missing provisioner_sa_email', 'firebase', 'bind-provisioner-iam');
     }
-    if (!this.studioGcp) {
+    if (!this.structureGcp) {
       return { status: 'completed', resourcesProduced: {} };
     }
-    const accessToken = await this.studioGcp.requireUserOAuthAccessToken(
+    const accessToken = await this.structureGcp.requireUserOAuthAccessToken(
       context.projectId,
       'step:bind-provisioner-iam',
     );
     await new Promise((r) => setTimeout(r, 4000));
-    await this.studioGcp.grantProvisionerProjectRoles(accessToken, projectId, saEmail);
+    await this.structureGcp.grantProvisionerProjectRoles(accessToken, projectId, saEmail);
     return { status: 'completed', resourcesProduced: {} };
   }
 
@@ -324,20 +324,20 @@ export class FirebaseAdapter implements ProviderAdapter<FirebaseManifestConfig> 
     if (!saEmail) {
       throw new AdapterError('Missing provisioner_sa_email', 'firebase', 'generate-sa-key');
     }
-    if (this.studioGcp) {
-      const userToken = await this.studioGcp.requireUserOAuthAccessToken(
+    if (this.structureGcp) {
+      const userToken = await this.structureGcp.requireUserOAuthAccessToken(
         context.projectId,
         'step:generate-sa-key',
       );
-      const saJson = await this.studioGcp.createServiceAccountKey(userToken, projectId, saEmail);
-      this.studioGcp.recordProvisionerServiceAccountKey(context.projectId, projectId, saEmail, saJson);
+      const saJson = await this.structureGcp.createServiceAccountKey(userToken, projectId, saEmail);
+      this.structureGcp.recordProvisionerServiceAccountKey(context.projectId, projectId, saEmail, saJson);
       return {
         status: 'completed',
         resourcesProduced: { service_account_json: 'vaulted' },
       };
     }
     throw new AdapterError(
-      'Generating service account keys requires studioGcp. Connect GCP OAuth first.',
+      'Generating service account keys requires structureGcp. Connect GCP OAuth first.',
       'firebase',
       'generate-sa-key',
     );

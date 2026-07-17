@@ -1,5 +1,5 @@
 /**
- * Studio UI Server — local web interface for project management and monitoring.
+ * Structure UI Server — local web interface for project management and monitoring.
  *
  * Starts an Express HTTP server on localhost (default 3737) serving:
  *   - Static dashboard UI (HTML/CSS/JS)
@@ -7,7 +7,7 @@
  *   - WebSocket endpoint at /ws/provisioning/:runId
  *
  * Usage:
- *   const server = new StudioServer({ port: 3737, storeDir: '…' });
+ *   const server = new StructureServer({ port: 3737, storeDir: '…' });
  *   await server.listen();
  */
 
@@ -27,13 +27,13 @@ import { createWebAuthnRouter } from './auth-webauthn-router.js';
 import { createLifecycleRouter } from './lifecycle-router.js';
 import { VaultManager } from '../vault.js';
 import { getVaultSession, VaultSealedError } from './vault-session.js';
-import { resolveStudioStoreDir } from './store-dir.js';
+import { resolveStructureStoreDir } from './store-dir.js';
 
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
 
-export interface StudioServerOptions {
+export interface StructureServerOptions {
   /**
    * Port to listen on. Defaults to 3737. Pass `0` to let the OS pick a free
    * ephemeral port.
@@ -73,10 +73,10 @@ function describeJsonBodyShape(body: unknown, depth = 0): string {
 }
 
 // ---------------------------------------------------------------------------
-// StudioServer
+// StructureServer
 // ---------------------------------------------------------------------------
 
-export class StudioServer {
+export class StructureServer {
   private readonly app: express.Application;
   private readonly httpServer: http.Server;
   private readonly wss: WebSocketServer;
@@ -89,10 +89,10 @@ export class StudioServer {
   private readonly vaultManager: VaultManager;
   readonly wsHandler: WsHandler;
 
-  constructor(private readonly options: StudioServerOptions = {}) {
+  constructor(private readonly options: StructureServerOptions = {}) {
     const storeDir =
       options.storeDir ??
-      resolveStudioStoreDir(process.env);
+      resolveStructureStoreDir(process.env);
 
     // Lock down newly-created files: vault, token, event log, secret stores
     // all become 0600 / 0700 by default. Defense-in-depth against another
@@ -533,21 +533,21 @@ function isLoopbackAddress(host: string): boolean {
 if (require.main === module) {
   const portEnv = process.env['STRUCTURE_PORT'];
   const port = portEnv !== undefined ? parseInt(portEnv, 10) : undefined;
-  const studio = new StudioServer({
+  const structure = new StructureServer({
     serveUiFromSource: process.env['STRUCTURE_SERVE_UI_FROM_SOURCE'] === '1',
     port: Number.isFinite(port) ? port : undefined,
     host: process.env['STRUCTURE_HOST'],
     storeDir: process.env['STRUCTURE_STORE_DIR'],
     portFile: process.env['STRUCTURE_PORT_FILE'],
   });
-  studio.listen().catch((err: Error) => {
+  structure.listen().catch((err: Error) => {
     console.error('Failed to start Structure:', err.message);
     process.exit(1);
   });
   // Graceful shutdown so the daemon exits cleanly on signal.
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.once(sig, () => {
-      studio.close().finally(() => process.exit(0));
+      structure.close().finally(() => process.exit(0));
     });
   }
 }

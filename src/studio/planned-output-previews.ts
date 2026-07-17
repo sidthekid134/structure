@@ -4,7 +4,7 @@
 
 import type { ProvisioningPlan, ProvisioningNode } from '../provisioning/graph.types.js';
 import { computeCanonicalNodeOrder, propagateJourneyPhases } from '../provisioning/journey-phases.js';
-import { buildStudioGcpProjectId, GCP_PROVISIONER_SERVICE_ACCOUNT_ID } from '../core/gcp-connection.js';
+import { buildStructureGcpProjectId, GCP_PROVISIONER_SERVICE_ACCOUNT_ID } from '../core/gcp-connection.js';
 import type { ProjectModule } from './project-manager.js';
 import { projectPrimaryDomain, projectResourceSlug } from './project-identity.js';
 import { globalPluginRegistry } from '../plugins/plugin-registry.js';
@@ -97,14 +97,14 @@ function previewFor(
     case 'asc_app_id': {
       // Apple's App Store Connect API forbids POST /v1/apps. The user
       // creates the listing once in the App Store Connect web UI (Apps →
-      // "+" → New App) using these exact values, and Studio detects it
+      // "+" → New App) using these exact values, and Structure detects it
       // via filter[bundleId] on the next run and stores asc_app_id.
       // Prefer the user-typed listing name if they've configured one — App
       // Store names must be globally unique so it often differs from
       // project.name (e.g. "Flow" → "Flow Mobile").
       const bundle = ctx.bundleId || `com.example.${ctx.slug}`;
       const listingName = ctx.nodeUserInputs['asc_app_name']?.trim() || ctx.appName;
-      return `App Store Connect listing for "${listingName}" (Name "${listingName}", SKU ${bundle}, Bundle ${bundle}). Create it in App Store Connect — Studio detects and links it.`;
+      return `App Store Connect listing for "${listingName}" (Name "${listingName}", SKU ${bundle}, Bundle ${bundle}). Create it in App Store Connect — Structure detects and links it.`;
     }
     case 'asc_app_name': {
       const listingName = ctx.nodeUserInputs['asc_app_name']?.trim() || ctx.appName;
@@ -234,7 +234,7 @@ export function buildPlannedOutputPreviewByNodeKey(
   // manifest config (app_name field). Keep these two derivations in sync so
   // the preview shows the exact name we will send to Apple's API.
   const appName = project.name?.trim() || slug || plan.projectId;
-  const expectedGcpId = buildStudioGcpProjectId(plan.projectId);
+  const expectedGcpId = buildStructureGcpProjectId(plan.projectId);
   const firebaseConfig = (projectModule.integrations.firebase?.config ?? {}) as Record<string, string>;
   const linkedGcpId = firebaseConfig['gcp_project_id']?.trim() || expectedGcpId;
   const githubOwner =

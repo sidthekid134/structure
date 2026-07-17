@@ -26,7 +26,7 @@ export const USER_ACTIONS: UserActionNode[] = [
     key: 'user:connect-apple-integration',
     label: 'Connect Apple Developer Integration',
     description:
-      'Provide your Apple Team ID and App Store Connect API credentials (Issuer ID, Key ID, .p8 file). Studio uses these at the org level to register App IDs, manage APNs keys, and automate App Store submissions across all projects.',
+      'Provide your Apple Team ID and App Store Connect API credentials (Issuer ID, Key ID, .p8 file). Structure uses these at the org level to register App IDs, manage APNs keys, and automate App Store submissions across all projects.',
     category: 'credential-upload',
     provider: 'apple',
     verification: { type: 'api-check', description: 'Verify org-level Apple integration is configured' },
@@ -84,7 +84,7 @@ export const USER_ACTIONS: UserActionNode[] = [
     key: 'user:connect-gcp-integration',
     label: 'Sign in with Google',
     description:
-      'Sign in with a Google account that has Owner or Editor access to the target GCP project. Studio uses this OAuth session to create and configure Cloud resources on your behalf.',
+      'Sign in with a Google account that has Owner or Editor access to the target GCP project. Structure uses this OAuth session to create and configure Cloud resources on your behalf.',
     category: 'credential-upload',
     provider: 'firebase',
     verification: { type: 'api-check', description: 'Verify stored GCP OAuth refresh token' },
@@ -99,7 +99,7 @@ export const USER_ACTIONS: UserActionNode[] = [
     key: 'user:provide-cloudflare-token',
     label: 'Connect Cloudflare API Token',
     description:
-      'Provide a Cloudflare API token with Zone:Read and DNS:Edit permissions so Studio can manage domain, DNS, SSL, and auth routing.',
+      'Provide a Cloudflare API token with Zone:Read and DNS:Edit permissions so Structure can manage domain, DNS, SSL, and auth routing.',
     category: 'credential-upload',
     provider: 'cloudflare',
     verification: { type: 'credential-upload', secretKey: 'cloudflare_token' },
@@ -176,7 +176,7 @@ export const USER_ACTIONS: UserActionNode[] = [
     verification: {
       type: 'api-check',
       description:
-        'Expo GraphQL: this Expo project must show the same GitHub repo linked as in Studio (owner + repo from your created repository)',
+        'Expo GraphQL: this Expo project must show the same GitHub repo linked as in Structure (owner + repo from your created repository)',
     },
     helpUrl: 'https://docs.expo.dev/eas-update/github-integration/',
     dependencies: [

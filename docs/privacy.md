@@ -7,7 +7,7 @@
 3. [External Endpoints](#external-endpoints)
 4. [Passkey Credential Storage](#passkey-credential-storage)
 5. [OAuth Token Handling](#oauth-token-handling)
-6. [What Studio Never Does](#what-studio-never-does)
+6. [What Structure Never Does](#what-structure-never-does)
 
 ---
 
@@ -29,7 +29,7 @@ Every piece of data Structure manages lives on your machine:
 | OAuth refresh tokens | Inside the encrypted vault |
 | LLM API keys | Inside the encrypted vault |
 | Service account JSON blobs | Inside the encrypted vault |
-| Studio session cookies | Your browser's `localhost` cookie store |
+| Structure session cookies | Your browser's `localhost` cookie store |
 
 Nothing is uploaded, synced, or replicated to any remote service unless you deliberately configure an integration that requires it (see below).
 
@@ -77,7 +77,7 @@ Structure makes outbound network connections **only when you configure the corre
 
 ### LLM Providers
 
-Structure can store API keys for up to four LLM providers per project. A key is only used when the corresponding module is selected and provisioned. The key is sent directly to the provider's API — it does not pass through any Studio-controlled proxy.
+Structure can store API keys for up to four LLM providers per project. A key is only used when the corresponding module is selected and provisioned. The key is sent directly to the provider's API — it does not pass through any Structure-controlled proxy.
 
 | Provider | Endpoint contacted | When |
 |---|---|---|
@@ -109,10 +109,10 @@ This is a standard WebAuthn PRF-extension flow. No passkey data is transmitted o
 
 ---
 
-## What Studio Never Does
+## What Structure Never Does
 
-- Does not transmit credentials, vault contents, or project metadata to Anthropic or any Studio-operated server.
-- Does not load remote scripts or stylesheets at runtime — the Studio UI is fully embedded in the binary.
+- Does not transmit credentials, vault contents, or project metadata to Anthropic or any Structure-operated server.
+- Does not load remote scripts or stylesheets at runtime — the Structure UI is fully embedded in the binary.
 - Does not use browser-based tracking, fingerprinting, or cookies scoped beyond `localhost`.
 - Does not write credentials in plaintext anywhere on disk — all sensitive values are encrypted before storage.
 - Does not contact external services during startup — no version checks, no license validation, no ping requests.

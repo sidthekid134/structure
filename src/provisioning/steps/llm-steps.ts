@@ -47,7 +47,7 @@ function makeLlmTeardownStepsForKind(meta: LlmKindMeta): ProvisioningStepNode[] 
       type: 'step',
       key: `llm:revoke-${meta.kind}-credentials`,
       label: `Revoke ${meta.label} Credentials`,
-      description: `Manually revoke the API key in the ${meta.label} console and remove the encrypted credential from the project vault. Studio cannot revoke remote keys on your behalf.`,
+      description: `Manually revoke the API key in the ${meta.label} console and remove the encrypted credential from the project vault. Structure cannot revoke remote keys on your behalf.`,
       provider: 'llm',
       environmentScope: 'global',
       automationLevel: 'manual',

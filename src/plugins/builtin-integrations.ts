@@ -2,11 +2,11 @@
  * Built-in integration definitions.
  *
  * One entry per top-level vendor/platform. Each plugin sets `integrationId`
- * to one of these. The Studio UI consumes this list (via /api/integrations)
+ * to one of these. The Structure UI consumes this list (via /api/integrations)
  * to render swimlanes and the integrations tab.
  *
  * Adding a new integration is a one-line addition here plus setting
- * `integrationId` on the plugins that belong to it. No Studio Core change
+ * `integrationId` on the plugins that belong to it. No Structure Core change
  * required.
  */
 

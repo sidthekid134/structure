@@ -1,5 +1,5 @@
 /**
- * Shared orchestration types used across CLI, MCP server, and Studio UI.
+ * Shared orchestration types used across CLI, MCP server, and Structure UI.
  *
  * OperationResult is the canonical return value for all provider provisioning
  * operations. ProgressEvent is the unit of the async generator stream that

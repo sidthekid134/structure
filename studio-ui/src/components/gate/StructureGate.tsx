@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import PlatformStudio from '../studio/PlatformStudio';
+import PlatformStructure from '../studio/PlatformStructure';
 import { GitHubLoginPage } from './GitHubLoginPage';
 
 /** Set to true to show the GitHub OAuth login gate; false = unauthenticated, user-inputted token only */
 const SHOW_LOGIN_GATE = false;
 
-export const StudioGate = () => {
+export const StructureGate = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(!SHOW_LOGIN_GATE);
 
   return (
@@ -27,7 +27,7 @@ export const StudioGate = () => {
         </motion.div>
       ) : (
         <motion.div
-          key="studio"
+          key="structure"
           initial={{ opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.4, ease: 'easeOut' }}
@@ -36,11 +36,11 @@ export const StudioGate = () => {
             height: '100%',
           }}
         >
-          <PlatformStudio />
+          <PlatformStructure />
         </motion.div>
       )}
     </AnimatePresence>
   );
 };
 
-export default StudioGate;
+export default StructureGate;

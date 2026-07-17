@@ -262,8 +262,8 @@ const deleteGitHubWorkflowsHandler: StepHandler = {
       reconciled: true,
       message:
         managed.length === 0
-          ? `No Studio-managed workflow files found in "${target.owner}/${target.repo}".`
-          : `Deleted Studio-managed workflow file(s) from "${target.owner}/${target.repo}": ${managed.join(', ')}.`,
+          ? `No Structure-managed workflow files found in "${target.owner}/${target.repo}".`
+          : `Deleted Structure-managed workflow file(s) from "${target.owner}/${target.repo}": ${managed.join(', ')}.`,
     };
   },
 
@@ -276,7 +276,7 @@ const deleteGitHubWorkflowsHandler: StepHandler = {
     const existing = await client.listWorkflows(target.owner, target.repo);
     const managed = existing.filter((filename) => MANAGED_WORKFLOW_FILENAMES.includes(filename));
     return managed.length === 0
-      ? { reconciled: true, message: 'No Studio-managed workflow files remain.' }
+      ? { reconciled: true, message: 'No Structure-managed workflow files remain.' }
       : { reconciled: false, message: `Workflow files still present: ${managed.join(', ')}.` };
   },
 
@@ -532,7 +532,7 @@ const injectGitHubEnvironmentSecretsHandler: StepHandler = {
     for (const env of targetEnvs) {
       // FIREBASE_SERVICE_ACCOUNT — env-scoped because preview/production
       // typically use different Firebase projects. Today the vault stores a
-      // single SA per Studio project so the same value goes to every env;
+      // single SA per Structure project so the same value goes to every env;
       // when per-env Firebase projects are wired up this code becomes the
       // place to look up the env-specific SA.
       if (serviceAccountJson?.trim()) {
@@ -777,7 +777,7 @@ const writeEasJsonHandler: StepHandler = {
         target.repo,
         'eas.json',
         content,
-        'chore: add eas.json (Studio bootstrap)',
+        'chore: add eas.json (Structure bootstrap)',
       );
       written.push('eas.json');
     } else {
@@ -813,7 +813,7 @@ const writeEasJsonHandler: StepHandler = {
           target.repo,
           appConfigPath,
           working,
-          'chore: configure Expo app for EAS build (Studio)',
+          'chore: configure Expo app for EAS build (Structure)',
         );
         written.push(appConfigPath);
       } else {
@@ -843,7 +843,7 @@ const writeEasJsonHandler: StepHandler = {
             target.repo,
             'app.json',
             working,
-            'chore: configure Expo app for EAS build (Studio)',
+            'chore: configure Expo app for EAS build (Structure)',
           );
           written.push('app.json');
         } else {
@@ -872,7 +872,7 @@ const writeEasJsonHandler: StepHandler = {
       reconciled: true,
       message:
         'Leaving eas.json in the repository — delete it manually if you no longer want EAS builds. ' +
-        'Studio does not auto-remove application source files.',
+        'Structure does not auto-remove application source files.',
     };
   },
 

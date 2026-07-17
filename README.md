@@ -2,7 +2,7 @@
 
 **Ship the app, not the setup.**
 
-Structure is a local provisioning studio for app builders. It helps you take a project from “runs on my machine” to launch-ready by guiding the setup of Firebase, Google Cloud, GitHub, Expo EAS, Apple Developer, Google Play, Cloudflare, CI secrets, OAuth configuration, and LLM provider keys from one encrypted local workspace.
+Structure is a local provisioning tool for app builders. It helps you take a project from “runs on my machine” to launch-ready by guiding the setup of Firebase, Google Cloud, GitHub, Expo EAS, Apple Developer, Google Play, Cloudflare, CI secrets, OAuth configuration, and LLM provider keys from one encrypted local workspace.
 
 It is built for founders, solo developers, agencies, and small teams who can build the product but do not want to lose days to provider consoles, signing keys, service accounts, app store setup, DNS records, and fragile launch checklists.
 
@@ -105,7 +105,7 @@ Download the latest release for your platform from the [GitHub Releases page](ht
 | Linux x86_64 | `structure-x86_64-unknown-linux-gnu.tar.gz` |
 | Linux arm64 | `structure-aarch64-unknown-linux-gnu.tar.gz` |
 
-Studio opens in your browser at:
+Structure opens in your browser at:
 
 ```text
 http://localhost:3737
@@ -152,7 +152,7 @@ npm run build           # Build UI and TypeScript backend
 npm run build:cli       # Build the local CLI binary
 npm run test            # Run Jest tests
 npm run typecheck       # Type-check without emitting files
-npm run reset:data      # Destroy local Studio data for the active profile
+npm run reset:data      # Destroy local Structure data for the active profile
 ```
 
 ---
@@ -172,7 +172,7 @@ npm run reset:data      # Destroy local Studio data for the active profile
 
 ## Fullstack Repository Layout
 
-For Studio-managed fullstack Cloud Run deployment, use:
+For Structure-managed fullstack Cloud Run deployment, use:
 
 ```text
 apps/web        # React or Next.js app

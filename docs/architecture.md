@@ -8,7 +8,7 @@
 4. [Vault Architecture](#vault-architecture)
 5. [Provisioning Graph](#provisioning-graph)
 6. [Journey Phases](#journey-phases)
-7. [Studio API Server](#studio-api-server)
+7. [Structure API Server](#structure-api-server)
 8. [Step Files and Registry](#step-files-and-registry)
 9. [Build Pipeline](#build-pipeline)
 
@@ -30,7 +30,7 @@ Structure consists of three integrated pieces running on your local machine:
 │         └──────────┬────────────┘               │
 │                    ▼                            │
 │         ┌──────────────────────┐                │
-│         │  Studio React UI     │                │
+│         │  Structure React UI     │                │
 │         │  (embedded in        │                │
 │         │  src/studio/static/) │                │
 │         └──────────────────────┘                │
@@ -44,7 +44,7 @@ Structure consists of three integrated pieces running on your local machine:
 
 - **CLI** (`src/studio/cli.ts`) starts the server and opens a browser.
 - **API server** is an Express HTTP server on `127.0.0.1:3737`. All REST and WebSocket endpoints live here.
-- **Studio UI** is a Vite-built React app embedded into `src/studio/static/` at build time and served by the same Express process.
+- **Structure UI** is a Vite-built React app embedded into `src/studio/static/` at build time and served by the same Express process.
 - **Vault** is an AES-256-GCM encrypted JSON file that holds all credentials, tokens, and project secrets.
 
 ---
@@ -62,7 +62,7 @@ Integration
 
 ### Integration
 
-The top-level vendor or platform grouping. Defined in `src/plugins/builtin-integrations.ts` as an `IntegrationDefinition`. The Studio UI renders one swimlane per integration in the dependency graph.
+The top-level vendor or platform grouping. Defined in `src/plugins/builtin-integrations.ts` as an `IntegrationDefinition`. The Structure UI renders one swimlane per integration in the dependency graph.
 
 Built-in integrations (in display order):
 
@@ -133,7 +133,7 @@ Handlers receive a `StepHandlerContext` containing the project ID, upstream arti
 
 ### Fullstack Cloud Run Repository Contract
 
-Studio-managed fullstack Cloud Run delivery treats web and API as separate deployable services in one repository:
+Structure-managed fullstack Cloud Run delivery treats web and API as separate deployable services in one repository:
 
 ```text
 apps/web       # React or Next.js app
@@ -158,7 +158,7 @@ Key methods:
 | `getStepsForProvider(provider)` | Returns all steps across plugins for a provider type |
 | `resolveIntegrationId(provider)` | Maps a provider string to its parent `integrationId` |
 
-The constructor does **not** auto-populate from `BUILTIN_INTEGRATIONS`; that list is used by the Studio UI for rendering integration cards. Plugin registration is explicit, in dependency order.
+The constructor does **not** auto-populate from `BUILTIN_INTEGRATIONS`; that list is used by the Structure UI for rendering integration cards. Plugin registration is explicit, in dependency order.
 
 ---
 
@@ -178,7 +178,7 @@ Writes are atomic: serialize → encrypt → write temp file → `fsync` → `re
 
 ### vault-session.ts
 
-`src/studio/vault-session.ts` provides the **session-scoped unlock** for the Studio server. After a successful passkey authentication or passphrase entry, the DEK is held in memory for the session duration (4 hours). All API routes that need vault access call `getVaultSession()` to retrieve the in-memory DEK. If the vault is sealed (no active session), routes return a `VaultSealedError`.
+`src/studio/vault-session.ts` provides the **session-scoped unlock** for the Structure server. After a successful passkey authentication or passphrase entry, the DEK is held in memory for the session duration (4 hours). All API routes that need vault access call `getVaultSession()` to retrieve the in-memory DEK. If the vault is sealed (no active session), routes return a `VaultSealedError`.
 
 ---
 
@@ -197,7 +197,7 @@ The provisioning plan is a **directed acyclic graph** (DAG) of `ProvisioningNode
 
 ## Journey Phases
 
-Steps are organized into three named journey phases that determine which Studio UI tab they appear in:
+Steps are organized into three named journey phases that determine which Structure UI tab they appear in:
 
 | Phase | UI Tab | Description |
 |---|---|---|
@@ -209,7 +209,7 @@ A plugin declares `defaultJourneyPhase` for all its steps, and can override indi
 
 ---
 
-## Studio API Server
+## Structure API Server
 
 The Express server (`src/studio/server.ts`) listens on `127.0.0.1:3737` by default.
 
@@ -217,7 +217,7 @@ The Express server (`src/studio/server.ts`) listens on `127.0.0.1:3737` by defau
 
 | Path | Description |
 |---|---|
-| `GET /` | Serves the embedded React Studio UI (`src/studio/static/index.html`) |
+| `GET /` | Serves the embedded React Structure UI (`src/studio/static/index.html`) |
 | `GET /api/integrations` | Returns `BUILTIN_INTEGRATIONS` list |
 | `GET /api/projects` | Lists all projects |
 | `POST /api/projects` | Creates a new project |
@@ -264,7 +264,7 @@ tsc → dist/
 
 The TypeScript compiler emits to `dist/`. ES modules with `.js` extensions are used throughout.
 
-### Studio UI
+### Structure UI
 
 ```
 Vite → src/studio/static/

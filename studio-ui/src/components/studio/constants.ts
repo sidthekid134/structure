@@ -91,7 +91,7 @@ export const INTEGRATION_CONFIGS: IntegrationConfig[] = [
     logo: ShieldCheck,
     logoColor: 'text-zinc-700 dark:text-zinc-300',
     description:
-      'Connect Apple Developer at the organization level. Studio walks you through capturing the Team ID and creating an App Store Connect Team API key (Issuer ID, Key ID, and .p8) so every project can run automated signing, provisioning, APNs, and TestFlight workflows.',
+      'Connect Apple Developer at the organization level. Structure walks you through capturing the Team ID and creating an App Store Connect Team API key (Issuer ID, Key ID, and .p8) so every project can run automated signing, provisioning, APNs, and TestFlight workflows.',
     docsUrl: 'https://developer.apple.com/account',
     customFlow: 'apple',
     fields: [],
@@ -219,7 +219,7 @@ export const PROJECT_SETUP_CONFIGS: Record<ProviderId, ProjectSetupConfig> = {
     iconColorClass: 'text-blue-500',
     iconBgClass: 'bg-blue-500/10',
     introDescription:
-      'Studio creates a dedicated service account in Google Cloud for this project. The SA is granted the minimum IAM roles needed to provision Firebase services. Sign in with Google once so Studio can store a refresh token; project creation, IAM, and SA keys are separate provisioning steps.',
+      'Structure creates a dedicated service account in Google Cloud for this project. The SA is granted the minimum IAM roles needed to provision Firebase services. Sign in with Google once so Structure can store a refresh token; project creation, IAM, and SA keys are separate provisioning steps.',
     introBadges: [
       'roles/firebase.admin',
       'roles/iam.serviceAccountAdmin',
@@ -247,11 +247,11 @@ export const PROJECT_SETUP_CONFIGS: Record<ProviderId, ProjectSetupConfig> = {
     iconColorClass: 'text-foreground',
     iconBgClass: 'bg-muted',
     introDescription:
-      'Studio creates a dedicated repository for this project with branch protection rules, a deploy key for CI access, and GitHub Actions secrets pre-configured for your build and deploy workflows.',
+      'Structure creates a dedicated repository for this project with branch protection rules, a deploy key for CI access, and GitHub Actions secrets pre-configured for your build and deploy workflows.',
     setupMethod: 'trigger',
     triggerLabel: 'Create Source Repository',
     triggerDescription:
-      'Studio will create the repository in your GitHub org, configure branch protection on main, generate a deploy key, and add Actions secrets for the project environment.',
+      'Structure will create the repository in your GitHub org, configure branch protection on main, generate a deploy key, and add Actions secrets for the project environment.',
     steps: [
       { id: 'repo_create', label: 'Repository created', description: 'A new GitHub repo is created under your organization.' },
       { id: 'branch_protection', label: 'Branch protection enabled', description: 'Main branch requires PR review and passing status checks.' },
@@ -269,11 +269,11 @@ export const PROJECT_SETUP_CONFIGS: Record<ProviderId, ProjectSetupConfig> = {
     iconColorClass: 'text-indigo-500',
     iconBgClass: 'bg-indigo-500/10',
     introDescription:
-      'Studio registers this project on Expo Application Services, links the bundle ID, and configures build profiles for iOS and Android. Once initialized, EAS Build and EAS Submit are ready to use.',
+      'Structure registers this project on Expo Application Services, links the bundle ID, and configures build profiles for iOS and Android. Once initialized, EAS Build and EAS Submit are ready to use.',
     setupMethod: 'trigger',
     triggerLabel: 'Register EAS Application',
     triggerDescription:
-      'Studio will create the EAS project on expo.dev, link your bundle ID, and configure development, preview, and production build profiles.',
+      'Structure will create the EAS project on expo.dev, link your bundle ID, and configure development, preview, and production build profiles.',
     steps: [
       { id: 'eas_project', label: 'EAS project created', description: 'Project registered on expo.dev with bundle ID linked.' },
       { id: 'build_profiles', label: 'Build profiles configured', description: 'Development, preview, and production profiles set up.' },
@@ -290,7 +290,7 @@ export const PROJECT_SETUP_CONFIGS: Record<ProviderId, ProjectSetupConfig> = {
     iconColorClass: 'text-zinc-700 dark:text-zinc-300',
     iconBgClass: 'bg-zinc-500/10',
     introDescription:
-      'Apple integration captures the Team ID and an App Store Connect Team API key (Issuer ID + Key ID + .p8) at the organization scope. Studio only supports the fully-automated flow, so all four credentials are required up front; once stored every project can run signing, provisioning, APNs, and TestFlight steps without further prompts.',
+      'Apple integration captures the Team ID and an App Store Connect Team API key (Issuer ID + Key ID + .p8) at the organization scope. Structure only supports the fully-automated flow, so all four credentials are required up front; once stored every project can run signing, provisioning, APNs, and TestFlight steps without further prompts.',
     setupMethod: 'trigger',
     triggerLabel: 'Open Apple setup steps',
     triggerDescription:

@@ -462,9 +462,9 @@ function StepBody(props: StepBodyProps) {
           instructions={[
             'In App Store Connect, open Users and Access → Integrations → App Store Connect API.',
             'Stay on the Team Keys tab — do not use Individual Keys; the credential must outlive any single user.',
-            'Click + to create a new key. Name it studio-provisioner (or similar) and assign the Admin role for full provisioning automation (or App Manager for the minimum scope).',
+            'Click + to create a new key. Name it structure-provisioner (or similar) and assign the Admin role for full provisioning automation (or App Manager for the minimum scope).',
             'Click Generate, then Download API Key. Apple offers the .p8 file ONCE — save it now.',
-            'Drop the AuthKey_<KEYID>.p8 file in the box below. Studio reads it locally; nothing is uploaded over the network until you click Connect.',
+            'Drop the AuthKey_<KEYID>.p8 file in the box below. Structure reads it locally; nothing is uploaded over the network until you click Connect.',
           ]}
           warning="If you lost the .p8 from a previous run, revoke that Team key in App Store Connect and generate a fresh one."
         >
@@ -514,11 +514,11 @@ function StepBody(props: StepBodyProps) {
           instructions={
             props.keyIdAutoFilled
               ? [
-                  `Studio extracted the Key ID from the uploaded filename (${props.p8Filename ?? 'AuthKey_<KEYID>.p8'}).`,
+                  `Structure extracted the Key ID from the uploaded filename (${props.p8Filename ?? 'AuthKey_<KEYID>.p8'}).`,
                   'Confirm it matches the Key ID column in App Store Connect, or edit it if you renamed the file.',
                 ]
               : [
-                  'Studio could not auto-detect a Key ID from the uploaded filename — looks like the .p8 was renamed.',
+                  'Structure could not auto-detect a Key ID from the uploaded filename — looks like the .p8 was renamed.',
                   'Open the Team Keys table and copy the 10-character Key ID column value.',
                 ]
           }
@@ -771,7 +771,7 @@ function ReviewStep({
         <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Final check</p>
         <h3 className="text-base font-bold tracking-tight mt-0.5">Review and connect</h3>
         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-          Studio will store the Issuer ID, Key ID, and encrypted .p8 in the local vault under
+          Structure will store the Issuer ID, Key ID, and encrypted .p8 in the local vault under
           <span className="font-mono text-foreground"> apple/asc_*</span> so every project can drive Apple
           Developer and App Store Connect automation without prompting again.
         </p>

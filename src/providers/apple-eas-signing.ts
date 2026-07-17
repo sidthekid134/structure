@@ -8,7 +8,7 @@
  * `appleProvisioningProfile.createAppleProvisioningProfile` mutations expect.
  *
  * Scope is intentionally restricted to App Store distribution (no dev/ad-hoc):
- *   - Dev profiles require registered device UDIDs that Studio doesn't
+ *   - Dev profiles require registered device UDIDs that Structure doesn't
  *     collect today; see step-registry.ts comment near the removed
  *     apple:create-dev-provisioning-profile step.
  *   - Apple caps each team at 2 active iOS Distribution certificates.
@@ -146,7 +146,7 @@ export interface MintInput {
   bundleIdentifier: string;
   /** Appears in Apple Developer → Profiles. Keep deterministic so re-runs find the same one. */
   profileName: string;
-  /** When set, Studio attempts to reuse the cert by serial. Otherwise reuses any Issued IOS_DISTRIBUTION cert. */
+  /** When set, Structure attempts to reuse the cert by serial. Otherwise reuses any Issued IOS_DISTRIBUTION cert. */
   reusableSerialNumber?: string;
 }
 
@@ -185,7 +185,7 @@ export async function mintAppleAppStoreSigningAssets(
       'Reusing an existing Apple distribution certificate requires the original P12 + ' +
         'password from the issuance moment (Apple does not expose the private key after ' +
         'creation). The vault did not have the matching P12. Revoke the stale cert in ' +
-        'Apple Developer (or free a slot) so Studio can mint a new one.',
+        'Apple Developer (or free a slot) so Structure can mint a new one.',
     );
   }
 

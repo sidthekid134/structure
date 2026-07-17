@@ -13,7 +13,7 @@ const EXPO_GRAPHQL_URL =
     : 'https://api.expo.dev/graphql';
 
 const CURRENT_ACTOR_QUERY = `
-  query StudioEasConnectionCurrentActor {
+  query StructureEasConnectionCurrentActor {
     meActor {
       __typename
       id
@@ -112,7 +112,7 @@ export class EasConnectionService {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
-        'User-Agent': 'StructureStudio/1.0 (EAS connection validation)',
+        'User-Agent': 'Structure/1.0 (EAS connection validation)',
       },
       body: JSON.stringify({ query: CURRENT_ACTOR_QUERY, variables: {} }),
     });

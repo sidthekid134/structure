@@ -105,7 +105,7 @@ export interface ResourcePreviewContext {
   easAccount: string;
   /**
    * Human-readable display name for the project. This is the same value that
-   * Studio submits to provider APIs as the app/listing name (e.g. App Store
+   * Structure submits to provider APIs as the app/listing name (e.g. App Store
    * Connect `attributes.name`). Falls back to the slug when the project has
    * no explicit display name configured.
    */

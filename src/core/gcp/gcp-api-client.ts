@@ -36,7 +36,7 @@ export function gcpRequest(
   body?: string,
 ): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const headers: Record<string, string> = { 'User-Agent': 'platform-studio' };
+    const headers: Record<string, string> = { 'User-Agent': 'platform-structure' };
     if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
     if (body) {
       headers['Content-Type'] = 'application/json';
@@ -113,7 +113,7 @@ export function formatDisabledApiHelp(gcpProjectId: string, err: unknown, hasUse
 
   const reconnectHint = hasUserOAuth
     ? ''
-    : ' Alternatively, run "Connect with Google" so Studio can enable APIs automatically.';
+    : ' Alternatively, run "Connect with Google" so Structure can enable APIs automatically.';
   const q = encodeURIComponent(gcpProjectId);
 
   if (service === 'iam.googleapis.com') {
@@ -506,7 +506,7 @@ export async function ensureProvisionerServiceAccount(accessToken: string, gcpPr
       'POST', 'iam.googleapis.com', `/v1/projects/${gcpProjectId}/serviceAccounts`, accessToken,
       JSON.stringify({
         accountId: GCP_PROVISIONER_SA_ID,
-        serviceAccount: { displayName: 'Platform Provisioner', description: 'Auto-created by Studio for project-scoped infrastructure provisioning.' },
+        serviceAccount: { displayName: 'Platform Provisioner', description: 'Auto-created by Structure for project-scoped infrastructure provisioning.' },
       }),
     );
     const created = JSON.parse(res.body) as { email?: string };

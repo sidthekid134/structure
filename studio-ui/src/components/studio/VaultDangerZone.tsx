@@ -40,7 +40,7 @@ export function VaultDangerZone() {
       <div className="flex items-start gap-2">
         <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
         <div>
-          <p className="text-sm font-semibold text-red-700 dark:text-red-400">Destroy local Studio data</p>
+          <p className="text-sm font-semibold text-red-700 dark:text-red-400">Destroy local Structure data</p>
           <p className="text-xs text-muted-foreground mt-1">
             Deletes vault, passkey registry, key wrappers, and lockfile for this install. Hold for {HOLD_MS / 1000}{' '}
             seconds to confirm.
@@ -69,7 +69,7 @@ export function VaultDangerZone() {
         onPointerCancel={clearHold}
       >
         <span className="relative z-[1]">
-          {holding ? `Hold… ${Math.ceil((1 - progress) * (HOLD_MS / 1000))}s` : 'Hold to destroy all Studio data'}
+          {holding ? `Hold… ${Math.ceil((1 - progress) * (HOLD_MS / 1000))}s` : 'Hold to destroy all Structure data'}
         </span>
         {holding ? (
           <span

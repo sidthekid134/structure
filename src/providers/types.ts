@@ -104,7 +104,7 @@ export interface EasManifestConfig {
   project_name: string;
   organization?: string;
   environments: Environment[];
-  /** iOS bundle id from the Studio project — used when wiring App Store Connect API key in Expo for EAS Submit. */
+  /** iOS bundle id from the Structure project — used when wiring App Store Connect API key in Expo for EAS Submit. */
   bundle_id?: string;
   /** Android application id — defaults to bundle_id when not set separately. */
   android_package?: string;

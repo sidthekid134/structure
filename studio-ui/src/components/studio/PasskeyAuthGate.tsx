@@ -284,7 +284,7 @@ export function PasskeyAuthGate({
 
   const runResetLocalInstall = useCallback(async () => {
     const ok = window.confirm(
-      'Erase all local Studio data on this machine (encrypted vault, projects, keys)? This cannot be undone. You can set up the vault again afterward.',
+      'Erase all local Structure data on this machine (encrypted vault, projects, keys)? This cannot be undone. You can set up the vault again afterward.',
     );
     if (!ok) return;
     setBusy(true);
@@ -377,7 +377,7 @@ export function PasskeyAuthGate({
                 className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-semibold text-destructive hover:bg-destructive/15"
                 onClick={() => void runResetLocalInstall()}
               >
-                Erase local Studio data and start fresh…
+                Erase local Structure data and start fresh…
               </button>
             </div>
           </div>

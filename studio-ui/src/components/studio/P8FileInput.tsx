@@ -70,7 +70,7 @@ export function P8FileInput({
     if (requireAppleAuthKeyFileName && !extractKeyIdFromP8FileName(file.name)) {
       setUploadError(
         `Filename "${file.name}" does not match Apple's AuthKey_<KEYID>.p8 pattern. ` +
-          'Use the original file Apple let you download \u2014 Studio derives the 10-character Key ID from the filename. ' +
+          'Use the original file Apple let you download \u2014 Structure derives the 10-character Key ID from the filename. ' +
           'If you renamed it, restore the original AuthKey_XXXXXXXXXX.p8 name.',
       );
       return;

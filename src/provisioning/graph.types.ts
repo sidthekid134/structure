@@ -76,7 +76,7 @@ export interface DependencyRef {
 // Resource — something a step produces that downstream steps can consume
 // ---------------------------------------------------------------------------
 
-/** Optional Studio / API metadata for how a saved resource should be shown when a step is complete. */
+/** Optional Structure / API metadata for how a saved resource should be shown when a step is complete. */
 export interface CompletionRelatedLink {
   label: string;
   href?: string;

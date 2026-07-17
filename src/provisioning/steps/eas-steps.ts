@@ -39,7 +39,7 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
     key: 'eas:configure-build-profiles',
     label: 'Configure Build Profiles',
     description:
-      'Registers each Studio environment on the Expo app as an EAS env-var slot (marker variable). You must still edit eas.json in your repository for real build profile names, settings, and credentials.',
+      'Registers each Structure environment on the Expo app as an EAS env-var slot (marker variable). You must still edit eas.json in your repository for real build profile names, settings, and credentials.',
     provider: 'eas',
     environmentScope: 'per-environment',
     automationLevel: 'full',
@@ -52,7 +52,7 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
     key: 'eas:sync-runtime-env',
     label: 'Sync Firebase/Auth Runtime Env to EAS',
     description:
-      'Writes Firebase/Auth runtime environment variables (for example FIREBASE_API_KEY, project/app IDs, and OAuth client IDs when present) to the Expo app for this Studio environment.',
+      'Writes Firebase/Auth runtime environment variables (for example FIREBASE_API_KEY, project/app IDs, and OAuth client IDs when present) to the Expo app for this Structure environment.',
     provider: 'eas',
     environmentScope: 'per-environment',
     automationLevel: 'full',
@@ -179,7 +179,7 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
     key: 'eas:sync-llm-secrets',
     label: 'Sync LLM Secrets to EAS',
     description:
-      'Mirrors LLM_* environment variables to the linked Expo app (per EAS env slot for this Studio environment). Only modules you added under Modules (e.g. llm-openai, llm-gemini, llm-openrouter) are written; other providers’ LLM_* names are cleared so Expo does not keep stale keys. API keys, optional org/base URL, and default models come from the vault and credential gate.',
+      'Mirrors LLM_* environment variables to the linked Expo app (per EAS env slot for this Structure environment). Only modules you added under Modules (e.g. llm-openai, llm-gemini, llm-openrouter) are written; other providers’ LLM_* names are cleared so Expo does not keep stale keys. API keys, optional org/base URL, and default models come from the vault and credential gate.',
     provider: 'eas',
     environmentScope: 'per-environment',
     automationLevel: 'full',

@@ -1,7 +1,7 @@
-import StudioGate from './components/gate/StudioGate';
+import StructureGate from './components/gate/StructureGate';
 
 function App() {
-  return <StudioGate />;
+  return <StructureGate />;
 }
 
 export default App;

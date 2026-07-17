@@ -22,9 +22,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import envPaths from 'env-paths';
-import { StudioServer } from './server.js';
+import { StructureServer } from './server.js';
 import { registerPendingHandoffToken } from './auth.js';
-import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
+import { destroyLocalStructureInstall } from './studio-local-data-destroy.js';
 
 const LOCK_FILE_NAME = '.structure.lock';
 const PORT_FILE_NAME = '.structure.port';
@@ -128,19 +128,19 @@ async function cmdStart(): Promise<void> {
 
   const handoff = crypto.randomBytes(24).toString('base64url');
   registerPendingHandoffToken(handoff);
-  const studio = new StudioServer({
+  const structure = new StructureServer({
     storeDir,
     host: process.env['STRUCTURE_HOST'] ?? '127.0.0.1',
     port: Number.isFinite(parsedPort) ? parsedPort : 3737,
   });
   try {
-    await studio.listen();
+    await structure.listen();
   } catch (e) {
     clearPortFile(storeDir);
     releaseLock(storeDir);
     throw e;
   }
-  const addr = studio.server.address();
+  const addr = structure.server.address();
   const boundPort =
     typeof addr === 'object' && addr !== null && 'port' in addr ? (addr as import('net').AddressInfo).port : 3737;
   writePortFile(storeDir, boundPort);
@@ -151,7 +151,7 @@ async function cmdStart(): Promise<void> {
   }
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.once(sig, () => {
-      studio.close().finally(() => {
+      structure.close().finally(() => {
         clearPortFile(storeDir);
         releaseLock(storeDir);
         process.exit(0);
@@ -167,13 +167,13 @@ function cmdVaultDestroy(args: string[]): void {
     process.exit(1);
   }
   try {
-    destroyLocalStudioInstall(storeDir);
+    destroyLocalStructureInstall(storeDir);
   } catch (e) {
     console.error((e as Error).message);
     process.exit(1);
   }
   console.log(
-    `Studio data destroyed under ${storeDir} (vault, sessions, api-token, organization, projects).`,
+    `Structure data destroyed under ${storeDir} (vault, sessions, api-token, organization, projects).`,
   );
 }
 

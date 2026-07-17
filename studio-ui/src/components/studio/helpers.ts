@@ -4,7 +4,7 @@ import type { PluginCatalog, ProviderId, ProvisioningGraphNode } from './types';
 // ---------------------------------------------------------------------------
 // API session (HttpOnly cookie)
 // ---------------------------------------------------------------------------
-// The daemon sets a `studio_session` cookie via CLI handoff (`#handoff=…`) or
+// The daemon sets a `structure_session` cookie via CLI handoff (`#handoff=…`) or
 // `POST /api/auth/dev-session` on loopback (tab reloads stay authenticated without passkey).
 // All `fetch` calls use `credentials: 'include'`.
 
@@ -35,11 +35,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (response.status === 423) {
     const body = (await response.json().catch(() => ({}))) as { code?: string; error?: string };
-    window.dispatchEvent(new CustomEvent('studio:vault-sealed', { detail: body }));
+    window.dispatchEvent(new CustomEvent('structure:vault-sealed', { detail: body }));
     throw new Error(body.error || 'Vault is sealed. Unlock to continue.');
   }
   if (response.status === 401) {
-    window.dispatchEvent(new CustomEvent('studio:need-auth'));
+    window.dispatchEvent(new CustomEvent('structure:need-auth'));
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText }));
@@ -216,7 +216,7 @@ export function easSyncLlmSecretsProduceDescription(selectedModules?: string[]):
   const llmIds = selectedLlmModuleIds(selectedModules);
   if (llmIds.length === 0) {
     return (
-      'No AI/LLM module in your plan: clears Studio-tracked Expo variables for unused providers on this slot. Add a provider under Modules, Apply, then configure keys.'
+      'No AI/LLM module in your plan: clears Structure-tracked Expo variables for unused providers on this slot. Add a provider under Modules, Apply, then configure keys.'
     );
   }
   const names = llmIds.map((id) => LLM_NAME_BY_MODULE[id] ?? id).join(' & ');

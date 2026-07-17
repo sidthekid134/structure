@@ -9,7 +9,7 @@
  * - **Plugin** is a `PluginDefinition` (one feature inside an integration).
  * - **Step** is a `ProvisioningStepNode` owned by a plugin.
  *
- * Integration metadata is what Studio Core renders in the dependency-graph
+ * Integration metadata is what Structure Core renders in the dependency-graph
  * swimlanes and the module picker. Adding a new integration here is the only
  * change Core needs to surface a new vendor in the UI.
  */

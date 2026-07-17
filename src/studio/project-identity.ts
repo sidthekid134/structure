@@ -1,5 +1,5 @@
 /**
- * Canonical naming for Studio projects: the UI "domain" is the app hostname;
+ * Canonical naming for Structure projects: the UI "domain" is the app hostname;
  * slug (and project id) back APIs that do not allow DNS-style names.
  */
 
@@ -45,7 +45,7 @@ export function projectResourceSlug(project: Pick<ProjectInfo, 'slug' | 'id'>): 
 /**
  * Seeds upstream artifacts that come from organization-level integrations.
  *
- * These are configured once per Studio installation (e.g. the org-level Apple
+ * These are configured once per Structure installation (e.g. the org-level Apple
  * Developer connection captures `team_id`) and must be available to every
  * provisioning step that needs them, without forcing each step's adapter to
  * re-read the integration store.

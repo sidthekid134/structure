@@ -94,7 +94,7 @@ export const GitHubLoginPage = ({
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm">
               <Cpu size={15} />
             </div>
-            <span className="text-sm font-bold tracking-tight">Studio Core</span>
+            <span className="text-sm font-bold tracking-tight">Structure Core</span>
             <span className="ml-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">
               LLM INFRA
             </span>
@@ -137,9 +137,9 @@ export const GitHubLoginPage = ({
               </span>
             </h1>
             <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-              Studio Core is LLM-as-infrastructure. Provision auth, databases, CI/CD,
+              Structure Core is LLM-as-infrastructure. Provision auth, databases, CI/CD,
               notifications, and AI integrations via MCP tool calls or REST API - with
-              a full Web UI. You focus on code and business logic; Studio takes care of
+              a full Web UI. You focus on code and business logic; Structure takes care of
               the rest.
             </p>
           </div>
@@ -218,7 +218,7 @@ export const GitHubLoginPage = ({
                 </div>
                 <div className="space-y-1.5">
                   <h2 className="text-xl font-bold tracking-tight text-foreground">
-                    Sign in to Studio Core
+                    Sign in to Structure Core
                   </h2>
                   <p className="text-sm leading-relaxed text-muted-foreground">
                     Connect your GitHub account to access your workspace and start

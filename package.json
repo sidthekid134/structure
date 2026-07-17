@@ -1,7 +1,7 @@
 {
   "name": "structure",
   "version": "1.0.0",
-  "description": "Local provisioning studio with passkey-protected encrypted vault. Provisions Firebase, GCP, Apple, EAS, GitHub and more from a unified, plugin-driven UI.",
+  "description": "Local provisioning tool with passkey-protected encrypted vault. Provisions Firebase, GCP, Apple, EAS, GitHub and more from a unified, plugin-driven UI.",
   "keywords": [
     "mobile",
     "provisioning",
@@ -14,7 +14,7 @@
     "credentials",
     "passkey",
     "webauthn",
-    "studio"
+    "structure"
   ],
   "homepage": "https://github.com/sidthekid134/structure#readme",
   "bugs": {

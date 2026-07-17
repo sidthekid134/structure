@@ -13,7 +13,7 @@ import { getVaultSession } from './vault-session.js';
 import { PLATFORM_CORE_VERSION } from '../providers/types.js';
 import { loadUsers, type UsersFile } from './users-store.js';
 import { effectiveVaultKeyMode } from './vault-meta.js';
-import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
+import { destroyLocalStructureInstall } from './studio-local-data-destroy.js';
 import { loadKeyWrappers } from './key-wrappers.js';
 import {
   canUseDevAutoUnlockForStore,
@@ -128,7 +128,7 @@ export function createLifecycleRouter(opts: LifecycleRouterOptions): Router {
       return;
     }
     try {
-      destroyLocalStudioInstall(opts.storeDir);
+      destroyLocalStructureInstall(opts.storeDir);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
       return;

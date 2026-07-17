@@ -1,5 +1,5 @@
 /**
- * Shared helpers for Studio API routes.
+ * Shared helpers for Structure API routes.
  *
  * Extracted to eliminate repeated boilerplate across plan/run, plan/sync,
  * plan/node/reset, teardown/run, and revalidate routes.

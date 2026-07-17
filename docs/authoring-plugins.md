@@ -55,7 +55,7 @@ Fields:
 | `label` | Yes | Human-readable name shown in the UI |
 | `description` | Yes | One-sentence card description |
 | `scope` | Yes | `'project'` = per-project connection; `'organization'` = shared |
-| `authProvider` | No | OAuth provider id if this integration uses Studio's OAuth flow |
+| `authProvider` | No | OAuth provider id if this integration uses Structure's OAuth flow |
 | `icon` | No | Lucide icon name |
 | `displayMeta` | Yes | Tailwind color tokens for swimlanes and cards |
 | `order` | Yes | Lower number = appears first in the UI |
@@ -283,7 +283,7 @@ The `StepHandlerContext` gives you:
 | `hasToken(provider)` | `boolean` | True if a refresh token is stored |
 | `vaultManager` | `VaultManager` | Direct vault read/write |
 | `passphrase` | `Buffer` | 32-byte vault DEK for encryption |
-| `credentialService` | `CredentialService \| undefined` | Studio SQLite credential store |
+| `credentialService` | `CredentialService \| undefined` | Structure SQLite credential store |
 | `projectManager` | `ProjectManager` | Integration metadata updates |
 
 ---

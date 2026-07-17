@@ -450,7 +450,7 @@ export class HttpGitHubApiClient implements GitHubApiClient {
       owner,
       repo,
       path: filePath,
-      message: `chore: remove ${filename} (no longer managed by Studio)`,
+      message: `chore: remove ${filename} (no longer managed by Structure)`,
       sha: existing.sha,
     });
   }
@@ -570,7 +570,7 @@ export class HttpGitHubApiClient implements GitHubApiClient {
 // ---------------------------------------------------------------------------
 
 /**
- * Every workflow filename Studio has ever written. Used by `stepDeployWorkflows`
+ * Every workflow filename Structure has ever written. Used by `stepDeployWorkflows`
  * to scrub obsolete files from `.github/workflows/` when the desired set
  * shrinks (e.g. an EAS project no longer needs `build.yml` because
  * `expo-testflight.yml` runs the EAS build directly).
@@ -1840,7 +1840,7 @@ export class GitHubAdapter implements ProviderAdapter<GitHubManifestConfig> {
     // Scrub any previously-managed workflow files that are no longer part of
     // the desired set so old templates (e.g. a generic build.yml from before
     // we relied on expo-testflight to do the EAS build) don't keep running on
-    // every push. Only the names Studio has ever written are eligible —
+    // every push. Only the names Structure has ever written are eligible —
     // we never touch user-authored workflows.
     for (const obsolete of MANAGED_WORKFLOW_FILENAMES) {
       if (desired.has(obsolete)) continue;

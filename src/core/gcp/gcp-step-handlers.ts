@@ -10,7 +10,7 @@
  *   5. Returns a StepHandlerResult — never throws for business-logic failures.
  *
  * Log format (designed for both human and LLM readability):
- *   [gcp:<step>] studio="<studioProjectId>" | <message>
+ *   [gcp:<step>] structure="<structureProjectId>" | <message>
  *   Leading ✓ = success, ✗ = failure, → = in-progress action.
  */
 
@@ -67,7 +67,7 @@ import {
   storeSaEmail,
   getStoredSaKeyJson,
   deleteSaKeyJson,
-  buildStudioGcpProjectId,
+  buildStructureGcpProjectId,
   buildGcpProjectIdWithEntropy,
   applyGcpProjectLinked,
   recordProvisionerServiceAccountKey,
@@ -89,8 +89,8 @@ import { validatePlayFingerprint } from '../../validators/play-fingerprint-valid
 // ---------------------------------------------------------------------------
 
 /** Structured logger for a step + project pair. */
-function makeLog(step: string, studioId: string): (msg: string) => void {
-  return (msg: string) => console.log(`[gcp:${step}] project="${studioId}" | ${msg}`);
+function makeLog(step: string, structureId: string): (msg: string) => void {
+  return (msg: string) => console.log(`[gcp:${step}] project="${structureId}" | ${msg}`);
 }
 
 function validateAndroidPackageName(packageName: string): void {
@@ -207,8 +207,8 @@ const createGcpProjectHandler: StepHandler = {
       };
     }
 
-    const expectedId = buildStudioGcpProjectId(projectId);
-    const displayName = `Studio ${projectId}`;
+    const expectedId = buildStructureGcpProjectId(projectId);
+    const displayName = `Structure ${projectId}`;
     log(`No stored GCP project — will create "${expectedId}" (display name: "${displayName}")...`);
 
     const token = await context.getToken('gcp');
@@ -358,14 +358,14 @@ const createGcpProjectHandler: StepHandler = {
 
     log('No stored GCP project — searching for it by expected ID or display name...');
     const token = await context.getToken('gcp');
-    const expectedId = buildStudioGcpProjectId(projectId);
-    const displayName = `Studio ${projectId}`;
+    const expectedId = buildStructureGcpProjectId(projectId);
+    const displayName = `Structure ${projectId}`;
     const userEmail =
       credentialService.retrieveCredential(projectId, 'gcp_connected_by_email') ?? 'unknown';
 
     const byId = await fetchGcpProjectSummary(token, expectedId);
     if (byId.ok) {
-      log(`✓ Found project by expected ID "${expectedId}" — linking to studio project.`);
+      log(`✓ Found project by expected ID "${expectedId}" — linking to structure project.`);
       storeGcpProjectId(credentialService, projectId, expectedId);
       applyGcpProjectLinked(projectManager, projectId, expectedId, userEmail);
       return { reconciled: true, resourcesProduced: { gcp_project_id: expectedId } };
@@ -2073,7 +2073,7 @@ function makeAssistedTeardownHandler(stepKey: string): StepHandler {
       return {
         reconciled: false,
         message:
-          `${stepKey} is not safely deletable through Studio APIs yet. ` +
+          `${stepKey} is not safely deletable through Structure APIs yet. ` +
           'Delete it in the provider console, or delete the backing GCP project to remove all Firebase resources.',
       };
     },
