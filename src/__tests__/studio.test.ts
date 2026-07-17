@@ -370,7 +370,7 @@ describe('StudioServer', () => {
         `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown`,
       ) as { nodeStates: Record<string, Record<string, unknown>> };
       const state = plan.nodeStates['firebase:disable-messaging'];
-      if (state?.status === 'failed') {
+      if (state?.status === 'waiting-on-user') {
         manualState = state;
         break;
       }
@@ -773,7 +773,7 @@ describe('StudioServer serve UI from source', () => {
   it('exposes live reload event stream endpoint', async () => {
     await new Promise<void>((resolve, reject) => {
       const req = http.request(
-        `http://127.0.0.1:${port}/__studio_live_reload`,
+        `http://127.0.0.1:${port}/__structure_live_reload`,
         { method: 'GET' },
         (res) => {
           expect(res.statusCode).toBe(200);

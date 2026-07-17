@@ -273,7 +273,7 @@ describe('LlmAdapter.checkStep', () => {
 // ---------------------------------------------------------------------------
 
 describe('plugin registry integration', () => {
-  it('exposes all four LLM kinds as separately selectable modules', async () => {
+  it('exposes all five LLM kinds as separately selectable modules', async () => {
     const { registerBuiltinPlugins } = await import('../plugins/builtin/index.js');
     const { globalPluginRegistry } = await import('../plugins/plugin-registry.js');
     registerBuiltinPlugins();
@@ -282,7 +282,7 @@ describe('plugin registry integration', () => {
 
     const llmPlugins = globalPluginRegistry.getPluginsForProvider('llm');
     const ids = llmPlugins.map((p) => p.id).sort();
-    expect(ids).toEqual(['llm-anthropic', 'llm-custom', 'llm-gemini', 'llm-openai']);
+    expect(ids).toEqual(['llm-anthropic', 'llm-custom', 'llm-gemini', 'llm-openai', 'llm-openrouter']);
 
     // Provider metadata is contributed by llm-openai (registered first).
     const meta = globalPluginRegistry.getProviderMetadata('llm');
@@ -291,6 +291,7 @@ describe('plugin registry integration', () => {
       'openai_organization_id',
       'anthropic_api_key',
       'gemini_api_key',
+      'openrouter_api_key',
       'custom_api_key',
       'custom_base_url',
     ]);
