@@ -40,7 +40,7 @@ function llmResolveCredentialOpts(
   };
 }
 
-const STUDIO_EAS_ENV_MARKER = 'STUDIO_EAS_ENV';
+const STRUCTURE_EAS_ENV_MARKER = 'STRUCTURE_EAS_ENV';
 
 function readExpoToken(context: StepHandlerContext): string | undefined {
   return context.credentialService.retrieveOrgCredential('expo_token') ?? undefined;
@@ -287,7 +287,7 @@ const configureBuildProfilesHandler: StepHandler = {
     if (!token) {
       return {
         reconciled: false,
-        message: 'No Expo token in vault — cannot remove STUDIO_EAS_ENV markers from the Expo app.',
+        message: 'No Expo token in vault — cannot remove STRUCTURE_EAS_ENV markers from the Expo app.',
       };
     }
     const client = new ExpoGraphqlEasApiClient(token);
@@ -300,20 +300,20 @@ const configureBuildProfilesHandler: StepHandler = {
     }
 
     // Revert is invoked once per base step (no environment scope), so wipe every
-    // STUDIO_EAS_ENV marker on the app regardless of which Expo env slot it is
+    // STRUCTURE_EAS_ENV marker on the app regardless of which Expo env slot it is
     // attached to. This also catches stragglers from envs that were removed
     // from the project after provisioning.
-    const allMarkers = await client.listAppEnvironmentVariablesByName(expoAppId, STUDIO_EAS_ENV_MARKER);
+    const allMarkers = await client.listAppEnvironmentVariablesByName(expoAppId, STRUCTURE_EAS_ENV_MARKER);
     for (const v of allMarkers) {
       await client.deleteEnvironmentVariable(v.id);
     }
 
     if (allMarkers.length === 0) {
-      return { reconciled: true, message: 'No STUDIO_EAS_ENV markers were present on the Expo app (already absent).' };
+      return { reconciled: true, message: 'No STRUCTURE_EAS_ENV markers were present on the Expo app (already absent).' };
     }
     return {
       reconciled: true,
-      message: `Deleted ${allMarkers.length} STUDIO_EAS_ENV marker${allMarkers.length === 1 ? '' : 's'} from the Expo app.`,
+      message: `Deleted ${allMarkers.length} STRUCTURE_EAS_ENV marker${allMarkers.length === 1 ? '' : 's'} from the Expo app.`,
     };
   },
 
@@ -328,18 +328,18 @@ const configureBuildProfilesHandler: StepHandler = {
       return { reconciled: false, message: 'No Expo app found for this project.' };
     }
     const env = context.environment?.trim();
-    const markers = await client.listAppEnvironmentVariablesByName(expoAppId, STUDIO_EAS_ENV_MARKER);
+    const markers = await client.listAppEnvironmentVariablesByName(expoAppId, STRUCTURE_EAS_ENV_MARKER);
     if (env) {
       const expoSlot = env.toUpperCase();
       const found = markers.some((m) => (m.environments ?? []).includes(expoSlot));
       if (found) return { reconciled: true, resourcesProduced: {} };
-      return { reconciled: false, message: `No STUDIO_EAS_ENV marker found on the Expo ${expoSlot} slot.` };
+      return { reconciled: false, message: `No STRUCTURE_EAS_ENV marker found on the Expo ${expoSlot} slot.` };
     }
     // No env scope: at least one marker must exist for any env declared on the project.
     const projectEnvs = projectEnvironments(context).map((e) => e.toUpperCase());
     const found = markers.some((m) => (m.environments ?? []).some((slot) => projectEnvs.includes(slot)));
     if (found) return { reconciled: true, resourcesProduced: {} };
-    return { reconciled: false, message: 'No STUDIO_EAS_ENV markers found on the Expo app for any project environment.' };
+    return { reconciled: false, message: 'No STRUCTURE_EAS_ENV markers found on the Expo app for any project environment.' };
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {

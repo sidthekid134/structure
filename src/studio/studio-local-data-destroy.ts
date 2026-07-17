@@ -12,7 +12,7 @@ const WIPE_FILES = [
   'key-wrappers.json',
   'users.json',
   'api-token',
-  '.studio-pro.lock',
+  '.structure.lock',
   'organization.json',
 ] as const;
 

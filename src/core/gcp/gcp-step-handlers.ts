@@ -88,9 +88,9 @@ import { validatePlayFingerprint } from '../../validators/play-fingerprint-valid
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Structured logger for a step + studio project pair. */
+/** Structured logger for a step + project pair. */
 function makeLog(step: string, studioId: string): (msg: string) => void {
-  return (msg: string) => console.log(`[gcp:${step}] studio="${studioId}" | ${msg}`);
+  return (msg: string) => console.log(`[gcp:${step}] project="${studioId}" | ${msg}`);
 }
 
 function validateAndroidPackageName(packageName: string): void {

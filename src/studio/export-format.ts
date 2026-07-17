@@ -1,5 +1,5 @@
 /**
- * Encrypted project migration bundles (`studio-pro-export-v1`).
+ * Encrypted project migration bundles (`structure-export-v1`).
  *
  * Two key paths:
  *   - **Passphrase** — user types a passphrase; we derive an AES key via
@@ -11,7 +11,7 @@
 import { encrypt, decrypt, deriveKeyArgon2id } from '../encryption.js';
 import { deriveStudioRowKey } from './row-crypto.js';
 
-export const STUDIO_EXPORT_PURPOSE = 'studio-pro-export-envelope:v1';
+export const STRUCTURE_EXPORT_PURPOSE = 'structure-export-envelope:v1';
 
 export async function sealMigrationExport(
   storeDir: string,
@@ -19,9 +19,9 @@ export async function sealMigrationExport(
   passphrase?: string,
 ): Promise<string> {
   const key = passphrase
-    ? await deriveKeyArgon2id(passphrase, STUDIO_EXPORT_PURPOSE)
-    : deriveStudioRowKey(storeDir, STUDIO_EXPORT_PURPOSE);
-  return encrypt(JSON.stringify(payload), key, { providerId: 'studio-pro-export' });
+    ? await deriveKeyArgon2id(passphrase, STRUCTURE_EXPORT_PURPOSE)
+    : deriveStudioRowKey(storeDir, STRUCTURE_EXPORT_PURPOSE);
+  return encrypt(JSON.stringify(payload), key, { providerId: 'structure-export' });
 }
 
 export async function openMigrationExport(
@@ -33,13 +33,13 @@ export async function openMigrationExport(
   // so bundles exported without a passphrase still import transparently as
   // long as the vault hasn't changed.
   if (passphrase) {
-    const passphraseKey = await deriveKeyArgon2id(passphrase, STUDIO_EXPORT_PURPOSE);
+    const passphraseKey = await deriveKeyArgon2id(passphrase, STRUCTURE_EXPORT_PURPOSE);
     try {
-      return JSON.parse(decrypt(ciphertext, passphraseKey, { providerId: 'studio-pro-export' })) as unknown;
+      return JSON.parse(decrypt(ciphertext, passphraseKey, { providerId: 'structure-export' })) as unknown;
     } catch {
       // passphrase didn't match — fall through and try the vault key
     }
   }
-  const vaultKey = deriveStudioRowKey(storeDir, STUDIO_EXPORT_PURPOSE);
-  return JSON.parse(decrypt(ciphertext, vaultKey, { providerId: 'studio-pro-export' })) as unknown;
+  const vaultKey = deriveStudioRowKey(storeDir, STRUCTURE_EXPORT_PURPOSE);
+  return JSON.parse(decrypt(ciphertext, vaultKey, { providerId: 'structure-export' })) as unknown;
 }

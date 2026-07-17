@@ -16,11 +16,11 @@
 
 ## Overview
 
-Studio Pro consists of three integrated pieces running on your local machine:
+Structure consists of three integrated pieces running on your local machine:
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  studio-pro binary (pkg-bundled Node.js)        │
+│  structure binary (pkg-bundled Node.js)        │
 │                                                 │
 │  ┌──────────────┐   ┌────────────────────────┐  │
 │  │  CLI entry   │   │  Express API server    │  │
@@ -276,7 +276,7 @@ The React UI in `studio-ui/` is built with Vite. Output lands in `src/studio/sta
 
 ```
 npm run build:cli
-→ @yao-pkg/pkg → binaries/studio-pro-<target>
+→ @yao-pkg/pkg → binaries/structure-<target>
 ```
 
 `scripts/build-cli.js` uses `@yao-pkg/pkg` to bundle the compiled JS, the static UI, and native modules (`better-sqlite3`, `libsodium-wrappers-sumo`) into a single self-contained binary. Targets use Node 20 hostnames (e.g., `node20-darwin-arm64`).

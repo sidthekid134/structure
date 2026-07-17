@@ -30,7 +30,7 @@ export function VaultDangerZone() {
     await api('/api/vault/destroy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: 'DESTROY_ALL_STUDIO_DATA' }),
+      body: JSON.stringify({ confirm: 'DESTROY_ALL_STRUCTURE_DATA' }),
     });
     window.location.href = '/';
   }

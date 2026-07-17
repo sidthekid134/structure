@@ -18,7 +18,7 @@
 
 ## Threat Model
 
-Studio Pro is a **local-only process**, not a server. There is no cloud backend, no shared database, and no multi-user access model. The relevant threat categories are:
+Structure is a **local-only process**, not a server. There is no cloud backend, no shared database, and no multi-user access model. The relevant threat categories are:
 
 | Threat | Mitigated by |
 |---|---|
@@ -30,7 +30,7 @@ Studio Pro is a **local-only process**, not a server. There is no cloud backend,
 | Another local process intercepts the loopback OAuth callback | Loopback address + short-lived state parameter; code exchanged immediately and not stored |
 | Passkey private-key exfiltration | Passkey private key lives entirely in the OS keychain (macOS Keychain, Windows Hello); Studio never touches it |
 
-Studio Pro explicitly does **not** address:
+Structure explicitly does **not** address:
 - Local root access (a root-privileged process on the same machine can read process memory)
 - Malware with user-level process access
 - Compromised dependencies in your Node.js environment

@@ -10,7 +10,7 @@ import { vaultMetaPath, writeVaultMeta } from './vault-meta.js';
  * Enabled only for profile-isolated local development and never in production.
  */
 export function isDevVaultAutoUnlockEnabled(env: NodeJS.ProcessEnv): boolean {
-  return env['STUDIO_PROFILE'] === 'dev' && env['NODE_ENV'] !== 'production';
+  return env['STRUCTURE_PROFILE'] === 'dev' && env['NODE_ENV'] !== 'production';
 }
 
 /**
@@ -22,7 +22,7 @@ export function isDevVaultAutoUnlockEnabled(env: NodeJS.ProcessEnv): boolean {
 export function deriveDevVaultDek(storeDir: string): Buffer {
   return crypto
     .createHash('sha256')
-    .update('studio-pro-dev-vault-dek:v1\0')
+    .update('structure-dev-vault-dek:v1\0')
     .update(storeDir, 'utf8')
     .digest();
 }

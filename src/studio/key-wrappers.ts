@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { encrypt, decrypt } from '../encryption.js';
 
-const WRAPPER_INFO = Buffer.from('studio-pro:v1:dek-wrap', 'utf8');
+const WRAPPER_INFO = Buffer.from('structure:v1:dek-wrap', 'utf8');
 
 export interface KeyWrappersFile {
   version: 1;

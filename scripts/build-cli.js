@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Bundle the Studio Pro CLI (`dist/studio/cli.js` + deps + native modules) into
- * a single executable via `@yao-pkg/pkg`, named `studio-pro-<rust-triple>`.
+ * Bundle the Structure CLI (`dist/studio/cli.js` + deps + native modules) into
+ * a single executable via `@yao-pkg/pkg`, named `structure-<rust-triple>`.
  *
  * Usage:
  *   node scripts/build-cli.js
  *   node scripts/build-cli.js --all
  *   node scripts/build-cli.js --target=node20-linux-x64
  *
- * Output: binaries/studio-pro-<triple>(.exe)
+ * Output: binaries/structure-<triple>(.exe)
  */
 
 const { execSync, spawnSync } = require('node:child_process');
@@ -19,10 +19,10 @@ const os = require('node:os');
 const ROOT = path.resolve(__dirname, '..');
 const ENTRY = path.join(ROOT, 'dist', 'studio', 'cli.js');
 const OUT_DIR = path.join(ROOT, 'binaries');
-const BINARY_PREFIX = 'studio-pro';
+const BINARY_PREFIX = 'structure';
 
 const NODE_MAJOR =
-  process.env.STUDIO_PKG_NODE || `node${process.versions.node.split('.')[0]}`;
+  process.env.STRUCTURE_PKG_NODE || `node${process.versions.node.split('.')[0]}`;
 
 function targetMap() {
   return {

@@ -1,8 +1,8 @@
-# Studio Pro
+# Structure
 
 **Ship the app, not the setup.**
 
-Studio Pro is a local provisioning studio for app builders. It helps you take a project from “runs on my machine” to launch-ready by guiding the setup of Firebase, Google Cloud, GitHub, Expo EAS, Apple Developer, Google Play, Cloudflare, CI secrets, OAuth configuration, and LLM provider keys from one encrypted local workspace.
+Structure is a local provisioning studio for app builders. It helps you take a project from “runs on my machine” to launch-ready by guiding the setup of Firebase, Google Cloud, GitHub, Expo EAS, Apple Developer, Google Play, Cloudflare, CI secrets, OAuth configuration, and LLM provider keys from one encrypted local workspace.
 
 It is built for founders, solo developers, agencies, and small teams who can build the product but do not want to lose days to provider consoles, signing keys, service accounts, app store setup, DNS records, and fragile launch checklists.
 
@@ -11,7 +11,7 @@ It is built for founders, solo developers, agencies, and small teams who can bui
 
 ---
 
-## Why Studio Pro?
+## Why Structure?
 
 Most production app setup is not hard because any one provider is impossible. It is hard because the work is scattered:
 
@@ -23,13 +23,13 @@ Most production app setup is not hard because any one provider is impossible. It
 - OAuth callbacks must line up across web, iOS, Android, Firebase, and provider dashboards.
 - API keys and service account JSON need to be stored somewhere safer than notes, chat, shell history, or random `.env` files.
 
-Studio Pro gives that setup a visible dependency graph. It runs what can be automated, pauses for required human actions, stores produced credentials in a local encrypted vault, and shows you what is complete, blocked, or ready to run next.
+Structure gives that setup a visible dependency graph. It runs what can be automated, pauses for required human actions, stores produced credentials in a local encrypted vault, and shows you what is complete, blocked, or ready to run next.
 
 ---
 
 ## What You Can Build With It
 
-Studio Pro supports project templates for:
+Structure supports project templates for:
 
 | Template | Use Case |
 |---|---|
@@ -40,7 +40,7 @@ Studio Pro supports project templates for:
 
 Built-in integrations include:
 
-| Area | Studio Pro Helps With |
+| Area | Structure Helps With |
 |---|---|
 | Google Cloud / Firebase | GCP project foundation, Firebase setup, Auth, Firestore, Storage, Messaging, service accounts |
 | GitHub | Repository setup, CI workflow files, environments, repository secrets, environment secrets |
@@ -55,7 +55,7 @@ Built-in integrations include:
 
 ## How It Works
 
-Studio Pro runs locally and opens a browser UI backed by a local Express server. Your projects, credentials, and provisioning state stay on your machine.
+Structure runs locally and opens a browser UI backed by a local Express server. Your projects, credentials, and provisioning state stay on your machine.
 
 The workflow is:
 
@@ -66,13 +66,13 @@ The workflow is:
 5. Complete any required manual gates, such as account enrollment or DNS delegation.
 6. Inspect produced resources, uploaded secrets, and completed setup.
 
-Provisioning is graph-based, so Studio Pro understands which steps depend on which credentials, accounts, providers, and generated resources. That makes it easier to resume setup, troubleshoot blockers, and repeat the same launch path across projects.
+Provisioning is graph-based, so Structure understands which steps depend on which credentials, accounts, providers, and generated resources. That makes it easier to resume setup, troubleshoot blockers, and repeat the same launch path across projects.
 
 ---
 
 ## Security and Privacy
 
-Studio Pro is local-first by design.
+Structure is local-first by design.
 
 | Layer | Behavior |
 |---|---|
@@ -83,7 +83,7 @@ Studio Pro is local-first by design.
 | OAuth | OAuth flows use PKCE and state validation. Authorization codes are not logged. |
 | Telemetry | No analytics, crash reporting, usage tracking, or phone-home logic. |
 
-Studio Pro only contacts external providers when you configure an integration and run a provisioning step that requires that provider.
+Structure only contacts external providers when you configure an integration and run a provisioning step that requires that provider.
 
 Read more:
 
@@ -101,9 +101,9 @@ Download the latest release for your platform from the [GitHub Releases page](ht
 
 | Platform | Download |
 |---|---|
-| macOS Apple Silicon | `Studio-Pro-v*.dmg` |
-| Linux x86_64 | `studio-pro-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux arm64 | `studio-pro-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `Structure-v*.dmg` |
+| Linux x86_64 | `structure-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `structure-aarch64-unknown-linux-gnu.tar.gz` |
 
 Studio opens in your browser at:
 
@@ -134,7 +134,7 @@ Open:
 http://localhost:3738
 ```
 
-Development mode uses `STUDIO_PROFILE=dev` and `STUDIO_PORT=3738` so it stays isolated from a production install. To test passkey registration in development, open:
+Development mode uses `STRUCTURE_PROFILE=dev` and `STRUCTURE_PORT=3738` so it stays isolated from a production install. To test passkey registration in development, open:
 
 ```text
 http://localhost:3738?passkey=1
@@ -161,12 +161,12 @@ npm run reset:data      # Destroy local Studio data for the active profile
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `STUDIO_STORE_DIR` | OS app data dir for `studio-pro` | Override data directory |
-| `STUDIO_PROFILE` | unset | Isolate app data per profile, such as `dev` |
-| `STUDIO_PORT` | `3737` | Listen port |
-| `STUDIO_HOST` | `127.0.0.1` | Bind address |
-| `STUDIO_SERVE_UI_FROM_SOURCE` | unset | Serve dashboard from source during development |
-| `STUDIO_NO_OPEN` | unset | Skip opening the browser |
+| `STRUCTURE_STORE_DIR` | OS app data dir for `structure` | Override data directory |
+| `STRUCTURE_PROFILE` | unset | Isolate app data per profile, such as `dev` |
+| `STRUCTURE_PORT` | `3737` | Listen port |
+| `STRUCTURE_HOST` | `127.0.0.1` | Bind address |
+| `STRUCTURE_SERVE_UI_FROM_SOURCE` | unset | Serve dashboard from source during development |
+| `STRUCTURE_NO_OPEN` | unset | Skip opening the browser |
 
 ---
 
@@ -184,7 +184,7 @@ Each deployable service owns its Dockerfile. The default Docker build context is
 
 ---
 
-## Extending Studio Pro
+## Extending Structure
 
 Provisioning is plugin-driven.
 

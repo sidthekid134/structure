@@ -1,4 +1,4 @@
-# Building Studio Pro
+# Building Structure
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ npm run dev:full
 ```
 
 Runs `tsc-watch` on the backend and Vite watch on `studio-ui`, emitting the UI into `src/studio/static/`.
-The dev script now sets `STUDIO_PROFILE=dev` and `STUDIO_PORT=3738` so local source dev does not collide with a production install on the same machine.
+The dev script now sets `STRUCTURE_PROFILE=dev` and `STRUCTURE_PORT=3738` so local source dev does not collide with a production install on the same machine.
 Open the URL logged by the server (default `http://localhost:3738`; the UI redirects `127.0.0.1` to `localhost` for WebAuthn).
 
 ## Production build (Node)
@@ -59,7 +59,7 @@ Run the server:
 node dist/studio/server.js
 ```
 
-## CLI single-binary (`studio-pro`)
+## CLI single-binary (`structure`)
 
 After `npm run build:backend` (or full `npm run build`):
 
@@ -67,7 +67,7 @@ After `npm run build:backend` (or full `npm run build`):
 npm run build:cli
 ```
 
-Uses `scripts/build-cli.js` and writes to `binaries/studio-pro-<rust-triple>`. Targets use Node 20 hostnames such as `node20-darwin-arm64` (see script).
+Uses `scripts/build-cli.js` and writes to `binaries/structure-<rust-triple>`. Targets use Node 20 hostnames such as `node20-darwin-arm64` (see script).
 
 All targets:
 
@@ -80,9 +80,9 @@ Native modules (`better-sqlite3`, libsodium) are listed under `pkg.assets` in `p
 ## Releases & Homebrew
 
 - Tag `v*` builds run `.github/workflows/release.yml`, which uploads `pkg` artifacts to GitHub Releases.
-- Copy SHA256 sums into your external tap using `release/homebrew-studio-pro.rb.template`.
+- Copy SHA256 sums into your external tap using `release/homebrew-structure.rb.template`.
 - Optional metadata shape for tooling: `release/latest.template.json`.
 
 ## Icons / PWA
 
-The Vite app reads `studio-ui/public/manifest.webmanifest`. App icon: `studio-ui/public/studio-pro-icon.png`.
+The Vite app reads `studio-ui/public/manifest.webmanifest`. App icon: `studio-ui/public/structure-icon.png`.

@@ -145,10 +145,10 @@ async function refreshAuthBarrierState(
       needsVaultKeySetup?: boolean;
       hasCredentials?: boolean;
       canDecryptVault?: boolean;
-      studioProfile?: string;
+      structureProfile?: string;
       appVersion?: string;
     };
-    setStudioProfile(typeof ver.studioProfile === 'string' && ver.studioProfile.trim() ? ver.studioProfile : 'default');
+    setStudioProfile(typeof ver.structureProfile === 'string' && ver.structureProfile.trim() ? ver.structureProfile : 'default');
     setAppVersion(typeof ver.appVersion === 'string' && ver.appVersion.trim() ? ver.appVersion : 'dev');
     const canDecryptVault = Boolean(ver.canDecryptVault ?? ver.hasCredentials);
     const needsVaultKeySetup = Boolean(ver.needsVaultKeySetup ?? ver.needsRegistration ?? !canDecryptVault);
@@ -236,7 +236,7 @@ export default function PlatformStudio() {
   const [apiBootstrapDone, setApiBootstrapDone] = useState(false);
   const [isMigrationImporting, setIsMigrationImporting] = useState(false);
   const [wsStatus, setWsStatus] = useState<'offline' | 'connecting' | 'live' | 'error'>('offline');
-  const [studioProfile, setStudioProfile] = useState('default');
+  const [structureProfile, setStudioProfile] = useState('default');
   const [appVersion, setAppVersion] = useState('dev');
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
   const [createForm, setCreateForm] = useState<CreateProjectForm>({
@@ -1099,7 +1099,7 @@ export default function PlatformStudio() {
 
         <main className="flex-1 overflow-y-auto bg-muted/20">
           <MainHeader
-            title={view === 'registry' ? 'Plugin Registry' : view === 'overview' ? 'Organization' : projectDetail?.project.name || 'Studio Pro'}
+            title={view === 'registry' ? 'Plugin Registry' : view === 'overview' ? 'Organization' : projectDetail?.project.name || 'Structure'}
             subtitle={
               view === 'registry'
                 ? pluginCatalog
@@ -1116,7 +1116,7 @@ export default function PlatformStudio() {
             isDark={isDark}
             wsStatus={wsStatus}
             wsTone={wsTone}
-            studioProfile={studioProfile}
+            structureProfile={structureProfile}
             appVersion={appVersion}
             onToggleDark={() => setIsDark((value) => !value)}
           />

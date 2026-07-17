@@ -103,7 +103,7 @@ export class StudioServer {
 
     this.eventLog = new EventLog(storeDir);
     this.serveUiFromSource =
-      options.serveUiFromSource ?? process.env['STUDIO_SERVE_UI_FROM_SOURCE'] === '1';
+      options.serveUiFromSource ?? process.env['STRUCTURE_SERVE_UI_FROM_SOURCE'] === '1';
     this.staticDir = this.resolveStaticDir();
     this.app = express();
     this.httpServer = http.createServer(this.app);
@@ -158,7 +158,7 @@ export class StudioServer {
           return;
         }
         const durationMs = Date.now() - start;
-        const message = `[studio-api] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms)`;
+        const message = `[structure-api] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms)`;
         if (res.statusCode >= 500) {
           console.error(message);
         } else if (res.statusCode >= 400) {
@@ -171,7 +171,7 @@ export class StudioServer {
           const keys = Object.keys(req.body as object);
           if (keys.length > 0) {
             const detail = describeJsonBodyShape(req.body);
-            const line = `[studio-api]   req body: ${detail}`;
+            const line = `[structure-api]   req body: ${detail}`;
             if (res.statusCode >= 500) {
               console.error(line);
             } else if (res.statusCode >= 400) {
@@ -225,7 +225,7 @@ export class StudioServer {
       next(err);
     });
 
-    this.app.get('/__studio_live_reload', (_req, res) => {
+    this.app.get('/__structure_live_reload', (_req, res) => {
       if (!this.serveUiFromSource) {
         res.status(404).end();
         return;
@@ -322,10 +322,10 @@ export class StudioServer {
     // Reject any non-loopback bind unless explicitly whitelisted by env.
     // This is defense-in-depth: the daemon stores plaintext credentials in
     // memory and must never be reachable from another machine.
-    if (!isLoopbackAddress(host) && process.env['STUDIO_ALLOW_PUBLIC_BIND'] !== '1') {
+    if (!isLoopbackAddress(host) && process.env['STRUCTURE_ALLOW_PUBLIC_BIND'] !== '1') {
       throw new Error(
         `Refusing to bind to non-loopback address "${host}". ` +
-        `Set STUDIO_ALLOW_PUBLIC_BIND=1 only if you understand the risks.`,
+        `Set STRUCTURE_ALLOW_PUBLIC_BIND=1 only if you understand the risks.`,
       );
     }
 
@@ -358,14 +358,14 @@ export class StudioServer {
         if (process.env['NODE_ENV'] !== 'test') {
           const browseHost =
             host === '127.0.0.1' || host === '::1' || host === '[::1]' ? 'localhost' : host;
-          console.log(`Studio UI running at http://${browseHost}:${boundPort}`);
+          console.log(`Structure running at http://${browseHost}:${boundPort}`);
           console.log(`Vault session: ${getVaultSession().isSealed() ? 'sealed' : 'unsealed'}`);
           if (this.serveUiFromSource) {
             const tokenPath = path.join(this.options.storeDir ?? '~/.platform', 'api-token');
             console.log(`API token: ${this.auth.token.slice(0, 8)}… (full token at ${tokenPath})`);
           }
           // Sentinel line wrappers may parse to detect readiness (port bound).
-          console.log(`STUDIO_READY ${boundPort}`);
+          console.log(`STRUCTURE_READY ${boundPort}`);
         }
         resolve();
       });
@@ -419,7 +419,7 @@ export class StudioServer {
     // Tests: no long wait; repo checkout should already contain built UI under src/studio/static.
     if (process.env['NODE_ENV'] === 'test') {
       if (!fs.existsSync(sourceStaticDir)) {
-        throw new Error(`STUDIO_SERVE_UI_FROM_SOURCE requires ${sourceStaticDir}`);
+        throw new Error(`STRUCTURE_SERVE_UI_FROM_SOURCE requires ${sourceStaticDir}`);
       }
       return sourceStaticDir;
     }
@@ -430,7 +430,7 @@ export class StudioServer {
         sourceIndex,
         120_000,
         1_500,
-        '[studio] Waiting for src/studio/static/index.html (studio-ui build)…',
+        '[structure] Waiting for src/studio/static/index.html (studio-ui build)…',
       );
     }
 
@@ -440,7 +440,7 @@ export class StudioServer {
 
     if (fs.existsSync(bundledIndex)) {
       console.warn(
-        '[studio] Timed out waiting for source UI — serving bundled static; restart the backend after ui:watch emits files to use src/studio/static.',
+        '[structure] Timed out waiting for source UI — serving bundled static; restart the backend after ui:watch emits files to use src/studio/static.',
       );
       return bundledDir;
     }
@@ -521,27 +521,27 @@ function isLoopbackAddress(host: string): boolean {
 //
 // Environment knobs:
 //
-//   STUDIO_PORT          Listen port; `0` = OS picks an ephemeral port.
-//   STUDIO_HOST          Bind host (always 127.0.0.1 unless explicitly
-//                        overridden via STUDIO_ALLOW_PUBLIC_BIND=1).
-//   STUDIO_STORE_DIR     Persistent state directory (vault, token, SQLite).
-//   STUDIO_PROFILE       Optional profile suffix for OS app-data isolation
-//                        (e.g. "dev" => studio-pro-dev data dir).
-//   STUDIO_PORT_FILE     If set, daemon writes the chosen port here.
-//   STUDIO_SERVE_UI_FROM_SOURCE `1` serves UI from src/studio/static + live reload.
+//   STRUCTURE_PORT          Listen port; `0` = OS picks an ephemeral port.
+//   STRUCTURE_HOST          Bind host (always 127.0.0.1 unless explicitly
+//                        overridden via STRUCTURE_ALLOW_PUBLIC_BIND=1).
+//   STRUCTURE_STORE_DIR     Persistent state directory (vault, token, SQLite).
+//   STRUCTURE_PROFILE       Optional profile suffix for OS app-data isolation
+//                        (e.g. "dev" => structure-dev data dir).
+//   STRUCTURE_PORT_FILE     If set, daemon writes the chosen port here.
+//   STRUCTURE_SERVE_UI_FROM_SOURCE `1` serves UI from src/studio/static + live reload.
 //
 if (require.main === module) {
-  const portEnv = process.env['STUDIO_PORT'];
+  const portEnv = process.env['STRUCTURE_PORT'];
   const port = portEnv !== undefined ? parseInt(portEnv, 10) : undefined;
   const studio = new StudioServer({
-    serveUiFromSource: process.env['STUDIO_SERVE_UI_FROM_SOURCE'] === '1',
+    serveUiFromSource: process.env['STRUCTURE_SERVE_UI_FROM_SOURCE'] === '1',
     port: Number.isFinite(port) ? port : undefined,
-    host: process.env['STUDIO_HOST'],
-    storeDir: process.env['STUDIO_STORE_DIR'],
-    portFile: process.env['STUDIO_PORT_FILE'],
+    host: process.env['STRUCTURE_HOST'],
+    storeDir: process.env['STRUCTURE_STORE_DIR'],
+    portFile: process.env['STRUCTURE_PORT_FILE'],
   });
   studio.listen().catch((err: Error) => {
-    console.error('Failed to start Studio UI:', err.message);
+    console.error('Failed to start Structure:', err.message);
     process.exit(1);
   });
   // Graceful shutdown so the daemon exits cleanly on signal.

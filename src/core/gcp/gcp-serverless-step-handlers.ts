@@ -29,7 +29,7 @@ import { resolveDeployContractFromInputs } from '../../studio/deploy-contract.js
 const execFileAsync = promisify(execFile);
 
 function makeLog(stepKey: string, projectId: string): (msg: string) => void {
-  return (msg) => console.log(`[gcp-serverless:${stepKey}] studio="${projectId}" | ${msg}`);
+  return (msg) => console.log(`[gcp-serverless:${stepKey}] project="${projectId}" | ${msg}`);
 }
 
 function requireGcpProjectId(context: StepHandlerContext): string {
