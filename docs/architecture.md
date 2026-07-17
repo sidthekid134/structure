@@ -16,11 +16,11 @@
 
 ## Overview
 
-Studio Pro consists of three integrated pieces running on your local machine:
+Structure consists of three integrated pieces running on your local machine:
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  studio-pro binary (pkg-bundled Node.js)        │
+│  structure binary (pkg-bundled Node.js)        │
 │                                                 │
 │  ┌──────────────┐   ┌────────────────────────┐  │
 │  │  CLI entry   │   │  Express API server    │  │
@@ -101,7 +101,7 @@ Example plugins:
 | `llm-anthropic` | `llm` | Anthropic API key |
 | `llm-gemini` | `llm` | Google Gemini API key |
 | `llm-custom` | `llm` | Custom LLM endpoint |
-| `oauth-social` | `gcp` | Social sign-in (Google, Apple) |
+| `oauth-social` | `gcp` | Auth callbacks & integration kit (custom callback domain + Apple SIWA on iOS targets + native/web handoff) |
 
 Plugins are registered in tier order (tier 0 first, then tiers that depend on them) in `src/plugins/builtin/index.ts` via `registerBuiltinPlugins()`.
 
@@ -130,6 +130,18 @@ The runtime executor for a step. Defined via the `StepHandler` interface in `src
 | `sync` | Read current state and update stored artifacts |
 
 Handlers receive a `StepHandlerContext` containing the project ID, upstream artifacts, a `getToken()` helper, direct vault access, and the 32-byte vault DEK for reading/writing secrets.
+
+### Fullstack Cloud Run Repository Contract
+
+Studio-managed fullstack Cloud Run delivery treats web and API as separate deployable services in one repository:
+
+```text
+apps/web       # React or Next.js app
+apps/api       # Node/Express or Flask service
+packages/*     # shared packages
+```
+
+The `github:deploy-workflows` step stores each target's app root, Dockerfile path, and Docker build context. New fullstack projects default to `apps/web`, `apps/api`, and build context `.` so shared packages are available to both Docker builds. Existing root-Dockerfile repositories remain supported through legacy defaults.
 
 ---
 
@@ -264,7 +276,7 @@ The React UI in `studio-ui/` is built with Vite. Output lands in `src/studio/sta
 
 ```
 npm run build:cli
-→ @yao-pkg/pkg → binaries/studio-pro-<target>
+→ @yao-pkg/pkg → binaries/structure-<target>
 ```
 
 `scripts/build-cli.js` uses `@yao-pkg/pkg` to bundle the compiled JS, the static UI, and native modules (`better-sqlite3`, `libsodium-wrappers-sumo`) into a single self-contained binary. Targets use Node 20 hostnames (e.g., `node20-darwin-arm64`).

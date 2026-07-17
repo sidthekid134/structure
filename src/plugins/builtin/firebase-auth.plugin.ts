@@ -4,8 +4,8 @@ import { FIREBASE_STEPS, OAUTH_STEPS, OAUTH_TEARDOWN_STEPS } from '../../provisi
 export const firebaseAuthPlugin: PluginDefinition = {
   id: 'firebase-auth',
   version: '1.0.0',
-  label: 'Firebase Auth',
-  description: 'Enable auth providers and configure redirect domains.',
+  label: 'App Authentication',
+  description: 'Enable Firebase Authentication, sign-in providers, OAuth clients, and redirect domains.',
   integrationId: 'gcp',
   provider: 'oauth',
   providerMeta: {
@@ -129,7 +129,7 @@ export const firebaseAuthPlugin: PluginDefinition = {
   },
   functionGroup: {
     id: 'firebase',
-    label: 'Firebase & GCP',
+    label: 'Firebase & Cloud',
     description: 'Firebase services and Google Cloud infrastructure',
     order: 1,
   },

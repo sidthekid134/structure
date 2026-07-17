@@ -129,7 +129,7 @@ function getModuleInstruction(module: RequiredModule): string {
     'eas-builds':
       'Configure EAS Builds: add your Expo token and ensure the EAS project is linked.',
     'oauth-social':
-      'Configure OAuth Social providers: complete Firebase Auth setup and configure Google/Apple OAuth clients.',
+      'Configure Auth Callbacks & Integration Kit: complete Firebase Auth setup so the custom callback domain can be bound and the app integration handoff (web or native) can be generated.',
   };
   return instructions[module] ?? `Complete the "${module}" module before proceeding.`;
 }

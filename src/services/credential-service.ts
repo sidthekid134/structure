@@ -6,7 +6,7 @@
  *
  * Key behaviors:
  *   - Plaintext values are never logged or returned from public methods.
- *   - Each credential type has exactly one active record per project
+ *   - Each credential type has exactly one active record per (project, type, sub_key)
  *     (soft-delete via deletedAt; unique enforcement in application layer).
  *   - Decryption happens on-demand only when the credential is needed for an API call.
  */
@@ -19,10 +19,17 @@ import { encrypt, decrypt } from '../encryption.js';
 import { CredentialError } from '../types.js';
 
 // ---------------------------------------------------------------------------
+// Sentinel for org-level credentials
+// ---------------------------------------------------------------------------
+
+export const ORG_SENTINEL = '__organization__';
+
+// ---------------------------------------------------------------------------
 // Credential types
 // ---------------------------------------------------------------------------
 
 export type CredentialType =
+  // ── Existing ──────────────────────────────────────────────────────────
   | 'github_pat'
   | 'cloudflare_token'
   | 'apple_p8'
@@ -30,14 +37,51 @@ export type CredentialType =
   | 'google_play_key'
   | 'expo_token'
   | 'domain_name'
-  // LLM provider API keys — one credential per (project, kind). Multi-instance
-  // support (multiple keys per kind) lives on the per-instance provider ID
-  // path in the SecretStore; this enum tracks the simple "one OpenAI per
-  // project, one Anthropic per project" UX.
+  // LLM provider API keys
   | 'llm_openai_api_key'
   | 'llm_anthropic_api_key'
   | 'llm_gemini_api_key'
-  | 'llm_custom_api_key';
+  | 'llm_openrouter_api_key'
+  | 'llm_custom_api_key'
+  // ── GitHub connection (org-level) ──────────────────────────────────────
+  | 'github_user_id'
+  | 'github_username'
+  | 'github_orgs'
+  | 'github_scopes'
+  | 'github_validated_at'
+  // ── Expo/EAS connection (org-level) ────────────────────────────────────
+  | 'expo_username'
+  | 'expo_user_id'
+  | 'expo_accounts'
+  // ── Apple org-level ASC ────────────────────────────────────────────────
+  | 'apple_asc_issuer_id'
+  | 'apple_asc_api_key_id'
+  | 'apple_asc_api_key_p8'
+  | 'apple_auth_keys_registry'
+  // ── GCP/Firebase project-scoped ────────────────────────────────────────
+  | 'gcp_project_id'
+  | 'gcp_service_account_email'
+  | 'gcp_service_account_json'
+  | 'gcp_connected_by_email'
+  | 'gcp_connected_at'
+  | 'gcp_oauth_refresh_token'
+  | 'firebase_api_key'
+  | 'firebase_ios_app_id'
+  | 'firebase_android_app_id'
+  | 'firestore_database_id'
+  | 'firestore_location'
+  // ── Apple project-scoped ───────────────────────────────────────────────
+  | 'apple_sign_in_key_id'
+  | 'apple_sign_in_service_id'
+  | 'apple_sign_in_p8'
+  | 'apns_key_id'
+  | 'apns_p8'
+  | 'apple_asc_app_id'
+  | 'apple_eas_signing_blob'
+  // ── GCP serverless infrastructure ─────────────────────────────────────
+  | 'gcp_artifact_registry_repo'
+  | 'gcp_workload_identity_provider'
+  | 'gcp_ci_service_account';
 
 // ---------------------------------------------------------------------------
 // Models
@@ -47,6 +91,7 @@ export interface StoredCredential {
   id: string;
   project_id: string;
   credential_type: CredentialType;
+  sub_key: string;
   metadata: Record<string, unknown>;
   created_at: number;
   updated_at: number;
@@ -57,6 +102,7 @@ export interface StoreCredentialInput {
   project_id: string;
   credential_type: CredentialType;
   value: string;
+  sub_key?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -64,6 +110,7 @@ export interface CredentialSummary {
   id: string;
   project_id: string;
   credential_type: CredentialType;
+  sub_key: string;
   metadata: Record<string, unknown>;
   created_at: number;
   updated_at: number;
@@ -105,15 +152,25 @@ export class CredentialService {
         deleted_at      INTEGER
       );
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_cred_active
-        ON project_credentials(project_id, credential_type)
-        WHERE deleted_at IS NULL;
-
       CREATE INDEX IF NOT EXISTS idx_project_cred_project
         ON project_credentials(project_id);
 
       CREATE INDEX IF NOT EXISTS idx_project_cred_deleted
         ON project_credentials(deleted_at);
+    `);
+
+    // Additive migration: add sub_key column if not yet present
+    const cols = this.db.pragma('table_info(project_credentials)') as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'sub_key')) {
+      this.db.exec(`ALTER TABLE project_credentials ADD COLUMN sub_key TEXT NOT NULL DEFAULT '';`);
+    }
+
+    // Recreate unique index to include sub_key
+    this.db.exec(`
+      DROP INDEX IF EXISTS idx_project_cred_active;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_cred_active
+        ON project_credentials(project_id, credential_type, sub_key)
+        WHERE deleted_at IS NULL;
     `);
   }
 
@@ -137,7 +194,7 @@ export class CredentialService {
 
   /**
    * Encrypts and persists a credential for a project.
-   * Soft-deletes any existing active credential of the same type first.
+   * Soft-deletes any existing active credential of the same (type, sub_key) first.
    */
   storeCredential(input: StoreCredentialInput): CredentialSummary {
     if (!input.value || input.value.trim().length === 0) {
@@ -147,11 +204,12 @@ export class CredentialService {
       );
     }
 
+    const subKey = input.sub_key ?? '';
     const now = Date.now();
     const id = crypto.randomUUID();
     const metadata = input.metadata ?? {};
 
-    const existing = this.getActiveCredential(input.project_id, input.credential_type);
+    const existing = this.getActiveCredential(input.project_id, input.credential_type, subKey);
     if (existing) {
       this.db
         .prepare('UPDATE project_credentials SET deleted_at = ? WHERE id = ?')
@@ -162,11 +220,52 @@ export class CredentialService {
 
     this.db.prepare(`
       INSERT INTO project_credentials
-        (id, project_id, credential_type, encrypted_value, metadata_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, input.project_id, input.credential_type, encryptedValue, JSON.stringify(metadata), now, now);
+        (id, project_id, credential_type, sub_key, encrypted_value, metadata_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, input.project_id, input.credential_type, subKey, encryptedValue, JSON.stringify(metadata), now, now);
 
-    return this.toSummary(id, input.project_id, input.credential_type, metadata, now, now);
+    return this.toSummary(id, input.project_id, input.credential_type, subKey, metadata, now, now);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Org-level convenience methods
+  // ---------------------------------------------------------------------------
+
+  /** Store a credential at org scope (project_id = ORG_SENTINEL). */
+  storeOrgCredential(
+    type: CredentialType,
+    value: string,
+    metadata?: Record<string, unknown>,
+  ): CredentialSummary {
+    return this.storeCredential({ project_id: ORG_SENTINEL, credential_type: type, value, metadata });
+  }
+
+  /** Retrieve plaintext of an org-scoped credential. */
+  retrieveOrgCredential(type: CredentialType, subKey?: string): string | null {
+    return this.retrieveCredential(ORG_SENTINEL, type, subKey);
+  }
+
+  /** Summary (no plaintext) of an org-scoped credential. */
+  getOrgCredentialSummary(type: CredentialType, subKey?: string): CredentialSummary | null {
+    return this.getCredentialSummary(ORG_SENTINEL, type, subKey);
+  }
+
+  /** List all active sub_key values for a given (projectId, type). */
+  listCredentialSubKeys(projectId: string, type: CredentialType): string[] {
+    const rows = this.db
+      .prepare(
+        'SELECT sub_key FROM project_credentials WHERE project_id = ? AND credential_type = ? AND deleted_at IS NULL',
+      )
+      .all(projectId, type) as Array<{ sub_key: string }>;
+    return rows.map((r) => r.sub_key);
+  }
+
+  /** Soft-delete an active credential by type (and optional sub_key). */
+  deleteCredentialByType(projectId: string, type: CredentialType, subKey?: string): void {
+    const sk = subKey ?? '';
+    const row = this.getActiveCredential(projectId, type, sk);
+    if (!row) return;
+    this.deleteCredential(row.id);
   }
 
   // ---------------------------------------------------------------------------
@@ -178,8 +277,8 @@ export class CredentialService {
    * Only call when the value is immediately needed for an API call.
    * Returns null if no active credential exists for this type.
    */
-  retrieveCredential(projectId: string, credentialType: CredentialType): string | null {
-    const row = this.getActiveCredentialRow(projectId, credentialType);
+  retrieveCredential(projectId: string, credentialType: CredentialType, subKey?: string): string | null {
+    const row = this.getActiveCredentialRow(projectId, credentialType, subKey ?? '');
     if (!row) return null;
     try {
       return this.decryptValue(row.encrypted_value, row.id);
@@ -194,13 +293,14 @@ export class CredentialService {
   /**
    * Returns the summary (no plaintext) of an active credential.
    */
-  getCredentialSummary(projectId: string, credentialType: CredentialType): CredentialSummary | null {
-    const row = this.getActiveCredentialRow(projectId, credentialType);
+  getCredentialSummary(projectId: string, credentialType: CredentialType, subKey?: string): CredentialSummary | null {
+    const row = this.getActiveCredentialRow(projectId, credentialType, subKey ?? '');
     if (!row) return null;
     return this.toSummary(
       row.id,
       row.project_id,
       row.credential_type as CredentialType,
+      row.sub_key,
       JSON.parse(row.metadata_json) as Record<string, unknown>,
       row.created_at,
       row.updated_at,
@@ -219,6 +319,7 @@ export class CredentialService {
         r.id,
         r.project_id,
         r.credential_type as CredentialType,
+        r.sub_key,
         JSON.parse(r.metadata_json) as Record<string, unknown>,
         r.created_at,
         r.updated_at,
@@ -296,8 +397,12 @@ export class CredentialService {
       case 'llm_openai_api_key':
       case 'llm_anthropic_api_key':
       case 'llm_gemini_api_key':
+      case 'llm_openrouter_api_key':
       case 'llm_custom_api_key':
         this.validateLlmApiKey(type, value);
+        break;
+      // Metadata / connection types — no format validation
+      default:
         break;
     }
   }
@@ -386,7 +491,7 @@ export class CredentialService {
     requiredTypes: CredentialType[],
   ): CredentialType[] {
     return requiredTypes.filter(
-      (type) => !this.getActiveCredential(projectId, type),
+      (type) => !this.getActiveCredential(projectId, type, ''),
     );
   }
 
@@ -394,19 +499,31 @@ export class CredentialService {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  private getActiveCredential(projectId: string, credentialType: CredentialType): { id: string } | null {
+  private getActiveCredential(
+    projectId: string,
+    credentialType: CredentialType,
+    subKey: string,
+  ): { id: string } | null {
     return (
       (this.db
-        .prepare('SELECT id FROM project_credentials WHERE project_id = ? AND credential_type = ? AND deleted_at IS NULL')
-        .get(projectId, credentialType) as { id: string } | undefined) ?? null
+        .prepare(
+          'SELECT id FROM project_credentials WHERE project_id = ? AND credential_type = ? AND sub_key = ? AND deleted_at IS NULL',
+        )
+        .get(projectId, credentialType, subKey) as { id: string } | undefined) ?? null
     );
   }
 
-  private getActiveCredentialRow(projectId: string, credentialType: CredentialType): RawRow | null {
+  private getActiveCredentialRow(
+    projectId: string,
+    credentialType: CredentialType,
+    subKey: string,
+  ): RawRow | null {
     return (
       (this.db
-        .prepare('SELECT * FROM project_credentials WHERE project_id = ? AND credential_type = ? AND deleted_at IS NULL')
-        .get(projectId, credentialType) as RawRow | undefined) ?? null
+        .prepare(
+          'SELECT * FROM project_credentials WHERE project_id = ? AND credential_type = ? AND sub_key = ? AND deleted_at IS NULL',
+        )
+        .get(projectId, credentialType, subKey) as RawRow | undefined) ?? null
     );
   }
 
@@ -414,11 +531,20 @@ export class CredentialService {
     id: string,
     projectId: string,
     credentialType: CredentialType,
+    subKey: string,
     metadata: Record<string, unknown>,
     createdAt: number,
     updatedAt: number,
   ): CredentialSummary {
-    return { id, project_id: projectId, credential_type: credentialType, metadata, created_at: createdAt, updated_at: updatedAt };
+    return {
+      id,
+      project_id: projectId,
+      credential_type: credentialType,
+      sub_key: subKey,
+      metadata,
+      created_at: createdAt,
+      updated_at: updatedAt,
+    };
   }
 
   close(): void {
@@ -434,6 +560,7 @@ interface RawRow {
   id: string;
   project_id: string;
   credential_type: string;
+  sub_key: string;
   encrypted_value: string;
   metadata_json: string;
   created_at: number;

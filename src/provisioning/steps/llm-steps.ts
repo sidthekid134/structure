@@ -8,7 +8,7 @@ import type { ProvisioningStepNode } from '../graph.types.js';
  */
 
 type LlmKindMeta = {
-  kind: 'openai' | 'anthropic' | 'gemini' | 'custom';
+  kind: 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom';
   label: string;
   userActionKey: string;
 };
@@ -28,6 +28,11 @@ const LLM_KIND_META: LlmKindMeta[] = [
     kind: 'gemini',
     label: 'Google Gemini',
     userActionKey: 'user:provide-gemini-api-key',
+  },
+  {
+    kind: 'openrouter',
+    label: 'OpenRouter',
+    userActionKey: 'user:provide-openrouter-api-key',
   },
   {
     kind: 'custom',
@@ -58,6 +63,7 @@ function makeLlmTeardownStepsForKind(meta: LlmKindMeta): ProvisioningStepNode[] 
 export const LLM_OPENAI_STEPS: ProvisioningStepNode[] = [];
 export const LLM_ANTHROPIC_STEPS: ProvisioningStepNode[] = [];
 export const LLM_GEMINI_STEPS: ProvisioningStepNode[] = [];
+export const LLM_OPENROUTER_STEPS: ProvisioningStepNode[] = [];
 export const LLM_CUSTOM_STEPS: ProvisioningStepNode[] = [];
 
 /** All LLM steps from every kind — empty; used for static catalog assembly. */
@@ -65,17 +71,20 @@ export const LLM_STEPS: ProvisioningStepNode[] = [
   ...LLM_OPENAI_STEPS,
   ...LLM_ANTHROPIC_STEPS,
   ...LLM_GEMINI_STEPS,
+  ...LLM_OPENROUTER_STEPS,
   ...LLM_CUSTOM_STEPS,
 ];
 
 export const LLM_OPENAI_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[0]);
 export const LLM_ANTHROPIC_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[1]);
 export const LLM_GEMINI_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[2]);
-export const LLM_CUSTOM_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[3]);
+export const LLM_OPENROUTER_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[3]);
+export const LLM_CUSTOM_TEARDOWN_STEPS = makeLlmTeardownStepsForKind(LLM_KIND_META[4]);
 
 export const LLM_TEARDOWN_STEPS: ProvisioningStepNode[] = [
   ...LLM_OPENAI_TEARDOWN_STEPS,
   ...LLM_ANTHROPIC_TEARDOWN_STEPS,
   ...LLM_GEMINI_TEARDOWN_STEPS,
+  ...LLM_OPENROUTER_TEARDOWN_STEPS,
   ...LLM_CUSTOM_TEARDOWN_STEPS,
 ];

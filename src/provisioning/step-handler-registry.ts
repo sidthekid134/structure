@@ -11,7 +11,6 @@
  * the actual step execution.
  */
 
-import type { VaultManager } from '../vault.js';
 import type { ProjectManager } from '../studio/project-manager.js';
 import type { StepExecutionIntent } from '../providers/types.js';
 import type { CredentialService } from '../services/credential-service.js';
@@ -40,12 +39,8 @@ export interface StepHandlerContext {
   getToken(providerId: string): Promise<string>;
   /** Returns true if a stored refresh token exists for this provider (does not refresh). */
   hasToken(providerId: string): boolean;
-  /** Direct vault access for credential reads/writes. */
-  vaultManager: VaultManager;
-  /** 32-byte vault DEK (passkey-unlocked session). */
-  passphrase: Buffer;
-  /** When set, LLM EAS handlers merge vault reads with SQLite-stored Studio API keys (`llm_*_api_key`). */
-  credentialService?: CredentialService;
+  /** Unified credential store (SQLite-backed, per-row encrypted). */
+  credentialService: CredentialService;
   /** Project manager for integration metadata updates. */
   projectManager: ProjectManager;
 }

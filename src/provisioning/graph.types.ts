@@ -111,7 +111,7 @@ export interface ResourceOutput {
 // Step input fields — user-configurable parameters for a step
 // ---------------------------------------------------------------------------
 
-export type StepInputFieldType = 'text' | 'select' | 'p8';
+export type StepInputFieldType = 'text' | 'select' | 'multiselect' | 'p8';
 
 export interface StepInputField {
   key: string;
@@ -130,6 +130,15 @@ export interface StepInputField {
   defaultValue?: string;
   options?: string[];
   required?: boolean;
+  /**
+   * Optional visibility dependency. When present, the UI should only render
+   * this field if `fieldKey` includes one of `includesAny` in its comma-
+   * separated value list.
+   */
+  dependsOn?: {
+    fieldKey: string;
+    includesAny: string[];
+  };
 }
 
 /** Shown when a node is complete — docs, consoles (static or templated). */
@@ -242,6 +251,15 @@ export interface NodeState {
   /** Step key that invalidated this state and forced re-run. */
   invalidatedBy?: string;
   invalidatedAt?: number;
+  manualRequired?: boolean;
+  verificationMode?: 'automatic' | 'manual-confirmation';
+  verificationEvidenceRequired?: string[];
+  manualConfirmation?: {
+    note: string;
+    targetIds: string[];
+    confirmedAt: string;
+    recordedAt: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +280,9 @@ export interface StepResult {
   resourcesProduced: Record<string, string>;
   error?: string;
   userPrompt?: string; // what to show the user if waiting-on-user
+  manualRequired?: boolean;
+  verificationMode?: 'automatic' | 'manual-confirmation';
+  verificationEvidenceRequired?: string[];
 }
 
 // ---------------------------------------------------------------------------

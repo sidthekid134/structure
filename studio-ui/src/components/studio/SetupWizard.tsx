@@ -24,6 +24,7 @@ import {
   Play,
   RefreshCw,
   ScanSearch,
+  Server,
   ShieldAlert,
   ShieldCheck,
   SkipForward,
@@ -57,6 +58,7 @@ import {
 import { OAuthFlowPanel } from './OAuthFlowPanel';
 import { AppleIntegrationFlow } from './AppleIntegrationFlow';
 import { effectiveUserActionInteractiveAction } from './user-action-interactive';
+import { ProviderLogo, providerBrandColor } from './ProviderLogo';
 
 // ---------------------------------------------------------------------------
 // Module display metadata — icon + color per module ID
@@ -625,6 +627,7 @@ export function SetupWizard({
   onUserActionComplete,
   onRefresh,
   onRecomputePlan,
+  runEndpoint = 'setup',
 }: {
   projectId: string;
   plan: ProvisioningPlanResponse | null;
@@ -641,6 +644,7 @@ export function SetupWizard({
   onUserActionComplete: (nodeKey: string, resources?: Record<string, string>) => Promise<void>;
   onRefresh: () => Promise<void>;
   onRecomputePlan?: () => Promise<void>;
+  runEndpoint?: 'setup' | 'teardown';
 }) {
   const [credentialText, setCredentialText] = useState('');
   const [resourceInputs, setResourceInputs] = useState<Record<string, string>>({});
@@ -654,7 +658,7 @@ export function SetupWizard({
 
   const [error, setError] = useState<string | null>(null);
   const [syncInfo, setSyncInfo] = useState<string | null>(null);
-  const [sidebarFocusIndex, setSidebarFocusIndex] = useState<number | null>(null);
+  const [sidebarFocusNodeKey, setSidebarFocusNodeKey] = useState<string | null>(null);
   const [revertManualGuide, setRevertManualGuide] = useState<RevertManualAction[] | null>(null);
   const [manualRevertNodeKey, setManualRevertNodeKey] = useState<string | null>(null);
   const [isFinalizingManualRevert, setIsFinalizingManualRevert] = useState(false);
@@ -732,13 +736,14 @@ export function SetupWizard({
   }, [orderedNodes, plan]);
 
   const displayIndex = useMemo(() => {
-    if (sidebarFocusIndex === null) return currentIndex;
-    if (sidebarFocusIndex < 0 || sidebarFocusIndex >= orderedNodes.length) return currentIndex;
-    return sidebarFocusIndex;
-  }, [sidebarFocusIndex, currentIndex, orderedNodes.length]);
+    if (sidebarFocusNodeKey === null) return currentIndex;
+    const idx = orderedNodes.findIndex((node) => node.key === sidebarFocusNodeKey);
+    if (idx < 0) return currentIndex;
+    return idx;
+  }, [sidebarFocusNodeKey, currentIndex, orderedNodes]);
 
   useEffect(() => {
-    setSidebarFocusIndex(null);
+    setSidebarFocusNodeKey(null);
     setRevertManualGuide(null);
     setManualRevertNodeKey(null);
   }, [projectId]);
@@ -752,9 +757,39 @@ export function SetupWizard({
 
   const currentStepNode = currentNode?.type === 'step' ? (currentNode as ProvisioningStepNode) : null;
   const currentInputFields = currentStepNode?.inputFields?.length ? currentStepNode.inputFields : null;
+  const isStepInputFieldVisible = useCallback(
+    (field: NonNullable<typeof currentInputFields>[number], values: Record<string, string>) => {
+      if (!field.dependsOn) return true;
+      const source = values[field.dependsOn.fieldKey] ?? '';
+      const selected = source
+        .split(',')
+        .map((part) => part.trim().toLowerCase())
+        .filter((part) => part.length > 0);
+      return field.dependsOn.includesAny.some((candidate) =>
+        selected.includes(candidate.trim().toLowerCase()),
+      );
+    },
+    [],
+  );
   const currentNodeState = currentNode && plan ? plan.nodeStates[currentNode.key] : undefined;
   const [githubOwnerOptions, setGithubOwnerOptions] = useState<string[]>([]);
   const [refreshingGithubOwners, setRefreshingGithubOwners] = useState(false);
+  const inferredDeployTargetDefault = useMemo(() => {
+    if (!plan) return '';
+    const targets: string[] = [];
+    const hasMobile = plan.nodes.some((node) => node.type === 'step' && node.provider === 'eas');
+    const hasWeb = plan.nodes.some((node) => node.key.startsWith('web:'));
+    const hasApi = plan.nodes.some((node) => node.key.startsWith('api:'));
+    if (hasMobile) targets.push('mobile');
+    if (hasWeb) targets.push('web');
+    if (hasApi) targets.push('api');
+    if (targets.length === 0) targets.push(hasMobile ? 'mobile' : 'web');
+    return targets.join(',');
+  }, [plan]);
+  const inferredDeployDestinationDefaults = useMemo(() => {
+    if (!plan) return { web: 'gcp-cloud-run', api: 'gcp-cloud-run' } as const;
+    return { web: 'gcp-cloud-run', api: 'gcp-cloud-run' } as const;
+  }, [plan]);
 
   useEffect(() => {
     if (!currentInputFields) {
@@ -766,7 +801,15 @@ export function SetupWizard({
     const defaults: Record<string, string> = {};
     const declaredFieldKeys = new Set(currentInputFields.map((field) => field.key));
     for (const field of currentInputFields) {
-      defaults[field.key] = saved[field.key] ?? field.defaultValue ?? '';
+      const inferredDefault =
+        field.key === 'deploy_target_types' && field.type === 'multiselect'
+          ? inferredDeployTargetDefault
+          : field.key === 'deploy_web_destination'
+            ? inferredDeployDestinationDefaults.web
+            : field.key === 'deploy_api_destination'
+              ? inferredDeployDestinationDefaults.api
+          : field.defaultValue ?? '';
+      defaults[field.key] = saved[field.key] ?? inferredDefault;
     }
     // Preserve side-channel inputs not declared in inputFields (e.g.
     // apple_auth_key_id set by the reuse-key picker) so Save/Run does not
@@ -776,12 +819,55 @@ export function SetupWizard({
     }
     setStepInputs(defaults);
     setStepInputsDirty(false);
-  }, [currentNode?.key, currentNodeState?.userInputs]);
+  }, [
+    currentNode?.key,
+    currentInputFields,
+    currentNodeState?.userInputs,
+    inferredDeployTargetDefault,
+    inferredDeployDestinationDefaults.api,
+    inferredDeployDestinationDefaults.web,
+  ]);
 
   const handleStepInputChange = (key: string, value: string) => {
     setStepInputs((prev) => ({ ...prev, [key]: value }));
     setStepInputsDirty(true);
   };
+
+  const handleMultiSelectInputToggle = (key: string, option: string, orderedOptions: string[]) => {
+    const current = (stepInputs[key] ?? '')
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    const selected = new Set(current);
+    if (selected.has(option)) {
+      selected.delete(option);
+    } else {
+      selected.add(option);
+    }
+    const next = orderedOptions.filter((candidate) => selected.has(candidate)).join(',');
+    handleStepInputChange(key, next);
+  };
+  const visibleCurrentInputFields = useMemo(() => {
+    if (!currentInputFields) return null;
+    return currentInputFields.filter((field) => isStepInputFieldVisible(field, stepInputs));
+  }, [currentInputFields, isStepInputFieldVisible, stepInputs]);
+  const deployPairFieldKeys = useMemo(
+    () =>
+      new Set([
+        'deploy_web_stack',
+        'deploy_web_destination',
+        'deploy_web_root',
+        'deploy_web_dockerfile',
+        'deploy_web_build_context',
+        'deploy_api_stack',
+        'deploy_api_destination',
+        'deploy_api_root',
+        'deploy_api_dockerfile',
+        'deploy_api_build_context',
+        'deploy_api_health_path',
+      ]),
+    [],
+  );
 
   /**
    * Persist the current `stepInputs` map for the active node. Returns true on
@@ -878,8 +964,9 @@ export function SetupWizard({
    */
   const focusNodeByKey = useCallback(
     (nodeKey: string) => {
-      const idx = orderedNodes.findIndex((n) => n.key === nodeKey);
-      if (idx >= 0) setSidebarFocusIndex(idx);
+      if (orderedNodes.some((n) => n.key === nodeKey)) {
+        setSidebarFocusNodeKey(nodeKey);
+      }
     },
     [orderedNodes],
   );
@@ -952,8 +1039,12 @@ export function SetupWizard({
       }
 
       const intent = forcedIntent ?? runIntentForNodeKey(currentNode.key);
+      const runUrl =
+        runEndpoint === 'teardown'
+          ? `/api/projects/${encodeURIComponent(projectId)}/provisioning/teardown/run`
+          : `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`;
       const result = await api<{ started?: boolean; needsReauth?: boolean; sessionId?: string; authUrl?: string }>(
-        `/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`,
+        runUrl,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -965,7 +1056,7 @@ export function SetupWizard({
         // OAuth required — authenticate first, then retry the step automatically.
         const reauthStatus = await gcpOAuthSession.pollExternal(result.sessionId, result.authUrl);
         if (reauthStatus?.phase === 'completed' && reauthStatus.connected) {
-          await api(`/api/projects/${encodeURIComponent(projectId)}/provisioning/plan/run/nodes`, {
+          await api(runUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ nodeKeys: [currentNode.key], intent }),
@@ -988,7 +1079,7 @@ export function SetupWizard({
     if (!currentNode || currentNode.type !== 'user-action') return;
     setError(null);
     setIsSubmitting(true);
-    const pinnedIndex = displayIndex;
+    const pinnedNodeKey = currentNode.key;
     try {
       const payload: Record<string, string> = {};
       if (currentNode.verification.type === 'credential-upload') {
@@ -1007,7 +1098,7 @@ export function SetupWizard({
       setCredentialText('');
       setResourceInputs({});
       await onRefresh();
-      setSidebarFocusIndex(pinnedIndex);
+      setSidebarFocusNodeKey(pinnedNodeKey);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1031,7 +1122,7 @@ export function SetupWizard({
       );
       onPlanChange(updated);
       await onRefresh();
-      setSidebarFocusIndex(null);
+      setSidebarFocusNodeKey(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1246,7 +1337,7 @@ export function SetupWizard({
 
 
   const showRevert =
-    currentStatus === 'completed' || currentStatus === 'skipped' || currentStatus === 'failed';
+    !isTeardown && (currentStatus === 'completed' || currentStatus === 'skipped' || currentStatus === 'failed');
   const showRevalidate =
     (
       (currentNode?.type === 'step' && !isTeardown) ||
@@ -1257,6 +1348,7 @@ export function SetupWizard({
     currentStatus !== 'waiting-on-user';
   const showSkip =
     Boolean(currentNode && plan) &&
+    !isTeardown &&
     !['completed', 'skipped', 'in-progress'].includes(currentStatus) &&
     !planHasInProgress;
 
@@ -1298,14 +1390,16 @@ export function SetupWizard({
               {group.items.map(({ node, index }) => {
                 const status = getNodeStatus(node, plan.nodeStates, plan.environments);
                 const isActive = index === displayIndex;
-                const isWizardCursor = index === currentIndex && sidebarFocusIndex === null;
+                const isWizardCursor = index === currentIndex && sidebarFocusNodeKey === null;
                 const waitingOnDeps = isDependencyWaiting(node, plan, status);
                 const stale = getNodeInvalidation(node, plan.nodeStates, plan.environments).isInvalidated;
+                const moduleId = plan.moduleByNodeKey?.[node.key];
+                const providerId = node.provider ?? 'user-action';
                 return (
                   <li key={node.key}>
                     <button
                       type="button"
-                      onClick={() => setSidebarFocusIndex(index)}
+                      onClick={() => setSidebarFocusNodeKey(node.key)}
                       title={waitingOnDeps ? 'Waiting on upstream steps — select to see details' : undefined}
                       className={`w-full text-left rounded-lg border px-2.5 py-2 flex items-start gap-2 transition-colors ${isActive
                           ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/20'
@@ -1403,7 +1497,9 @@ export function SetupWizard({
               {isRunning
                 ? 'Running...'
                 : isTeardown
-                  ? 'Confirm Deletion'
+                  ? currentNode?.type === 'step' && currentNode.key === 'cloudflare:remove-domain-zone'
+                    ? 'Delete'
+                    : 'Confirm Deletion'
                   : currentInvalidation.isInvalidated
                     ? 'Refresh Step'
                     : 'Run Step'}
@@ -1522,7 +1618,7 @@ export function SetupWizard({
                   try {
                     await onRecomputePlan();
                     setSyncInfo('Plan rebuilt from latest step definitions. New steps may now appear.');
-                    setSidebarFocusIndex(null);
+                    setSidebarFocusNodeKey(null);
                   } catch (err) {
                     setError((err as Error).message);
                   } finally {
@@ -1663,10 +1759,21 @@ export function SetupWizard({
             if (!moduleLabel || !moduleId) return null;
             const rawMeta = plan.pluginDisplayMeta?.[moduleId];
             const meta = rawMeta ? toModuleDisplayMeta(rawMeta) : DEFAULT_MODULE_DISPLAY;
-            const ModuleIcon = meta.icon;
+            const providerId = currentNode.provider ?? 'user-action';
+            const brandColor = providerBrandColor(providerId, moduleId, true);
             return (
               <div className={`flex items-center gap-2 px-4 py-2 border-b ${meta.bgColor} ${meta.borderColor}`}>
-                <ModuleIcon size={12} className={`shrink-0 ${meta.iconColor}`} />
+                <span
+                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border"
+                  style={{
+                    borderColor: `${brandColor}4D`,
+                    backgroundColor: `${brandColor}1A`,
+                    color: brandColor,
+                  }}
+                  aria-hidden
+                >
+                  <ProviderLogo provider={providerId} moduleId={moduleId} size={12} />
+                </span>
                 <span className={`text-[11px] font-semibold ${meta.textColor}`}>{moduleLabel}</span>
               </div>
             );
@@ -1911,10 +2018,84 @@ export function SetupWizard({
               setStepInputsDirty(true);
             };
 
+            const visibleFields = visibleCurrentInputFields ?? [];
+            const fieldByKey = new Map(visibleFields.map((field) => [field.key, field]));
+            const webStackField = fieldByKey.get('deploy_web_stack');
+            const webDestinationField = fieldByKey.get('deploy_web_destination');
+            const webConfigFields = [
+              webStackField,
+              webDestinationField,
+              fieldByKey.get('deploy_web_root'),
+              fieldByKey.get('deploy_web_dockerfile'),
+              fieldByKey.get('deploy_web_build_context'),
+            ].filter((field): field is (typeof visibleFields)[number] => Boolean(field));
+            const apiStackField = fieldByKey.get('deploy_api_stack');
+            const apiDestinationField = fieldByKey.get('deploy_api_destination');
+            const apiConfigFields = [
+              apiStackField,
+              apiDestinationField,
+              fieldByKey.get('deploy_api_root'),
+              fieldByKey.get('deploy_api_dockerfile'),
+              fieldByKey.get('deploy_api_build_context'),
+              fieldByKey.get('deploy_api_health_path'),
+            ].filter((field): field is (typeof visibleFields)[number] => Boolean(field));
+            const renderSegmentedField = (field: (typeof visibleFields)[number]) => {
+              const options = field.options ?? [];
+              const value = stepInputs[field.key] ?? field.defaultValue ?? '';
+              return (
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-semibold text-muted-foreground/90">{field.label}</p>
+                  <div className="inline-flex w-full flex-wrap gap-1 rounded-2xl border border-border/70 bg-background/70 p-1">
+                    {options.map((opt) => {
+                      const isSelected = value === opt;
+                      return (
+                        <button
+                          key={opt}
+                          type="button"
+                          onClick={() => handleStepInputChange(field.key, opt)}
+                          className={`flex-1 min-w-[120px] rounded-xl px-3 py-2 text-xs font-semibold transition-all ${
+                            isSelected
+                              ? 'bg-primary/14 text-primary border border-primary/35 shadow-[0_10px_20px_-14px_rgba(99,102,241,0.7)]'
+                              : 'text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-transparent'
+                          }`}
+                        >
+                          {opt}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            };
+            const renderDeployField = (field: (typeof visibleFields)[number]) => {
+              if (field.type === 'select' && (field.options ?? []).length > 0) {
+                return <div key={field.key}>{renderSegmentedField(field)}</div>;
+              }
+              const value = stepInputs[field.key] ?? field.defaultValue ?? '';
+              return (
+                <div key={field.key} className="space-y-1.5">
+                  <label className="text-[10px] font-semibold text-muted-foreground/90">
+                    {field.label}
+                    {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                  </label>
+                  {field.description && (
+                    <p className="text-[11px] text-muted-foreground/90 leading-snug">{field.description}</p>
+                  )}
+                  <input
+                    type="text"
+                    value={value}
+                    onChange={(e) => handleStepInputChange(field.key, e.target.value)}
+                    placeholder={field.placeholder}
+                    className="w-full rounded-xl border border-border/70 bg-background/90 px-3 py-2 text-sm font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus:ring-2 focus:ring-primary/20 focus:border-primary/50 outline-none transition-colors"
+                  />
+                </div>
+              );
+            };
+
             return (
-            <div className="rounded-lg border border-border p-4 space-y-3">
-              <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Configuration</p>
-              {currentInputFields.map((field) => {
+            <div className="rounded-2xl border border-border/70 bg-gradient-to-br from-background via-background to-muted/20 p-4 shadow-[0_14px_36px_-26px_rgba(15,23,42,0.55)] space-y-3.5">
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground/90">Configuration</p>
+              {visibleFields.filter((field) => !deployPairFieldKeys.has(field.key)).map((field) => {
                 const isAppleAuthP8Field = field.key === 'apple_auth_key_p8';
                 if (isAppleAuthP8Field && isAppleAuthKeyStep) {
                   // Custom picker: existing-key chips + upload dropzone +
@@ -2011,13 +2192,13 @@ export function SetupWizard({
                   );
                 }
                 return (
-                <div key={field.key} className="space-y-1.5">
-                  <label className="text-xs font-semibold text-foreground">
+                <div key={field.key} className="space-y-1.5 rounded-xl border border-border/60 bg-muted/25 px-3 py-2.5">
+                  <label className="text-[11px] font-semibold text-foreground/95">
                     {field.label}
                     {field.required && <span className="text-red-500 ml-0.5">*</span>}
                   </label>
                   {field.description && (
-                    <p className="text-[11px] text-muted-foreground leading-snug">{field.description}</p>
+                    <p className="text-[11px] text-muted-foreground/90 leading-snug">{field.description}</p>
                   )}
                   {(() => {
                     if (field.type === 'p8') {
@@ -2036,13 +2217,134 @@ export function SetupWizard({
                     const renderSelect = (field.type === 'select' && selectOptions.length > 0) ||
                       (isGithubOwnerField && selectOptions.length > 0);
                     const value = stepInputs[field.key] ?? field.defaultValue ?? '';
-                    if (renderSelect) {
+                    if (field.type === 'multiselect') {
+                      const options = field.options ?? [];
+                      const selected = new Set(
+                        value
+                          .split(',')
+                          .map((part) => part.trim())
+                          .filter((part) => part.length > 0),
+                      );
+                      const optionMeta = (option: string) => {
+                        const key = option.trim().toLowerCase();
+                        if (key === 'mobile') {
+                          return {
+                            label: 'Mobile App',
+                            hint: 'Expo-first automation',
+                            icon: Smartphone,
+                            tint: 'from-sky-500/20 via-sky-500/5 to-transparent',
+                          };
+                        }
+                        if (key === 'web') {
+                          return {
+                            label: 'Web UI',
+                            hint: 'React or Next.js',
+                            icon: Globe,
+                            tint: 'from-violet-500/20 via-violet-500/5 to-transparent',
+                          };
+                        }
+                        if (key === 'api') {
+                          return {
+                            label: 'API Service',
+                            hint: 'Node/Express or Flask',
+                            icon: Server,
+                            tint: 'from-emerald-500/20 via-emerald-500/5 to-transparent',
+                          };
+                        }
+                        return {
+                          label: option.toUpperCase(),
+                          hint: 'Target enabled',
+                          icon: Zap,
+                          tint: 'from-primary/20 via-primary/5 to-transparent',
+                        };
+                      };
                       return (
-                        <div className="flex items-center gap-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-0.5">
+                          {options.map((opt) => {
+                            const checked = selected.has(opt);
+                            const meta = optionMeta(opt);
+                            const Icon = meta.icon;
+                            return (
+                              <button
+                                key={opt}
+                                type="button"
+                                onClick={() => handleMultiSelectInputToggle(field.key, opt, options)}
+                                className={`group relative overflow-hidden rounded-2xl border p-3 text-left transition-all duration-200 ${
+                                  checked
+                                    ? 'border-primary/45 bg-primary/10 shadow-[0_14px_34px_-18px_rgba(99,102,241,0.65)]'
+                                    : 'border-border/80 bg-muted/35 hover:bg-muted/60 hover:border-border'
+                                }`}
+                              >
+                                <div
+                                  className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${meta.tint} ${
+                                    checked ? 'opacity-100' : 'opacity-60'
+                                  }`}
+                                />
+                                <div className="relative flex items-start gap-2.5">
+                                  <span className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl border ${
+                                    checked
+                                      ? 'border-primary/40 bg-primary/15 text-primary'
+                                      : 'border-border/70 bg-background/70 text-muted-foreground'
+                                  }`}>
+                                    <Icon size={14} />
+                                  </span>
+                                  <span className="min-w-0 flex-1">
+                                    <span className={`block text-xs font-semibold ${checked ? 'text-primary' : 'text-foreground'}`}>
+                                      {meta.label}
+                                    </span>
+                                    <span className="block text-[11px] text-muted-foreground leading-snug">
+                                      {meta.hint}
+                                    </span>
+                                  </span>
+                                  {checked ? (
+                                    <CheckCircle2 size={14} className="shrink-0 text-primary" />
+                                  ) : (
+                                    <span className="mt-0.5 h-3.5 w-3.5 rounded-full border border-muted-foreground/35 bg-background/70" />
+                                  )}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    }
+                    if (renderSelect) {
+                      const useSegmentedSelect =
+                        field.type === 'select' &&
+                        !isGithubOwnerField &&
+                        selectOptions.length > 0 &&
+                        selectOptions.length <= 4;
+                      if (useSegmentedSelect) {
+                        return (
+                          <div className="pt-0.5">
+                            <div className="inline-flex w-full flex-wrap gap-1 rounded-2xl border border-border/70 bg-background/70 p-1">
+                              {selectOptions.map((opt) => {
+                                const isSelected = value === opt;
+                                return (
+                                  <button
+                                    key={opt}
+                                    type="button"
+                                    onClick={() => handleStepInputChange(field.key, opt)}
+                                    className={`flex-1 min-w-[120px] rounded-xl px-3 py-2 text-xs font-semibold transition-all ${
+                                      isSelected
+                                        ? 'bg-primary/14 text-primary border border-primary/35 shadow-[0_10px_20px_-14px_rgba(99,102,241,0.7)]'
+                                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-transparent'
+                                    }`}
+                                  >
+                                    {opt}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="flex items-center gap-2 pt-0.5">
                           <select
                             value={value}
                             onChange={(e) => handleStepInputChange(field.key, e.target.value)}
-                            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                            className="w-full rounded-xl border border-border/70 bg-background/90 px-3 py-2 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus:ring-2 focus:ring-primary/20 focus:border-primary/50 outline-none transition-colors"
                           >
                             {selectOptions.map((opt) => (
                               <option key={opt} value={opt}>{opt}</option>
@@ -2054,7 +2356,7 @@ export function SetupWizard({
                               onClick={() => void refreshGithubOwnerOptions()}
                               disabled={refreshingGithubOwners}
                               title="Refresh GitHub org memberships from PAT"
-                              className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="inline-flex items-center gap-1 rounded-xl border border-border/70 bg-background/80 px-2.5 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                               {refreshingGithubOwners ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
                               Refresh
@@ -2064,13 +2366,13 @@ export function SetupWizard({
                       );
                     }
                     return (
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 pt-0.5">
                         <input
                           type="text"
                           value={stepInputs[field.key] ?? ''}
                           onChange={(e) => handleStepInputChange(field.key, e.target.value)}
                           placeholder={field.placeholder}
-                          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                          className="w-full rounded-xl border border-border/70 bg-background/90 px-3 py-2 text-sm font-mono shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus:ring-2 focus:ring-primary/20 focus:border-primary/50 outline-none transition-colors"
                         />
                         {isGithubOwnerField && (
                           <button
@@ -2078,7 +2380,7 @@ export function SetupWizard({
                             onClick={() => void refreshGithubOwnerOptions()}
                             disabled={refreshingGithubOwners}
                             title="Refresh GitHub org memberships from PAT"
-                            className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="inline-flex items-center gap-1 rounded-xl border border-border/70 bg-background/80 px-2.5 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           >
                             {refreshingGithubOwners ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
                             Refresh
@@ -2090,11 +2392,27 @@ export function SetupWizard({
                 </div>
                 );
               })}
+              {webConfigFields.length > 0 && (
+                <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 px-3 py-3 space-y-2">
+                  <p className="text-[11px] font-semibold text-violet-700 dark:text-violet-300">
+                    Web Deployment Configuration
+                  </p>
+                  {webConfigFields.map((field) => renderDeployField(field))}
+                </div>
+              )}
+              {apiConfigFields.length > 0 && (
+                <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3 py-3 space-y-2">
+                  <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    API Deployment Configuration
+                  </p>
+                  {apiConfigFields.map((field) => renderDeployField(field))}
+                </div>
+              )}
               <button
                 type="button"
                 disabled={savingStepInputs || !stepInputsDirty}
                 onClick={() => void handleSaveStepInputs()}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-primary/10 border border-primary/30 px-3 py-2 text-xs font-bold text-primary hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-primary/35 bg-primary/12 px-3.5 py-2 text-xs font-bold text-primary shadow-[0_10px_20px_-14px_rgba(99,102,241,0.7)] hover:bg-primary/18 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {savingStepInputs ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
                 {savingStepInputs ? 'Saving…' : stepInputsDirty ? 'Save Configuration' : 'Configuration Saved'}
@@ -2104,10 +2422,13 @@ export function SetupWizard({
           })()}
 
           {currentInputFields && (currentStatus === 'completed' || currentStatus === 'skipped') && currentNodeState?.userInputs && (
-            <div className="rounded-lg border border-border p-4 space-y-2">
-              <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Configuration</p>
+            <div className="rounded-2xl border border-border/70 bg-gradient-to-br from-background to-muted/20 p-4 space-y-2.5 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.55)]">
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground/90">Configuration</p>
               <div className="flex flex-wrap gap-2">
-                {currentInputFields.map((field) => {
+                {currentInputFields
+                  .filter((field) => isStepInputFieldVisible(field, currentNodeState.userInputs ?? {}))
+                  .filter((field) => !deployPairFieldKeys.has(field.key))
+                  .map((field) => {
                   const val = currentNodeState.userInputs?.[field.key] ?? field.defaultValue ?? '';
                   const isSecret = field.type === 'p8';
                   const reusedAppleKeyId = field.key === 'apple_auth_key_p8'
@@ -2121,12 +2442,36 @@ export function SetupWizard({
                         : '\u2014'
                     : val;
                   return (
-                    <span key={field.key} className="inline-flex items-center gap-1.5 text-xs font-mono bg-muted border border-border px-2 py-1 rounded text-foreground" title={field.description}>
-                      <span className="text-[10px] text-muted-foreground/70">{field.label}:</span>
-                      <span>{display}</span>
+                    <span key={field.key} className="inline-flex items-center gap-1.5 text-xs font-mono bg-background/85 border border-border/70 px-2.5 py-1.5 rounded-xl text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]" title={field.description}>
+                      <span className="text-[10px] text-muted-foreground/75">{field.label}:</span>
+                      <span className="max-w-[240px] truncate">{display}</span>
                     </span>
                   );
                 })}
+                {(() => {
+                  const source = currentNodeState.userInputs ?? {};
+                  const webStack = source['deploy_web_stack'] ?? '';
+                  const webDest = source['deploy_web_destination'] ?? '';
+                  if (!webStack && !webDest) return null;
+                  return (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-mono bg-background/85 border border-border/70 px-2.5 py-1.5 rounded-xl text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                      <span className="text-[10px] text-muted-foreground/75">Web:</span>
+                      <span className="max-w-[240px] truncate">{`${webStack || '—'} -> ${webDest || '—'}`}</span>
+                    </span>
+                  );
+                })()}
+                {(() => {
+                  const source = currentNodeState.userInputs ?? {};
+                  const apiStack = source['deploy_api_stack'] ?? '';
+                  const apiDest = source['deploy_api_destination'] ?? '';
+                  if (!apiStack && !apiDest) return null;
+                  return (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-mono bg-background/85 border border-border/70 px-2.5 py-1.5 rounded-xl text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+                      <span className="text-[10px] text-muted-foreground/75">API:</span>
+                      <span className="max-w-[240px] truncate">{`${apiStack || '—'} -> ${apiDest || '—'}`}</span>
+                    </span>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -2148,6 +2493,45 @@ export function SetupWizard({
                 <div className="flex items-start gap-2">
                   <AlertTriangle size={14} className="text-red-500 mt-0.5 shrink-0" />
                   <div className="text-sm text-red-800 dark:text-red-200 space-y-2 min-w-0">
+                    {parts.map((part, i) =>
+                      urlRegex.test(part) ? (
+                        <a
+                          key={i}
+                          href={part}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-primary font-semibold hover:underline break-all"
+                        >
+                          <ExternalLink size={12} className="shrink-0" />
+                          {part}
+                        </a>
+                      ) : (
+                        <span key={i} className="whitespace-pre-wrap">{part}</span>
+                      ),
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {currentStatus === 'waiting-on-user' && (() => {
+            const waitingMessage =
+              currentNode.type === 'step' && currentNode.environmentScope === 'per-environment'
+                ? plan.environments
+                    .map((env) => plan.nodeStates[`${currentNode.key}@${env}`]?.userPrompt || plan.nodeStates[`${currentNode.key}@${env}`]?.error)
+                    .find(Boolean)
+                : currentNodeState?.userPrompt || currentNodeState?.error;
+            if (!waitingMessage) return null;
+
+            const urlRegex = /(https?:\/\/[^\s]+)/g;
+            const parts = waitingMessage.split(urlRegex);
+
+            return (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <PauseCircle size={14} className="text-amber-500 mt-0.5 shrink-0" />
+                  <div className="text-sm text-amber-900 dark:text-amber-100 space-y-2 min-w-0">
                     {parts.map((part, i) =>
                       urlRegex.test(part) ? (
                         <a
@@ -2418,4 +2802,3 @@ export function SetupWizard({
     </>
   );
 }
-

@@ -8,8 +8,8 @@ import {
 import { KeyRound, Loader2 } from 'lucide-react';
 import { materializePrfEvalBinaryBuffers, encodePrfClientExtensionResultsForTransport } from './helpers';
 
-/** Must match `RESET_LOCAL_STUDIO_INSTALL_CONFIRM` in `src/studio/auth-webauthn-router.ts`. */
-const RESET_LOCAL_STUDIO_INSTALL_CONFIRM = 'RESET_LOCAL_STUDIO_INSTALL_FOR_NEW_PASSKEY';
+/** Must match `RESET_LOCAL_STRUCTURE_INSTALL_CONFIRM` in `src/studio/auth-webauthn-router.ts`. */
+const RESET_LOCAL_STRUCTURE_INSTALL_CONFIRM = 'RESET_LOCAL_STRUCTURE_INSTALL_FOR_NEW_PASSKEY';
 
 const ERASE_HOLD_MS = 5000;
 
@@ -113,7 +113,7 @@ export function PasskeyAuthGate({
               method: 'POST',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ confirm: 'DESTROY_ALL_STUDIO_DATA' }),
+              body: JSON.stringify({ confirm: 'DESTROY_ALL_STRUCTURE_DATA' }),
             });
             if (res.ok) {
               window.location.href = '/';
@@ -138,7 +138,7 @@ export function PasskeyAuthGate({
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label: 'Studio Pro' }),
+        body: JSON.stringify({ label: 'Structure' }),
       });
       if (!optRes.ok) {
         const body = (await optRes.json().catch(() => ({}))) as { error?: string };
@@ -162,7 +162,7 @@ export function PasskeyAuthGate({
         body: JSON.stringify({
           registrationToken,
           response: attResp,
-          label: 'Studio Pro',
+          label: 'Structure',
         }),
       });
       const verBody = (await verRes.json().catch(() => ({}))) as {
@@ -295,7 +295,7 @@ export function PasskeyAuthGate({
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: RESET_LOCAL_STUDIO_INSTALL_CONFIRM }),
+        body: JSON.stringify({ confirm: RESET_LOCAL_STRUCTURE_INSTALL_CONFIRM }),
       });
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {

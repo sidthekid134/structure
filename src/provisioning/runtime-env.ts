@@ -21,6 +21,7 @@ export const PROJECT_LLM_RUNTIME_ENV_KEYS = [
   'LLM_ANTHROPIC_DEFAULT_MODEL',
   'LLM_GEMINI_API_KEY',
   'LLM_GEMINI_DEFAULT_MODEL',
+  'LLM_OPENROUTER_API_KEY',
   'LLM_CUSTOM_API_KEY',
   'LLM_CUSTOM_BASE_URL',
   'LLM_CUSTOM_DEFAULT_MODEL',
@@ -52,6 +53,7 @@ export const PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES: Record<
   LLM_ANTHROPIC_DEFAULT_MODEL: 'PUBLIC',
   LLM_GEMINI_API_KEY: 'SECRET',
   LLM_GEMINI_DEFAULT_MODEL: 'PUBLIC',
+  LLM_OPENROUTER_API_KEY: 'SECRET',
   LLM_CUSTOM_API_KEY: 'SECRET',
   LLM_CUSTOM_BASE_URL: 'SENSITIVE',
   LLM_CUSTOM_DEFAULT_MODEL: 'PUBLIC',
@@ -60,7 +62,7 @@ export const PROJECT_LLM_RUNTIME_ENV_SECRET_TYPES: Record<
 export interface ProjectRuntimeEnvResolveInput {
   projectId: string;
   upstream: Record<string, string>;
-  readVault: (providerId: string, key: string) => string | undefined;
+  readVault?: (providerId: string, key: string) => string | undefined;
   firebaseApiKeyOverride?: string;
   includesIos?: boolean;
   includesAndroid?: boolean;
@@ -76,6 +78,7 @@ export const LLM_KIND_MODULE_IDS = [
   'llm-openai',
   'llm-anthropic',
   'llm-gemini',
+  'llm-openrouter',
   'llm-custom',
 ] as const;
 
@@ -87,15 +90,16 @@ export function llmModuleIdForEasEnvKey(
   if (name.startsWith('LLM_OPENAI_')) return 'llm-openai';
   if (name.startsWith('LLM_ANTHROPIC_')) return 'llm-anthropic';
   if (name.startsWith('LLM_GEMINI_')) return 'llm-gemini';
+  if (name.startsWith('LLM_OPENROUTER_')) return 'llm-openrouter';
   return 'llm-custom';
 }
 
 export interface ProjectLlmRuntimeEnvResolveInput {
   upstream: Record<string, string>;
-  readVault: (providerId: string, key: string) => string | undefined;
+  readVault?: (providerId: string, key: string) => string | undefined;
   /**
-   * Optional: Studio stores LLM API keys in SQLite (`llm_*_api_key` credential types)
-   * while vault may use `llm`/`{kind}_api_key`. Values are merged vault-first.
+   * Optional: Studio stores LLM API keys in SQLite (`llm_*_api_key` credential types).
+   * Values are merged vault-first (vault is retired; SQLite wins in practice).
    */
   retrieveProjectCredential?: (type: CredentialType) => string | null;
   /**
@@ -140,10 +144,11 @@ export function resolveProjectRuntimeEnvValues(
   const out: Record<string, string> = {};
   const missingRequiredKeys: string[] = [];
 
+  const rv = input.readVault ?? (() => undefined);
   const firebaseApiKey = firstPresent(
     input.firebaseApiKeyOverride,
-    input.readVault('firebase', `${input.projectId}/api_key`),
-    input.readVault('firebase', 'api_key'),
+    rv('firebase', `${input.projectId}/api_key`),
+    rv('firebase', 'api_key'),
     upstream['firebase_api_key'],
   );
   const firebaseProjectId = firstPresent(upstream['firebase_project_id'], upstream['gcp_project_id']);
@@ -185,21 +190,22 @@ export function resolveProjectRuntimeEnvValues(
 }
 
 const LLM_API_KEY_VAULT_TO_CREDENTIAL_TYPE: Record<
-  'openai_api_key' | 'anthropic_api_key' | 'gemini_api_key' | 'custom_api_key',
+  'openai_api_key' | 'anthropic_api_key' | 'gemini_api_key' | 'openrouter_api_key' | 'custom_api_key',
   CredentialType
 > = {
   openai_api_key: 'llm_openai_api_key',
   anthropic_api_key: 'llm_anthropic_api_key',
   gemini_api_key: 'llm_gemini_api_key',
+  openrouter_api_key: 'llm_openrouter_api_key',
   custom_api_key: 'llm_custom_api_key',
 };
 
-/** Resolves an LLM vault slot, then falls back to SQLite `project_credentials` API keys. */
+/** Resolves an LLM API key from SQLite `project_credentials`, with legacy vault fallback. */
 function readLlmApiKeyOrVault(
   input: ProjectLlmRuntimeEnvResolveInput,
   shortKey: keyof typeof LLM_API_KEY_VAULT_TO_CREDENTIAL_TYPE,
 ): string {
-  const fromVault = firstPresent(input.readVault('llm', shortKey));
+  const fromVault = firstPresent(input.readVault?.('llm', shortKey));
   if (fromVault) return fromVault;
   const ct = LLM_API_KEY_VAULT_TO_CREDENTIAL_TYPE[shortKey];
   if (input.retrieveProjectCredential) {
@@ -213,11 +219,11 @@ export function resolveProjectLlmRuntimeEnvValues(
   input: ProjectLlmRuntimeEnvResolveInput,
 ): ProjectLlmRuntimeEnvResolveResult {
   const full: Record<string, string> = {};
-  const read = (key: string) => firstPresent(input.readVault('llm', key));
+  const read = (key: string) => firstPresent(input.readVault?.('llm', key));
   const upstream = input.upstream;
 
   setRuntimeValue(full, [], 'LLM_OPENAI_API_KEY', readLlmApiKeyOrVault(input, 'openai_api_key'), false);
-  setRuntimeValue(full, [], 'LLM_OPENAI_ORGANIZATION_ID', read('openai_organization_id'), false);
+  setRuntimeValue(full, [], 'LLM_OPENAI_ORGANIZATION_ID', firstPresent(read('openai_organization_id'), upstream['openai_organization_id']), false);
   setRuntimeValue(
     full,
     [],
@@ -244,8 +250,10 @@ export function resolveProjectLlmRuntimeEnvValues(
     false,
   );
 
+  setRuntimeValue(full, [], 'LLM_OPENROUTER_API_KEY', readLlmApiKeyOrVault(input, 'openrouter_api_key'), false);
+
   setRuntimeValue(full, [], 'LLM_CUSTOM_API_KEY', readLlmApiKeyOrVault(input, 'custom_api_key'), false);
-  setRuntimeValue(full, [], 'LLM_CUSTOM_BASE_URL', read('custom_base_url'), false);
+  setRuntimeValue(full, [], 'LLM_CUSTOM_BASE_URL', firstPresent(read('custom_base_url'), upstream['custom_base_url']), false);
   setRuntimeValue(
     full,
     [],

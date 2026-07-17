@@ -79,7 +79,7 @@ export const CUSTOM_BASE_URL_SECRET_KEY = 'custom_base_url';
 
 /** Returns the kind a step key targets, or null when the key is not a per-kind LLM verify step. */
 export function llmKindFromStepKey(stepKey: string): LlmKind | null {
-  const match = stepKey.match(/^llm:verify-(openai|anthropic|gemini|custom)$/);
+  const match = stepKey.match(/^llm:verify-(openai|anthropic|gemini|openrouter|custom)$/);
   return match ? (match[1] as LlmKind) : null;
 }
 
@@ -93,6 +93,7 @@ const PUBLIC_LLM_HOSTS = new Set<string>([
   'api.openai.com',
   'api.anthropic.com',
   'generativelanguage.googleapis.com',
+  'openrouter.ai',
 ]);
 
 /**
@@ -340,6 +341,43 @@ export class CustomOpenAICompatClient implements LlmClient {
   }
 }
 
+// ---------------------------------------------------------------------------
+// OpenRouter client (OpenAI-compatible, fixed base URL)
+// ---------------------------------------------------------------------------
+
+export class OpenRouterClient implements LlmClient {
+  static readonly BASE_URL = 'https://openrouter.ai/api/v1';
+
+  constructor(
+    private readonly apiKey: string,
+    private readonly options: { timeoutMs?: number } = {},
+  ) {
+    if (!apiKey.trim()) {
+      throw new Error('OpenRouter API key is required.');
+    }
+  }
+
+  async listModels(): Promise<string[]> {
+    const data = await httpJson<{ data: Array<{ id: string }> }>(
+      `${OpenRouterClient.BASE_URL}/models`,
+      {
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        timeoutMs: this.options.timeoutMs,
+      },
+    );
+    return dedupeModels((data.data ?? []).map((m) => m.id));
+  }
+
+  async verifyCredentials(opts: { defaultModel?: string } = {}): Promise<LlmCredentialVerification> {
+    const models = await this.listModels();
+    return {
+      ok: true,
+      modelsAvailable: models,
+      defaultModelFound: opts.defaultModel ? models.includes(opts.defaultModel) : null,
+    };
+  }
+}
+
 function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '');
 }
@@ -347,8 +385,9 @@ function trimTrailingSlash(url: string): string {
 /**
  * Custom endpoints must be HTTPS and explicitly NOT one of the public
  * provider hosts — those have first-class clients with proper auth headers
- * (e.g. Anthropic's `x-api-key` / `anthropic-version`) that the OpenAI-style
- * `Authorization: Bearer` shape would silently mis-call.
+ * (e.g. Anthropic's `x-api-key` / `anthropic-version`, or OpenRouter's
+ * fixed base URL) that the generic `Authorization: Bearer` shape would
+ * silently mis-call or route incorrectly.
  */
 export function assertCustomBaseUrl(baseUrl: string): void {
   let parsed: URL;
@@ -373,6 +412,7 @@ function publicHostToKind(host: string): LlmKind {
   if (host === 'api.openai.com') return 'openai';
   if (host === 'api.anthropic.com') return 'anthropic';
   if (host === 'generativelanguage.googleapis.com') return 'gemini';
+  if (host === 'openrouter.ai') return 'openrouter';
   return 'custom';
 }
 
@@ -402,6 +442,8 @@ export function createLlmClient(
       return new AnthropicClient(apiKey, { timeoutMs });
     case 'gemini':
       return new GeminiClient(apiKey, { timeoutMs });
+    case 'openrouter':
+      return new OpenRouterClient(apiKey, { timeoutMs });
     case 'custom': {
       if (!opts.baseUrl) {
         throw new Error(
@@ -431,10 +473,11 @@ export type LlmClientFactory = (
  * Default factory: pulls the api key (and optional base_url / org id) from
  * the StepContext vault under canonical kind-specific slot names. The vault
  * is project-scoped, so each kind maps to a single slot per project:
- *   - openai    → llm/openai_api_key,    llm/openai_organization_id
- *   - anthropic → llm/anthropic_api_key
- *   - gemini    → llm/gemini_api_key
- *   - custom    → llm/custom_api_key,    llm/custom_base_url
+ *   - openai      → llm/openai_api_key,    llm/openai_organization_id
+ *   - anthropic   → llm/anthropic_api_key
+ *   - gemini      → llm/gemini_api_key
+ *   - openrouter  → llm/openrouter_api_key
+ *   - custom      → llm/custom_api_key,    llm/custom_base_url
  */
 export const defaultLlmClientFactory: LlmClientFactory = async (kind, context) => {
   const apiKey = await context.vaultRead(apiKeySecretFor(kind));
@@ -470,6 +513,7 @@ export function kindLabel(kind: LlmKind): string {
     case 'openai': return 'OpenAI';
     case 'anthropic': return 'Anthropic Claude';
     case 'gemini': return 'Google Gemini';
+    case 'openrouter': return 'OpenRouter';
     case 'custom': return 'Custom LLM';
   }
 }

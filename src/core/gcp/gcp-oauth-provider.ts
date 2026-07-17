@@ -7,12 +7,10 @@
  * Requires PLATFORM_GCP_OAUTH_CLIENT_ID and PLATFORM_GCP_OAUTH_CLIENT_SECRET env vars
  * (set at build time for binaries; see BUILDING.md). Alternatively, callers can pass
  * a clientId + clientSecret directly to the constructor.
- *
- * Vault keys stay backward-compatible with the original gcp-connection.ts format.
  */
 
 import { OAuth2Client, CodeChallengeMethod } from 'google-auth-library';
-import type { VaultManager } from '../../vault.js';
+import type { CredentialService } from '../../services/credential-service.js';
 import type { OAuthProvider, OAuthTokens, TokenValidation, AuthUrlResult } from '../oauth-manager.js';
 import { fetchGoogleTokenInfo } from './gcp-api-client.js';
 import { createOperationLogger } from '../../logger.js';
@@ -24,10 +22,6 @@ export const GCP_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/cloud-platform',
   'https://www.googleapis.com/auth/userinfo.email',
 ];
-
-/** Vault key suffix for the GCP OAuth refresh token (namespace: 'firebase'). */
-const REFRESH_TOKEN_KEY_SUFFIX = 'gcp_oauth_refresh_token';
-const EMAIL_KEY_SUFFIX = 'connected_by_email';
 
 export class GcpOAuthProvider implements OAuthProvider {
   readonly id = 'gcp';
@@ -89,17 +83,16 @@ export class GcpOAuthProvider implements OAuthProvider {
     return { valid, email: info.email, scopes };
   }
 
-  storeRefreshToken(vaultManager: VaultManager, passphrase: Buffer, projectId: string, refreshToken: string): void {
-    vaultManager.setCredential(passphrase, 'firebase', this.vaultKey(projectId, REFRESH_TOKEN_KEY_SUFFIX), refreshToken);
+  storeRefreshToken(credentialService: CredentialService, projectId: string, refreshToken: string): void {
+    credentialService.storeCredential({ project_id: projectId, credential_type: 'gcp_oauth_refresh_token', value: refreshToken });
   }
 
-  getStoredRefreshToken(vaultManager: VaultManager, passphrase: Buffer, projectId: string): string | null {
-    const t = vaultManager.getCredential(passphrase, 'firebase', this.vaultKey(projectId, REFRESH_TOKEN_KEY_SUFFIX));
-    return t?.trim() || null;
+  getStoredRefreshToken(credentialService: CredentialService, projectId: string): string | null {
+    return credentialService.retrieveCredential(projectId, 'gcp_oauth_refresh_token') ?? null;
   }
 
-  async getAccessToken(vaultManager: VaultManager, passphrase: Buffer, projectId: string): Promise<string | null> {
-    const refresh = this.getStoredRefreshToken(vaultManager, passphrase, projectId);
+  async getAccessToken(credentialService: CredentialService, projectId: string): Promise<string | null> {
+    const refresh = this.getStoredRefreshToken(credentialService, projectId);
     if (!refresh) return null;
     try {
       const client = new OAuth2Client({ clientId: this.clientId, clientSecret: this.clientSecret });
@@ -112,25 +105,21 @@ export class GcpOAuthProvider implements OAuthProvider {
     }
   }
 
-  revokeStoredTokens(vaultManager: VaultManager, passphrase: Buffer, projectId: string): void {
-    vaultManager.deleteCredential(passphrase, 'firebase', this.vaultKey(projectId, REFRESH_TOKEN_KEY_SUFFIX));
+  revokeStoredTokens(credentialService: CredentialService, projectId: string): void {
+    credentialService.deleteCredentialByType(projectId, 'gcp_oauth_refresh_token');
   }
 
   /** Store the email of the Google account that completed OAuth (used for display). */
-  storeConnectedEmail(vaultManager: VaultManager, passphrase: Buffer, projectId: string, email: string): void {
-    vaultManager.setCredential(passphrase, 'firebase', this.vaultKey(projectId, EMAIL_KEY_SUFFIX), email);
+  storeConnectedEmail(credentialService: CredentialService, projectId: string, email: string): void {
+    credentialService.storeCredential({ project_id: projectId, credential_type: 'gcp_connected_by_email', value: email });
   }
 
   /** Read the stored Google account email. */
-  getConnectedEmail(vaultManager: VaultManager, passphrase: Buffer, projectId: string): string {
-    return vaultManager.getCredential(passphrase, 'firebase', this.vaultKey(projectId, EMAIL_KEY_SUFFIX)) ?? 'unknown';
+  getConnectedEmail(credentialService: CredentialService, projectId: string): string {
+    return credentialService.retrieveCredential(projectId, 'gcp_connected_by_email') ?? 'unknown';
   }
 
   isConfigured(): boolean {
     return Boolean(this.clientId.trim()) && Boolean(this.clientSecret.trim());
-  }
-
-  private vaultKey(projectId: string, suffix: string): string {
-    return `${projectId}/${suffix}`;
   }
 }

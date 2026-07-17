@@ -171,6 +171,16 @@ export interface FunctionGroupDefinition {
   order: number;
 }
 
+export type ModuleHintKind = 'scope' | 'requires' | 'recommends' | 'platform';
+
+export interface ModuleHint {
+  kind: ModuleHintKind;
+  label: string;
+  description: string;
+  moduleIds?: string[];
+  platforms?: MobilePlatform[];
+}
+
 // ---------------------------------------------------------------------------
 // Provider metadata
 // ---------------------------------------------------------------------------
@@ -231,6 +241,8 @@ export interface PluginDefinition {
   // ── Module dependency structure ─────────────────────────────────────────
   requiredModules: string[];
   optionalModules: string[];
+  /** Human-readable relationship notes for module picker and registry UI. */
+  moduleHints?: ModuleHint[];
   /** Template ids (e.g. 'mobile-app') this module should be included in by default */
   includedInTemplates?: string[];
 

@@ -179,7 +179,7 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
     key: 'eas:sync-llm-secrets',
     label: 'Sync LLM Secrets to EAS',
     description:
-      'Mirrors LLM_* environment variables to the linked Expo app (per EAS env slot for this Studio environment). Only modules you added under Modules (e.g. llm-openai, llm-gemini) are written; other providers’ LLM_* names are cleared so Expo does not keep stale keys. API keys, optional org/base URL, and default models come from the vault and credential gate.',
+      'Mirrors LLM_* environment variables to the linked Expo app (per EAS env slot for this Studio environment). Only modules you added under Modules (e.g. llm-openai, llm-gemini, llm-openrouter) are written; other providers’ LLM_* names are cleared so Expo does not keep stale keys. API keys, optional org/base URL, and default models come from the vault and credential gate.',
     provider: 'eas',
     environmentScope: 'per-environment',
     automationLevel: 'full',
@@ -189,6 +189,7 @@ export const EAS_STEPS: ProvisioningStepNode[] = [
       'user:provide-openai-api-key',
       'user:provide-anthropic-api-key',
       'user:provide-gemini-api-key',
+      'user:provide-openrouter-api-key',
       'user:provide-custom-llm-credentials',
     ],
     produces: [

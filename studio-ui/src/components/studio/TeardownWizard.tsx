@@ -73,6 +73,7 @@ export function TeardownWizard({
           <div className="space-y-2">
             {teardownSteps.map((step, index) => {
               const status = plan?.nodeStates[step.key]?.status ?? 'not-started';
+              const state = plan?.nodeStates[step.key];
               const done = status === 'completed' || status === 'skipped';
               const link = PROVIDER_CONSOLE_LINKS[step.provider];
               return (
@@ -88,6 +89,12 @@ export function TeardownWizard({
                         {index + 1}. {step.label}
                       </p>
                       <p className="text-[11px] text-muted-foreground mt-0.5">{step.description}</p>
+                      {state?.userPrompt ? (
+                        <p className="text-[11px] text-foreground/80 mt-1 whitespace-pre-wrap">{state.userPrompt}</p>
+                      ) : null}
+                      {state?.error ? (
+                        <p className="text-[11px] text-red-700 dark:text-red-300 mt-1 whitespace-pre-wrap">{state.error}</p>
+                      ) : null}
                     </div>
                     {done ? (
                       <CheckCircle2 size={14} className="text-emerald-500 shrink-0" />
@@ -117,4 +124,3 @@ export function TeardownWizard({
     </div>
   );
 }
-

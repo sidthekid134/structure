@@ -1,7 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import type { StepHandler, StepHandlerContext, StepHandlerResult } from './step-handler-registry.js';
 import { projectResourceSlug } from '../studio/project-identity.js';
-import { HttpGitHubApiClient } from '../providers/github.js';
+import { HttpGitHubApiClient, MANAGED_WORKFLOW_FILENAMES } from '../providers/github.js';
 import { ExpoGraphqlEasApiClient } from '../providers/expo-graphql-eas-client.js';
 import {
   buildDefaultEasJson,
@@ -14,11 +14,11 @@ import {
 import type { Environment } from '../providers/types.js';
 
 function readGitHubToken(context: StepHandlerContext): string | undefined {
-  return context.vaultManager.getCredential(context.passphrase, 'github', 'token')?.trim();
+  return context.credentialService.retrieveOrgCredential('github_pat')?.trim() || undefined;
 }
 
 function readExpoToken(context: StepHandlerContext): string | undefined {
-  return context.vaultManager.getCredential(context.passphrase, 'eas', 'expo_token')?.trim();
+  return context.credentialService.retrieveOrgCredential('expo_token')?.trim() || undefined;
 }
 
 /**
@@ -235,6 +235,92 @@ const createRepositoryHandler: StepHandler = {
   },
 };
 
+const deleteGitHubWorkflowsHandler: StepHandler = {
+  stepKey: 'github:delete-workflows',
+
+  async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+    return this.delete(context);
+  },
+
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const githubToken = readGitHubToken(context);
+    if (!githubToken) {
+      return { reconciled: false, message: 'No GitHub token in vault — cannot delete workflow files.' };
+    }
+    const target = resolveOwnerRepo(context);
+    if (!target) {
+      return { reconciled: false, message: 'Could not resolve GitHub owner/repo for this project.' };
+    }
+
+    const client = new HttpGitHubApiClient(githubToken);
+    const existing = await client.listWorkflows(target.owner, target.repo);
+    const managed = existing.filter((filename) => MANAGED_WORKFLOW_FILENAMES.includes(filename));
+    for (const filename of managed) {
+      await client.deleteWorkflow(target.owner, target.repo, filename);
+    }
+    return {
+      reconciled: true,
+      message:
+        managed.length === 0
+          ? `No Studio-managed workflow files found in "${target.owner}/${target.repo}".`
+          : `Deleted Studio-managed workflow file(s) from "${target.owner}/${target.repo}": ${managed.join(', ')}.`,
+    };
+  },
+
+  async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const githubToken = readGitHubToken(context);
+    if (!githubToken) return { reconciled: false, message: 'No GitHub token in vault.' };
+    const target = resolveOwnerRepo(context);
+    if (!target) return { reconciled: true };
+    const client = new HttpGitHubApiClient(githubToken);
+    const existing = await client.listWorkflows(target.owner, target.repo);
+    const managed = existing.filter((filename) => MANAGED_WORKFLOW_FILENAMES.includes(filename));
+    return managed.length === 0
+      ? { reconciled: true, message: 'No Studio-managed workflow files remain.' }
+      : { reconciled: false, message: `Workflow files still present: ${managed.join(', ')}.` };
+  },
+
+  async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
+    return this.validate(context);
+  },
+};
+
+const deleteGitHubEnvironmentsHandler: StepHandler = {
+  stepKey: 'github:delete-environments',
+
+  async create(context: StepHandlerContext): Promise<StepHandlerResult> {
+    return this.delete(context);
+  },
+
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const githubToken = readGitHubToken(context);
+    if (!githubToken) {
+      return { reconciled: false, message: 'No GitHub token in vault — cannot delete GitHub environments.' };
+    }
+    const target = resolveOwnerRepo(context);
+    if (!target) {
+      return { reconciled: false, message: 'Could not resolve GitHub owner/repo for this project.' };
+    }
+    const client = new HttpGitHubApiClient(githubToken);
+    const envs = Array.from(new Set([...planEnvironments(context), LEGACY_GLOBAL_ENVIRONMENT]));
+    for (const env of envs) {
+      await client.deleteEnvironment(target.owner, target.repo, env);
+    }
+    return {
+      reconciled: true,
+      message: `Deleted GitHub environment(s) from "${target.owner}/${target.repo}" when present: ${envs.join(', ')}.`,
+    };
+  },
+
+  async validate(_context: StepHandlerContext): Promise<StepHandlerResult> {
+    return { reconciled: true };
+  },
+
+  async sync(_context: StepHandlerContext): Promise<StepHandlerResult | null> {
+    return null;
+  },
+};
+
 // =============================================================================
 // GitHub secret partitioning
 // =============================================================================
@@ -430,10 +516,9 @@ const injectGitHubEnvironmentSecretsHandler: StepHandler = {
     const injected: string[] = [];
     const scrubbed: string[] = [];
 
-    const serviceAccountJson = await context.vaultManager.getCredential(
-      context.passphrase,
-      'firebase',
-      `${context.projectId}/service_account_json`,
+    const serviceAccountJson = context.credentialService.retrieveCredential(
+      context.projectId,
+      'gcp_service_account_json',
     );
 
     // Make sure each target env exists before writing secrets to it.
@@ -678,11 +763,11 @@ const writeEasJsonHandler: StepHandler = {
       const submitInfo: EasJsonSubmitInfo = {
         ascAppId:
           context.upstreamArtifacts['asc_app_id']?.trim() ||
-          context.vaultManager.getCredential(context.passphrase, 'firebase', `${context.projectId}/asc_app_id`)?.trim() ||
+          context.credentialService.retrieveCredential(context.projectId, 'apple_asc_app_id')?.trim() ||
           undefined,
         appleTeamId:
           context.upstreamArtifacts['apple_team_id']?.trim() ||
-          context.vaultManager.getCredential(context.passphrase, 'firebase', `${context.projectId}/apple_team_id`)?.trim() ||
+          context.credentialService.retrieveCredential(context.projectId, 'apple_team_id')?.trim() ||
           undefined,
         appleId: context.upstreamArtifacts['apple_id']?.trim() || undefined,
       };
@@ -814,6 +899,8 @@ const writeEasJsonHandler: StepHandler = {
 
 export const GITHUB_STEP_HANDLERS: StepHandler[] = [
   createRepositoryHandler,
+  deleteGitHubEnvironmentsHandler,
+  deleteGitHubWorkflowsHandler,
   storeEasTokenInGitHubHandler,
   injectGitHubEnvironmentSecretsHandler,
   writeEasJsonHandler,

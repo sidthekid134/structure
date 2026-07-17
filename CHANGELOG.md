@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Studio Pro are documented in this file.
+All notable changes to Structure are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in OAuth and credential code paths.
 - `POST /api/auth/dev-session` is disabled in production CLI builds. It is
   available only when `NODE_ENV !== 'production'` and
-  `STUDIO_SERVE_UI_FROM_SOURCE=1`.
+  `STRUCTURE_SERVE_UI_FROM_SOURCE=1`.
 
 ### Added
 
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build on every pull request and push to `main` (Ubuntu + macOS, Node 20).
 - `package.json` metadata for OSS publishing (license, repository, bugs,
   homepage, keywords, engines, files allowlist).
-- `prepack` script that errors with a friendly message — Studio Pro is
+- `prepack` script that errors with a friendly message — Structure is
   distributed via GitHub Releases binaries, not npm.
 
 ## [1.0.0] - TBD

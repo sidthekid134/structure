@@ -18,6 +18,8 @@ import { EventLog } from '../orchestration/event-log';
 import { VaultManager } from '../vault';
 import { writeVaultMeta } from '../studio/vault-meta';
 import { getVaultSession } from '../studio/vault-session';
+import { CredentialService } from '../services/credential-service';
+import { deriveStudioRowKey } from '../studio/row-crypto';
 import { GitHubConnectionService } from '../core/github-connection';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -152,6 +154,10 @@ function deleteJsonWithStatus(url: string): Promise<{ statusCode: number; body: 
     req.on('error', reject);
     req.end();
   });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +337,72 @@ describe('StudioServer', () => {
     expect(serviceAccount?.standardized_name).toContain('platform-provisioner@');
   });
 
+  it('requires manual confirmation for manual teardown steps and allows explicit confirm', async () => {
+    const created = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects`,
+      {
+        name: 'Teardown Manual Confirm',
+        slug: 'teardown-manual-confirm',
+        domain: 'teardown-manual-confirm.example.com',
+        bundleId: 'com.example.teardownmanualconfirm',
+        platforms: ['ios', 'android'],
+        modules: ['firebase-messaging'],
+      },
+    );
+    expect(created.statusCode).toBe(201);
+
+    const projectId = 'teardown-manual-confirm';
+    const built = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown`,
+      { modules: ['firebase-messaging'] },
+    );
+    expect(built.statusCode).toBe(200);
+
+    const run = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown/run`,
+      { nodeKeys: ['firebase:disable-messaging'] },
+    );
+    expect(run.statusCode).toBe(200);
+
+    let manualState: Record<string, unknown> | null = null;
+    for (let i = 0; i < 20; i++) {
+      const plan = await getJson(
+        `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown`,
+      ) as { nodeStates: Record<string, Record<string, unknown>> };
+      const state = plan.nodeStates['firebase:disable-messaging'];
+      if (state?.status === 'failed') {
+        manualState = state;
+        break;
+      }
+      await sleep(50);
+    }
+
+    expect(manualState).not.toBeNull();
+    expect(manualState?.manualRequired).toBe(true);
+    expect(manualState?.verificationMode).toBe('manual-confirmation');
+    expect(Array.isArray(manualState?.verificationEvidenceRequired)).toBe(true);
+
+    const confirmed = await postJsonWithStatus(
+      `http://127.0.0.1:${port}/api/projects/${projectId}/provisioning/teardown/confirm`,
+      {
+        nodeKey: 'firebase:disable-messaging',
+        evidence: {
+          note: 'Manually disabled/verified messaging teardown.',
+          targetIds: ['teardown-manual-confirm'],
+          confirmedAt: '2026-05-10T12:00:00.000Z',
+        },
+      },
+    );
+    expect(confirmed.statusCode).toBe(200);
+    const confirmedBody = confirmed.body as { nodeStates: Record<string, Record<string, unknown>> };
+    const confirmedState = confirmedBody.nodeStates['firebase:disable-messaging'];
+    expect(confirmedState?.status).toBe('completed');
+    expect(confirmedState?.manualRequired).toBe(false);
+    expect((confirmedState?.manualConfirmation as Record<string, unknown>)?.note).toBe(
+      'Manually disabled/verified messaging teardown.',
+    );
+  });
+
   it('reports EAS integration unavailable when EXPO_TOKEN is missing', async () => {
     const data = await getJson(`http://127.0.0.1:${port}/api/integrations/eas/connection`) as Record<string, unknown>;
     expect(data.available).toBe(false);
@@ -378,19 +450,13 @@ describe('StudioServer', () => {
       expect(organization.integrations.eas.status).toBe('configured');
       expect(organization.integrations.eas.config.token_source).toBe('credential_vault');
 
-      const vaultPath = path.join(storeDir, 'credentials.enc');
-      const vault = new VaultManager(vaultPath);
-      const passphrase = testVaultDek;
-      expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBe('test-token');
-      expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBe('sidmoparthi');
-      expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBe('expo-user-id-123');
-      expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBe(
+      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('expo_token')).toBe('test-token');
+      expect(creds.retrieveOrgCredential('expo_username')).toBe('sidmoparthi');
+      expect(creds.retrieveOrgCredential('expo_user_id')).toBe('expo-user-id-123');
+      expect(creds.retrieveOrgCredential('expo_accounts')).toBe(
         JSON.stringify(['sidmoparthi', 'bite-food-journal']),
       );
-
-      const vaultRaw = fs.readFileSync(vaultPath, 'utf8');
-      expect(vaultRaw).not.toContain('test-token');
-      expect(vaultRaw).not.toContain('sidmoparthi');
     } finally {
       fetchSpy.mockRestore();
     }
@@ -428,13 +494,11 @@ describe('StudioServer', () => {
       expect(organization.integrations.eas.status).toBe('pending');
       expect(organization.integrations.eas.config.expo_username).toBeUndefined();
 
-      const vaultPath = path.join(storeDir, 'credentials.enc');
-      const vault = new VaultManager(vaultPath);
-      const passphrase = testVaultDek;
-      expect(vault.getCredential(passphrase, 'eas', 'expo_token')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'eas', 'expo_username')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'eas', 'expo_user_id')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'eas', 'expo_accounts')).toBeUndefined();
+      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('expo_token')).toBeNull();
+      expect(creds.retrieveOrgCredential('expo_username')).toBeNull();
+      expect(creds.retrieveOrgCredential('expo_user_id')).toBeNull();
+      expect(creds.retrieveOrgCredential('expo_accounts')).toBeNull();
     } finally {
       fetchSpy.mockRestore();
     }
@@ -468,19 +532,13 @@ describe('StudioServer', () => {
       expect(organization.integrations.github.config.token_source).toBe('credential_vault');
       expect(organization.integrations.github.config.username).toBe('sidmoparthi');
 
-      const vaultPath = path.join(storeDir, 'credentials.enc');
-      const vault = new VaultManager(vaultPath);
-      const passphrase = testVaultDek;
-      expect(vault.getCredential(passphrase, 'github', 'token')).toBe('ghp_test_token_123');
-      expect(vault.getCredential(passphrase, 'github', 'username')).toBe('sidmoparthi');
-      expect(vault.getCredential(passphrase, 'github', 'user_id')).toBe('12345');
-      expect(vault.getCredential(passphrase, 'github', 'orgs')).toBe(
+      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('github_pat')).toBe('ghp_test_token_123');
+      expect(creds.retrieveOrgCredential('github_username')).toBe('sidmoparthi');
+      expect(creds.retrieveOrgCredential('github_user_id')).toBe('12345');
+      expect(creds.retrieveOrgCredential('github_orgs')).toBe(
         JSON.stringify(['acme-mobile', 'example-inc']),
       );
-
-      const vaultRaw = fs.readFileSync(vaultPath, 'utf8');
-      expect(vaultRaw).not.toContain('ghp_test_token_123');
-      expect(vaultRaw).not.toContain('sidmoparthi');
     } finally {
       spy.mockRestore();
     }
@@ -515,14 +573,12 @@ describe('StudioServer', () => {
       expect(organization.integrations.github.status).toBe('pending');
       expect(organization.integrations.github.config.username).toBeUndefined();
 
-      const vaultPath = path.join(storeDir, 'credentials.enc');
-      const vault = new VaultManager(vaultPath);
-      const passphrase = testVaultDek;
-      expect(vault.getCredential(passphrase, 'github', 'token')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'github', 'username')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'github', 'user_id')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'github', 'orgs')).toBeUndefined();
-      expect(vault.getCredential(passphrase, 'github', 'scopes')).toBeUndefined();
+      const creds = new CredentialService(storeDir, (purpose) => deriveStudioRowKey(storeDir, purpose));
+      expect(creds.retrieveOrgCredential('github_pat')).toBeNull();
+      expect(creds.retrieveOrgCredential('github_username')).toBeNull();
+      expect(creds.retrieveOrgCredential('github_user_id')).toBeNull();
+      expect(creds.retrieveOrgCredential('github_orgs')).toBeNull();
+      expect(creds.retrieveOrgCredential('github_scopes')).toBeNull();
     } finally {
       spy.mockRestore();
     }
@@ -876,6 +932,42 @@ describe('WsHandler', () => {
       wsHandler.handleConnection(ws, runId);
       setTimeout(() => {
         wsHandler.broadcastStatusUpdate(runId, 'complete', 'Done');
+      }, 50);
+    });
+  });
+
+  it('broadcasts teardown verification metadata in step progress', (done) => {
+    const runId = 'teardown-meta-run';
+    const client = new WebSocket(`ws://127.0.0.1:${port}`);
+
+    client.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'step_progress') {
+        expect(msg.data.nodeKey).toBe('firebase:disable-messaging');
+        expect(msg.data.manualRequired).toBe(true);
+        expect(msg.data.verificationMode).toBe('manual-confirmation');
+        expect(Array.isArray(msg.data.verificationEvidenceRequired)).toBe(true);
+        client.close();
+        done();
+      }
+    });
+
+    wss.on('connection', (ws) => {
+      wsHandler.handleConnection(ws, runId);
+      setTimeout(() => {
+        wsHandler.broadcastStepProgress(
+          runId,
+          'firebase:disable-messaging',
+          'step',
+          'failure',
+          undefined,
+          {},
+          'Manual teardown required',
+          'Confirm manually',
+          true,
+          'manual-confirmation',
+          ['firebase_project_id', 'messaging_disable_note'],
+        );
       }, 50);
     });
   });

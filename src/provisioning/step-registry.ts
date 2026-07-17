@@ -20,14 +20,13 @@ import {
   type ProvisioningContributorContext,
 } from './contributors.js';
 import {
-  DEFAULT_MODULE_IDS,
   type ModuleId,
-  MODULE_CATALOG,
   resolveModuleDependencies,
   getProvidersForModules,
   getStepKeysForModules,
   platformMaskAllows,
   getEffectiveModuleCatalog,
+  getDefaultModuleIds,
 } from './module-catalog.js';
 import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 import {
@@ -37,6 +36,10 @@ import {
   FIREBASE_STEPS,
   FIREBASE_TEARDOWN_STEPS,
 } from './steps/firebase-steps.js';
+import {
+  GCP_SERVERLESS_STEPS,
+  GCP_SERVERLESS_TEARDOWN_STEPS,
+} from './steps/gcp-serverless-steps.js';
 import {
   CLOUDFLARE_STEPS,
   CLOUDFLARE_TEARDOWN_STEPS,
@@ -66,11 +69,13 @@ import {
   LLM_OPENAI_STEPS,
   LLM_ANTHROPIC_STEPS,
   LLM_GEMINI_STEPS,
+  LLM_OPENROUTER_STEPS,
   LLM_CUSTOM_STEPS,
   LLM_TEARDOWN_STEPS,
   LLM_OPENAI_TEARDOWN_STEPS,
   LLM_ANTHROPIC_TEARDOWN_STEPS,
   LLM_GEMINI_TEARDOWN_STEPS,
+  LLM_OPENROUTER_TEARDOWN_STEPS,
   LLM_CUSTOM_TEARDOWN_STEPS,
 } from './steps/llm-steps.js';
 
@@ -81,15 +86,16 @@ import {
 export {
   USER_ACTIONS,
   FIREBASE_STEPS, FIREBASE_TEARDOWN_STEPS,
+  GCP_SERVERLESS_STEPS, GCP_SERVERLESS_TEARDOWN_STEPS,
   CLOUDFLARE_STEPS, CLOUDFLARE_TEARDOWN_STEPS,
   GITHUB_STEPS, GITHUB_TEARDOWN_STEPS,
   APPLE_STEPS, APPLE_TEARDOWN_STEPS,
   EAS_STEPS, EAS_TEARDOWN_STEPS,
   GOOGLE_PLAY_STEPS, GOOGLE_PLAY_TEARDOWN_STEPS,
   OAUTH_STEPS, OAUTH_TEARDOWN_STEPS,
-  LLM_STEPS, LLM_OPENAI_STEPS, LLM_ANTHROPIC_STEPS, LLM_GEMINI_STEPS, LLM_CUSTOM_STEPS,
+  LLM_STEPS, LLM_OPENAI_STEPS, LLM_ANTHROPIC_STEPS, LLM_GEMINI_STEPS, LLM_OPENROUTER_STEPS, LLM_CUSTOM_STEPS,
   LLM_TEARDOWN_STEPS, LLM_OPENAI_TEARDOWN_STEPS, LLM_ANTHROPIC_TEARDOWN_STEPS,
-  LLM_GEMINI_TEARDOWN_STEPS, LLM_CUSTOM_TEARDOWN_STEPS,
+  LLM_GEMINI_TEARDOWN_STEPS, LLM_OPENROUTER_TEARDOWN_STEPS, LLM_CUSTOM_TEARDOWN_STEPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -101,7 +107,11 @@ export {
  * After registerBuiltinPlugins() runs, use globalPluginRegistry.getStepsForProvider().
  */
 const STATIC_STEPS_BY_PROVIDER: Record<string, ProvisioningStepNode[]> = {
-  firebase: FIREBASE_STEPS,
+  gcp: [
+    ...FIREBASE_STEPS.filter((step) => step.provider === 'gcp'),
+    ...GCP_SERVERLESS_STEPS,
+  ],
+  firebase: FIREBASE_STEPS.filter((step) => step.provider === 'firebase'),
   github: GITHUB_STEPS,
   eas: EAS_STEPS,
   apple: APPLE_STEPS,
@@ -136,7 +146,8 @@ export function getAllProvisioningSteps(): ProvisioningStepNode[] {
 }
 
 const STATIC_TEARDOWN_STEPS_BY_PROVIDER: Record<string, ProvisioningStepNode[]> = {
-  firebase: FIREBASE_TEARDOWN_STEPS,
+  gcp: [...FIREBASE_TEARDOWN_STEPS, ...GCP_SERVERLESS_TEARDOWN_STEPS],
+  firebase: [],
   github: GITHUB_TEARDOWN_STEPS,
   eas: EAS_TEARDOWN_STEPS,
   apple: APPLE_TEARDOWN_STEPS,
@@ -307,6 +318,24 @@ function assembleMergedNodes(
   });
 }
 
+function expandSelectedProvidersWithDependencies(selectedProviders: ProviderType[]): ProviderType[] {
+  const out = new Set<string>(selectedProviders);
+  const visit = (provider: string): void => {
+    const deps = globalPluginRegistry.hasPlugin('firebase-core')
+      ? globalPluginRegistry.getProviderDependencies(provider)
+      : provider === 'firebase'
+        ? ['gcp']
+        : [];
+    for (const dep of deps) {
+      if (out.has(dep)) continue;
+      out.add(dep);
+      visit(dep);
+    }
+  };
+  for (const provider of selectedProviders) visit(provider);
+  return Array.from(out) as ProviderType[];
+}
+
 /**
  * Build a ProvisioningPlan for the given project, selected providers, and environments.
  *
@@ -325,7 +354,8 @@ export function buildProvisioningPlan(
   selectedModules?: ModuleId[],
   platforms: ReadonlyArray<MobilePlatform> = [],
 ): ProvisioningPlan {
-  const merged = assembleMergedNodes(projectId, selectedProviders, environments, selectedModules);
+  const effectiveProviders = expandSelectedProvidersWithDependencies(selectedProviders);
+  const merged = assembleMergedNodes(projectId, effectiveProviders, environments, selectedModules);
   const nodes = pruneNodesWithUnresolvedDependencies(filterNodesByPlatforms(merged, platforms));
 
   const nodeStates = new Map<string, NodeState>();
@@ -365,8 +395,38 @@ export function buildTeardownPlan(
   platforms: ReadonlyArray<MobilePlatform> = [],
 ): ProvisioningPlan {
   const teardownSteps: ProvisioningStepNode[] = [];
-  for (const provider of selectedProviders) {
+  const effectiveProviders = expandSelectedProvidersWithDependencies(selectedProviders);
+  for (const provider of effectiveProviders) {
     teardownSteps.push(...getTeardownStepsForProvider(provider));
+  }
+  const effectiveModules = selectedModules
+    ? filterModulesByPlatforms(resolveModuleDependencies(selectedModules), platforms)
+    : [];
+  if (effectiveModules.length > 0) {
+    const catalog = getEffectiveModuleCatalog();
+    const seenTeardownKeys = new Set(teardownSteps.map((step) => step.key));
+    for (const moduleId of effectiveModules) {
+      const mod = catalog[moduleId];
+      if (!mod || mod.teardownStepKeys.length > 0) continue;
+      const key = `teardown:module:${moduleId}:cleanup`;
+      if (seenTeardownKeys.has(key)) continue;
+      teardownSteps.push({
+        type: 'step',
+        key,
+        label: `Review ${mod.label} Cleanup`,
+        description:
+          `${mod.description} Review the provider console for resources, credentials, webhooks, domains, ` +
+          'environment variables, workflow files, or generated artifacts that Studio does not remove automatically.',
+        provider: mod.provider,
+        environmentScope: 'global',
+        automationLevel: 'manual',
+        direction: 'teardown',
+        dependencies: [],
+        produces: [],
+        platforms: mod.platforms,
+      });
+      seenTeardownKeys.add(key);
+    }
   }
   const nodes = pruneNodesWithUnresolvedDependencies(
     filterNodesByPlatforms(teardownSteps as ProvisioningNode[], platforms),
@@ -444,7 +504,21 @@ export function buildProvisioningPlanForModules(
   }
 
   const filteredNodes = fullPlan.nodes.filter((node) => requiredNodeKeys.has(node.key));
-  const prunedNodes = pruneNodesWithUnresolvedDependencies(filteredNodes);
+  const serverlessModulesSelected =
+    resolvedModules.includes('gcp-serverless-api') ||
+    resolvedModules.includes('gcp-serverless-web');
+  const hasExplicitMobileModules = resolvedModules.some((moduleId) => {
+    const definition = getEffectiveModuleCatalog()[moduleId];
+    return Boolean(definition?.platforms && definition.platforms.length > 0);
+  });
+
+  // Serverless-first project templates (api-backend/web-app) should not include
+  // mobile-only nodes unless an explicit mobile module is selected.
+  const nodesWithoutImplicitMobile = serverlessModulesSelected && !hasExplicitMobileModules
+    ? filteredNodes.filter((node) => !node.platforms || node.platforms.length === 0)
+    : filteredNodes;
+
+  const prunedNodes = pruneNodesWithUnresolvedDependencies(nodesWithoutImplicitMobile);
 
   const nodeStates = new Map<string, NodeState>();
   for (const node of prunedNodes) {
@@ -510,5 +584,5 @@ export function getAllTeardownNodesForProviders(providers: ProviderType[]): Prov
 }
 
 export function getAllModuleDefinitions() {
-  return MODULE_CATALOG;
+  return getEffectiveModuleCatalog();
 }

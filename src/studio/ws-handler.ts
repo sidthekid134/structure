@@ -149,6 +149,9 @@ export class WsHandler {
     resourcesProduced?: Record<string, string>,
     error?: string,
     userPrompt?: string,
+    manualRequired?: boolean,
+    verificationMode?: 'automatic' | 'manual-confirmation',
+    verificationEvidenceRequired?: string[],
   ): void {
     this.broadcast(projectId, {
       type: 'step_progress',
@@ -162,6 +165,9 @@ export class WsHandler {
         resourcesProduced,
         error,
         userPrompt,
+        manualRequired,
+        verificationMode,
+        verificationEvidenceRequired,
       },
     });
   }

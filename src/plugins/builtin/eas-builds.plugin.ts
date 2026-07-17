@@ -5,8 +5,8 @@ import { EAS_STEP_HANDLERS } from '../../provisioning/eas-step-handlers.js';
 export const easBuildsPlugin: PluginDefinition = {
   id: 'eas-builds',
   version: '1.0.0',
-  label: 'EAS Builds',
-  description: 'Register project with EAS and configure build profiles.',
+  label: 'Mobile Builds',
+  description: 'Register the Expo/EAS project, sync runtime secrets, and configure iOS/Android build profiles.',
   integrationId: 'eas',
   provider: 'eas',
   providerMeta: {

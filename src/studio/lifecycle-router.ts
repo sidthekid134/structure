@@ -9,7 +9,6 @@
 
 import { Router } from 'express';
 import * as fs from 'fs';
-import { VaultManager } from '../vault.js';
 import { getVaultSession } from './vault-session.js';
 import { PLATFORM_CORE_VERSION } from '../providers/types.js';
 import { loadUsers, type UsersFile } from './users-store.js';
@@ -38,7 +37,6 @@ function installCanDecryptVault(
 }
 
 export interface LifecycleRouterOptions {
-  vaultManager: VaultManager;
   appVersion?: string;
   vaultPath?: string;
   storeDir: string;
@@ -67,10 +65,10 @@ export function createLifecycleRouter(opts: LifecycleRouterOptions): Router {
     const canDecryptVault = installDecryptable;
     const needsVaultKeySetup = !canDecryptVault;
     res.json({
-      app: 'studio-pro',
+      app: 'structure',
       appVersion: opts.appVersion ?? process.env['npm_package_version'] ?? 'dev',
       platformCoreVersion: PLATFORM_CORE_VERSION,
-      studioProfile: process.env['STUDIO_PROFILE']?.trim() || 'default',
+      structureProfile: process.env['STRUCTURE_PROFILE']?.trim() || 'default',
       apiVersion: 1,
       pid: process.pid,
       startedAt: process.uptime() * 1000,
@@ -89,7 +87,7 @@ export function createLifecycleRouter(opts: LifecycleRouterOptions): Router {
       webauthnUserName: canDecryptVault && usersFile ? usersFile.userName : null,
       prfSupported: true,
       /** True when serving dashboard assets from `src/studio/static` (live reload). */
-      serveUiFromSource: process.env['STUDIO_SERVE_UI_FROM_SOURCE'] === '1',
+      serveUiFromSource: process.env['STRUCTURE_SERVE_UI_FROM_SOURCE'] === '1',
     });
   });
 
@@ -125,7 +123,7 @@ export function createLifecycleRouter(opts: LifecycleRouterOptions): Router {
 
   router.post('/vault/destroy', (req, res) => {
     const confirm = typeof req.body?.confirm === 'string' ? req.body.confirm : '';
-    if (confirm !== 'DESTROY_ALL_STUDIO_DATA') {
+    if (confirm !== 'DESTROY_ALL_STRUCTURE_DATA') {
       res.status(400).json({ error: 'Invalid confirmation.' });
       return;
     }

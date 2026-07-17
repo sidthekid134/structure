@@ -162,7 +162,7 @@ export function providerToBackendKey(providerId: ProviderId): string {
   return providerId;
 }
 
-const LLM_MODULE_IDS = ['llm-openai', 'llm-anthropic', 'llm-gemini', 'llm-custom'] as const;
+const LLM_MODULE_IDS = ['llm-openai', 'llm-anthropic', 'llm-gemini', 'llm-openrouter', 'llm-custom'] as const;
 
 /**
  * Returns all module IDs whose id starts with `llm-` from the live plugin
@@ -178,6 +178,7 @@ const LLM_NAME_BY_MODULE: Record<(typeof LLM_MODULE_IDS)[number], string> = {
   'llm-openai': 'OpenAI',
   'llm-anthropic': 'Anthropic',
   'llm-gemini': 'Gemini',
+  'llm-openrouter': 'OpenRouter',
   'llm-custom': 'Custom',
 };
 
@@ -189,6 +190,7 @@ export const LLM_EAS_ENV_KEYS_BY_MODULE: Record<(typeof LLM_MODULE_IDS)[number],
   'llm-openai': ['LLM_OPENAI_API_KEY', 'LLM_OPENAI_ORGANIZATION_ID', 'LLM_OPENAI_DEFAULT_MODEL'],
   'llm-anthropic': ['LLM_ANTHROPIC_API_KEY', 'LLM_ANTHROPIC_DEFAULT_MODEL'],
   'llm-gemini': ['LLM_GEMINI_API_KEY', 'LLM_GEMINI_DEFAULT_MODEL'],
+  'llm-openrouter': ['LLM_OPENROUTER_API_KEY'],
   'llm-custom': ['LLM_CUSTOM_API_KEY', 'LLM_CUSTOM_BASE_URL', 'LLM_CUSTOM_DEFAULT_MODEL'],
 };
 

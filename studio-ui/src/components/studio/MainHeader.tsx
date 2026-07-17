@@ -1,7 +1,7 @@
 import { Moon, Sun } from 'lucide-react';
 
-function formatProfileLabel(studioProfile: string): string {
-  const normalized = studioProfile.trim().toLowerCase();
+function formatProfileLabel(structureProfile: string): string {
+  const normalized = structureProfile.trim().toLowerCase();
   if (normalized === 'dev' || normalized === 'development') return 'dev';
   if (normalized === 'prod' || normalized === 'production' || normalized === 'default') return 'prod';
   return normalized || 'prod';
@@ -13,7 +13,7 @@ export function MainHeader({
   isDark,
   wsStatus,
   wsTone,
-  studioProfile,
+  structureProfile,
   appVersion,
   onToggleDark,
 }: {
@@ -22,11 +22,11 @@ export function MainHeader({
   isDark: boolean;
   wsStatus: 'offline' | 'connecting' | 'live' | 'error';
   wsTone: string;
-  studioProfile: string;
+  structureProfile: string;
   appVersion: string;
   onToggleDark: () => void;
 }) {
-  const profileLabel = formatProfileLabel(studioProfile);
+  const profileLabel = formatProfileLabel(structureProfile);
 
   return (
     <header className="sticky top-0 z-10 bg-background/90 backdrop-blur border-b border-border px-6 py-4 flex items-center justify-between">

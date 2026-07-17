@@ -1,6 +1,6 @@
 # Authoring Plugins
 
-This guide walks through adding a new integration or plugin to Studio Pro. Read [architecture.md](./architecture.md) first to understand the four-level hierarchy (Integration → Plugin → Step → StepHandler).
+This guide walks through adding a new integration or plugin to Structure. Read [architecture.md](./architecture.md) first to understand the four-level hierarchy (Integration → Plugin → Step → StepHandler).
 
 ## Table of Contents
 

@@ -277,10 +277,10 @@ export function createAuthMiddlewares(opts: AuthOptions): {
   const devSessionHandler: RequestHandler = (req, res) => {
     // Dev-only loopback shortcut so local workflows avoid passkey on every tab reload.
     // Disabled in production builds: the bundled binary does NOT serve UI from source,
-    // so a packaged Studio Pro will always return 404 here.
+    // so a packaged Structure will always return 404 here.
     const isTest = process.env['NODE_ENV'] === 'test';
     const isProd = process.env['NODE_ENV'] === 'production';
-    const serveUiFromSource = process.env['STUDIO_SERVE_UI_FROM_SOURCE'] === '1';
+    const serveUiFromSource = process.env['STRUCTURE_SERVE_UI_FROM_SOURCE'] === '1';
     if (!isTest && (isProd || !serveUiFromSource)) {
       res.status(404).json({ error: 'Not found.' });
       return;

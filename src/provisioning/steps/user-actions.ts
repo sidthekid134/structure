@@ -219,6 +219,24 @@ export const USER_ACTIONS: UserActionNode[] = [
       },
     ],
   },
+  {
+    type: 'user-action',
+    key: 'user:share-cicd-integration-prompt',
+    label: 'Share CI/CD App Structure Prompt',
+    description:
+      'Generate and copy a project-aware CI/CD handoff prompt so your coding LLM can align repository structure, build/test commands, and deploy expectations with selected workflow targets.',
+    category: 'approval',
+    provider: 'github',
+    verification: { type: 'manual-confirm' },
+    dependencies: [{ nodeKey: 'github:deploy-workflows', required: true }],
+    produces: [
+      {
+        key: 'cicd_integration_prompt_shared',
+        label: 'CI/CD Integration Prompt Shared',
+        description: 'User confirmed the CI/CD app-structure prompt was shared with their project coding LLM.',
+      },
+    ],
+  },
   // -------------------------------------------------------------------------
   // LLM credential gates — one per kind. Each writes to a kind-specific
   // secret slot under provider 'llm' so multiple kinds can coexist on the
@@ -326,6 +344,30 @@ export const USER_ACTIONS: UserActionNode[] = [
         label: 'Gemini Default Model',
         description:
           'Model id pinned at credential validation when the gate completes (manifest default or first available).',
+      },
+    ],
+  },
+  {
+    type: 'user-action',
+    key: 'user:provide-openrouter-api-key',
+    label: 'OpenRouter API Key',
+    description:
+      'Generate an OpenRouter API key and paste it here. The key is encrypted at rest and used to verify model access via the OpenRouter API.',
+    category: 'credential-upload',
+    provider: 'llm',
+    verification: { type: 'credential-upload', secretKey: 'openrouter_api_key' },
+    helpUrl: 'https://openrouter.ai/keys',
+    dependencies: [],
+    produces: [
+      {
+        key: 'llm_openrouter_api_key',
+        label: 'OpenRouter API Key',
+        description: 'Encrypted OpenRouter API key scoped to this project.',
+      },
+      {
+        key: 'llm_openrouter_models_available',
+        label: 'OpenRouter Models Available',
+        description: 'Comma-separated list of model ids returned during credential validation.',
       },
     ],
   },
@@ -443,6 +485,32 @@ export const USER_ACTIONS: UserActionNode[] = [
         key: 'llm_gemini_integration_prompt_shared',
         label: 'Gemini Integration Prompt Shared',
         description: 'User confirmed the Gemini integration prompt was shared with their project coding LLM.',
+      },
+    ],
+  },
+  {
+    type: 'user-action',
+    key: 'user:share-openrouter-integration-prompt',
+    label: 'Share OpenRouter Integration Prompt with Project LLM',
+    description:
+      'Generate and copy a project-aware OpenRouter integration prompt, then apply it in your app repository with your coding LLM.',
+    category: 'approval',
+    provider: 'llm',
+    verification: { type: 'manual-confirm' },
+    dependencies: [
+      { nodeKey: 'user:provide-openrouter-api-key', required: true },
+      {
+        nodeKey: 'eas:sync-llm-secrets',
+        required: false,
+        description:
+          'If EAS module is enabled, include the synced Expo environment variable names in the handoff prompt.',
+      },
+    ],
+    produces: [
+      {
+        key: 'llm_openrouter_integration_prompt_shared',
+        label: 'OpenRouter Integration Prompt Shared',
+        description: 'User confirmed the OpenRouter integration prompt was shared with their project coding LLM.',
       },
     ],
   },

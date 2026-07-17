@@ -15,6 +15,8 @@ import {
   Play,
   RefreshCw,
   ScanSearch,
+  Server,
+  Smartphone,
   Shield,
   SkipForward,
   Upload,
@@ -44,6 +46,7 @@ import {
   mergeResourcePresentation,
   resolvedNodePortalLinks,
 } from './provisioning-display-registry';
+import { ProviderLogo, providerBrandColor } from './ProviderLogo';
 
 // ---------------------------------------------------------------------------
 // Provider metadata — sourced from /api/plugin-catalog (plan.providerDisplayMeta).
@@ -419,6 +422,20 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
 
   const stepNode = node.type === 'step' ? (node as ProvisioningStepNode) : null;
   const hasInputFields = stepNode?.inputFields && stepNode.inputFields.length > 0;
+  const isStepInputFieldVisible = useCallback(
+    (field: NonNullable<NonNullable<typeof stepNode>['inputFields']>[number], values: Record<string, string>) => {
+      if (!field.dependsOn) return true;
+      const source = values[field.dependsOn.fieldKey] ?? '';
+      const selected = source
+        .split(',')
+        .map((part) => part.trim().toLowerCase())
+        .filter((part) => part.length > 0);
+      return field.dependsOn.includesAny.some((candidate) =>
+        selected.includes(candidate.trim().toLowerCase()),
+      );
+    },
+    [],
+  );
   const nodeState = nodeStates[node.key];
 
   const currentInputs = useMemo(() => {
@@ -430,6 +447,27 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
     }
     return defaults;
   }, [hasInputFields, stepNode?.inputFields, nodeState?.userInputs]);
+  const visibleInputFields = useMemo(() => {
+    if (!stepNode?.inputFields) return [];
+    return stepNode.inputFields.filter((field) => isStepInputFieldVisible(field, localInputs));
+  }, [isStepInputFieldVisible, localInputs, stepNode?.inputFields]);
+  const deployPairFieldKeys = useMemo(
+    () =>
+      new Set([
+        'deploy_web_stack',
+        'deploy_web_destination',
+        'deploy_web_root',
+        'deploy_web_dockerfile',
+        'deploy_web_build_context',
+        'deploy_api_stack',
+        'deploy_api_destination',
+        'deploy_api_root',
+        'deploy_api_dockerfile',
+        'deploy_api_build_context',
+        'deploy_api_health_path',
+      ]),
+    [],
+  );
 
   useEffect(() => {
     if (hasInputFields) {
@@ -441,6 +479,21 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
   const handleInputChange = (key: string, value: string) => {
     setLocalInputs((prev) => ({ ...prev, [key]: value }));
     setInputsDirty(true);
+  };
+
+  const handleMultiSelectInputToggle = (key: string, option: string, orderedOptions: string[]) => {
+    const current = (localInputs[key] ?? '')
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    const selected = new Set(current);
+    if (selected.has(option)) {
+      selected.delete(option);
+    } else {
+      selected.add(option);
+    }
+    const next = orderedOptions.filter((candidate) => selected.has(candidate)).join(',');
+    handleInputChange(key, next);
   };
 
   const handleSaveInputs = async () => {
@@ -526,6 +579,8 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
   const isWaiting = effectiveStatus === 'waiting-on-user';
   const isUserAction = node.type === 'user-action';
   const userActionNode = isUserAction ? (node as UserActionNode) : null;
+  const providerId = node.provider ?? 'user-action';
+  const providerColor = providerBrandColor(providerId, '', true);
   const oauthInteractive = userActionNode ? effectiveUserActionInteractiveAction(userActionNode) : undefined;
   const supportsExplicitRefresh =
     node.type === 'step' &&
@@ -563,7 +618,12 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
         <div className="flex-grow min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
             {/* Provider badge */}
-            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${meta.color} ${meta.bg} ${meta.border}`}>
+            <span
+              className={`inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border ${meta.bg} ${meta.border}`}
+              style={{ color: providerColor }}
+              title={meta.label}
+            >
+              <ProviderLogo provider={providerId} size={10} />
               {meta.label.toUpperCase()}
             </span>
             {isUserAction && (
@@ -740,18 +800,18 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
 
               {/* Step input fields */}
               {hasInputFields && stepNode?.inputFields && effectiveStatus !== 'completed' && effectiveStatus !== 'skipped' && (
-                <div className="space-y-2.5 pt-1 border-t border-border">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                <div className="space-y-2.5 pt-2 border-t border-border/70">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground/90">
                     Configuration
                   </p>
-                  {stepNode.inputFields.map((field) => (
-                    <div key={field.key} className="space-y-1">
-                      <label className="text-[11px] font-semibold text-foreground">
+                  {visibleInputFields.filter((field) => !deployPairFieldKeys.has(field.key)).map((field) => (
+                    <div key={field.key} className="space-y-1 rounded-lg border border-border/60 bg-muted/25 px-2.5 py-2">
+                      <label className="text-[11px] font-semibold text-foreground/95">
                         {field.label}
                         {field.required && <span className="text-red-500 ml-0.5">*</span>}
                       </label>
                       {field.description && (
-                        <p className="text-[10px] text-muted-foreground leading-snug">{field.description}</p>
+                        <p className="text-[10px] text-muted-foreground/90 leading-snug">{field.description}</p>
                       )}
                       {(() => {
                         const isGithubOwnerField = field.key === 'github_owner';
@@ -761,14 +821,141 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
                         const renderSelect = (field.type === 'select' && selectOptions.length > 0) ||
                           (isGithubOwnerField && selectOptions.length > 0);
                         const value = localInputs[field.key] ?? field.defaultValue ?? '';
-                        if (renderSelect) {
+                        if (field.type === 'multiselect') {
+                          const options = field.options ?? [];
+                          const selected = new Set(
+                            value
+                              .split(',')
+                              .map((part) => part.trim())
+                              .filter((part) => part.length > 0),
+                          );
+                          const optionMeta = (option: string) => {
+                            const key = option.trim().toLowerCase();
+                            if (key === 'mobile') {
+                              return {
+                                label: 'Mobile',
+                                hint: 'Expo',
+                                icon: Smartphone,
+                                tint: 'from-sky-500/20 via-sky-500/5 to-transparent',
+                              };
+                            }
+                            if (key === 'web') {
+                              return {
+                                label: 'Web',
+                                hint: 'React / Next.js',
+                                icon: Globe,
+                                tint: 'from-violet-500/20 via-violet-500/5 to-transparent',
+                              };
+                            }
+                            if (key === 'api') {
+                              return {
+                                label: 'API',
+                                hint: 'Node / Flask',
+                                icon: Server,
+                                tint: 'from-emerald-500/20 via-emerald-500/5 to-transparent',
+                              };
+                            }
+                            return {
+                              label: option.toUpperCase(),
+                              hint: 'Enabled',
+                              icon: Zap,
+                              tint: 'from-primary/20 via-primary/5 to-transparent',
+                            };
+                          };
                           return (
-                            <div className="flex items-center gap-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5 pt-0.5">
+                              {options.map((opt) => {
+                                const checked = selected.has(opt);
+                                const meta = optionMeta(opt);
+                                const Icon = meta.icon;
+                                return (
+                                  <button
+                                    key={opt}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMultiSelectInputToggle(field.key, opt, options);
+                                    }}
+                                    className={`group relative overflow-hidden rounded-xl border p-2 text-left transition-all duration-150 ${
+                                      checked
+                                        ? 'border-primary/45 bg-primary/10 shadow-[0_10px_24px_-16px_rgba(99,102,241,0.65)]'
+                                        : 'border-border/80 bg-muted/35 hover:bg-muted/60'
+                                    }`}
+                                  >
+                                    <div
+                                      className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${meta.tint} ${
+                                        checked ? 'opacity-100' : 'opacity-60'
+                                      }`}
+                                    />
+                                    <div className="relative flex items-center gap-1.5">
+                                      <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+                                        checked
+                                          ? 'border-primary/40 bg-primary/15 text-primary'
+                                          : 'border-border/70 bg-background/70 text-muted-foreground'
+                                      }`}>
+                                        <Icon size={10} />
+                                      </span>
+                                      <span className="min-w-0 flex-1">
+                                        <span className={`block text-[10px] font-semibold leading-tight ${checked ? 'text-primary' : 'text-foreground'}`}>
+                                          {meta.label}
+                                        </span>
+                                        <span className="block text-[9px] leading-tight text-muted-foreground">
+                                          {meta.hint}
+                                        </span>
+                                      </span>
+                                      {checked ? (
+                                        <CheckCircle2 size={10} className="shrink-0 text-primary" />
+                                      ) : (
+                                        <span className="h-2.5 w-2.5 rounded-full border border-muted-foreground/35 bg-background/70" />
+                                      )}
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        }
+                        if (renderSelect) {
+                          const useSegmentedSelect =
+                            field.type === 'select' &&
+                            !isGithubOwnerField &&
+                            selectOptions.length > 0 &&
+                            selectOptions.length <= 4;
+                          if (useSegmentedSelect) {
+                            return (
+                              <div className="pt-0.5">
+                                <div className="inline-flex w-full flex-wrap gap-1 rounded-xl border border-border/70 bg-background/70 p-1">
+                                  {selectOptions.map((opt) => {
+                                    const isSelected = value === opt;
+                                    return (
+                                      <button
+                                        key={opt}
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleInputChange(field.key, opt);
+                                        }}
+                                        className={`flex-1 min-w-[96px] rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-all ${
+                                          isSelected
+                                            ? 'bg-primary/14 text-primary border border-primary/35 shadow-[0_10px_20px_-14px_rgba(99,102,241,0.7)]'
+                                            : 'text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-transparent'
+                                        }`}
+                                      >
+                                        {opt}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="flex items-center gap-2 pt-0.5">
                               <select
                                 value={value}
                                 onChange={(e) => handleInputChange(field.key, e.target.value)}
                                 onClick={(e) => e.stopPropagation()}
-                                className="w-full text-xs bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                                className="w-full text-xs bg-background/90 border border-border/70 rounded-lg px-2.5 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus:ring-2 focus:ring-primary/20 focus:border-primary/50 outline-none transition-colors"
                               >
                                 {selectOptions.map((opt) => (
                                   <option key={opt} value={opt}>{opt}</option>
@@ -783,7 +970,7 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
                                   }}
                                   disabled={refreshingGithubOwners}
                                   title="Refresh GitHub org memberships from PAT"
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold rounded-md border border-border px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold rounded-lg border border-border/70 bg-background/80 px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
                                   {refreshingGithubOwners ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
                                   Refresh
@@ -793,14 +980,14 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
                           );
                         }
                         return (
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 pt-0.5">
                             <input
                               type="text"
                               value={localInputs[field.key] ?? ''}
                               onChange={(e) => handleInputChange(field.key, e.target.value)}
                               onClick={(e) => e.stopPropagation()}
                               placeholder={field.placeholder}
-                              className="w-full text-xs font-mono bg-background border border-border rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
+                              className="w-full text-xs font-mono bg-background/90 border border-border/70 rounded-lg px-2.5 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus:ring-2 focus:ring-primary/20 focus:border-primary/50 outline-none transition-colors"
                             />
                             {isGithubOwnerField && (
                               <button
@@ -811,7 +998,7 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
                                 }}
                                 disabled={refreshingGithubOwners}
                                 title="Refresh GitHub org memberships from PAT"
-                                className="inline-flex items-center gap-1 text-[10px] font-semibold rounded-md border border-border px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold rounded-lg border border-border/70 bg-background/80 px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-muted/70 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 {refreshingGithubOwners ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
                                 Refresh
@@ -822,11 +1009,106 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
                       })()}
                     </div>
                   ))}
+                  {(() => {
+                    const webStackField = visibleInputFields.find((f) => f.key === 'deploy_web_stack');
+                    const webDestinationField = visibleInputFields.find((f) => f.key === 'deploy_web_destination');
+                    const apiStackField = visibleInputFields.find((f) => f.key === 'deploy_api_stack');
+                    const apiDestinationField = visibleInputFields.find((f) => f.key === 'deploy_api_destination');
+                    const webConfigFields = [
+                      webStackField,
+                      webDestinationField,
+                      visibleInputFields.find((f) => f.key === 'deploy_web_root'),
+                      visibleInputFields.find((f) => f.key === 'deploy_web_dockerfile'),
+                      visibleInputFields.find((f) => f.key === 'deploy_web_build_context'),
+                    ].filter((field): field is NonNullable<ProvisioningStepNode['inputFields']>[number] => Boolean(field));
+                    const apiConfigFields = [
+                      apiStackField,
+                      apiDestinationField,
+                      visibleInputFields.find((f) => f.key === 'deploy_api_root'),
+                      visibleInputFields.find((f) => f.key === 'deploy_api_dockerfile'),
+                      visibleInputFields.find((f) => f.key === 'deploy_api_build_context'),
+                      visibleInputFields.find((f) => f.key === 'deploy_api_health_path'),
+                    ].filter((field): field is NonNullable<ProvisioningStepNode['inputFields']>[number] => Boolean(field));
+                    const renderSegmentedField = (field: NonNullable<ProvisioningStepNode['inputFields']>[number]) => {
+                      if (!field) return null;
+                      const options = field.options ?? [];
+                      const value = localInputs[field.key] ?? field.defaultValue ?? '';
+                      return (
+                        <div className="space-y-1">
+                          <p className="text-[9px] font-semibold text-muted-foreground/90">{field.label}</p>
+                          <div className="inline-flex w-full flex-wrap gap-1 rounded-xl border border-border/70 bg-background/70 p-1">
+                            {options.map((opt) => {
+                              const isSelected = value === opt;
+                              return (
+                                <button
+                                  key={opt}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleInputChange(field.key, opt);
+                                  }}
+                                  className={`flex-1 min-w-[96px] rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-all ${
+                                    isSelected
+                                      ? 'bg-primary/14 text-primary border border-primary/35 shadow-[0_10px_20px_-14px_rgba(99,102,241,0.7)]'
+                                      : 'text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-transparent'
+                                  }`}
+                                >
+                                  {opt}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    };
+                    const renderDeployField = (field: NonNullable<ProvisioningStepNode['inputFields']>[number]) => {
+                      if (field.type === 'select' && (field.options ?? []).length > 0) {
+                        return <div key={field.key}>{renderSegmentedField(field)}</div>;
+                      }
+                      const value = localInputs[field.key] ?? field.defaultValue ?? '';
+                      return (
+                        <div key={field.key} className="space-y-1">
+                          <p className="text-[9px] font-semibold text-muted-foreground/90">{field.label}</p>
+                          {field.description && (
+                            <p className="text-[10px] leading-snug text-muted-foreground/80">{field.description}</p>
+                          )}
+                          <input
+                            type="text"
+                            value={value}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => handleInputChange(field.key, e.target.value)}
+                            placeholder={field.placeholder}
+                            className="w-full rounded-lg border border-border/70 bg-background/80 px-2 py-1.5 text-[11px] font-mono outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/15"
+                          />
+                        </div>
+                      );
+                    };
+                    return (
+                      <>
+                        {webConfigFields.length > 0 && (
+                          <div className="rounded-lg border border-violet-500/25 bg-violet-500/5 px-2.5 py-2 space-y-1.5">
+                            <p className="text-[10px] font-semibold text-violet-700 dark:text-violet-300">
+                              Web Deployment Configuration
+                            </p>
+                            {webConfigFields.map((field) => renderDeployField(field))}
+                          </div>
+                        )}
+                        {apiConfigFields.length > 0 && (
+                          <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-2.5 py-2 space-y-1.5">
+                            <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                              API Deployment Configuration
+                            </p>
+                            {apiConfigFields.map((field) => renderDeployField(field))}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                   <button
                     type="button"
                     disabled={savingInputs || !inputsDirty}
                     onClick={(e) => { e.stopPropagation(); void handleSaveInputs(); }}
-                    className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border text-primary bg-primary/10 border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="flex items-center gap-1.5 text-xs font-bold px-3.5 py-1.5 rounded-lg border border-primary/35 text-primary bg-primary/12 shadow-[0_10px_20px_-14px_rgba(99,102,241,0.7)] hover:bg-primary/18 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {savingInputs ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />}
                     {savingInputs ? 'Saving…' : inputsDirty ? 'Save Configuration' : 'Configuration Saved'}
@@ -836,20 +1118,47 @@ function NodeCard({ node, nodeStates, environments, selectedModules, projectId, 
 
               {/* Show saved input values when step is complete */}
               {hasInputFields && stepNode?.inputFields && (effectiveStatus === 'completed' || effectiveStatus === 'skipped') && nodeState?.userInputs && (
-                <div className="space-y-1.5">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                <div className="space-y-1.5 rounded-lg border border-border/60 bg-muted/20 px-2.5 py-2">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground/90">
                     Configuration
                   </p>
                   <div className="flex flex-wrap gap-1.5">
-                    {stepNode.inputFields.map((field) => {
+                    {stepNode.inputFields
+                      .filter((field) => isStepInputFieldVisible(field, nodeState.userInputs ?? {}))
+                      .filter((field) => !deployPairFieldKeys.has(field.key))
+                      .map((field) => {
                       const val = nodeState.userInputs?.[field.key] ?? field.defaultValue ?? '';
                       return (
-                        <span key={field.key} className="inline-flex items-center gap-1 text-[10px] font-mono bg-muted border border-border px-1.5 py-0.5 rounded text-foreground" title={field.description}>
-                          <span className="text-[9px] text-muted-foreground/70">{field.label}:</span>
+                        <span key={field.key} className="inline-flex items-center gap-1 text-[10px] font-mono bg-background/85 border border-border/70 px-1.5 py-0.5 rounded-lg text-foreground" title={field.description}>
+                          <span className="text-[9px] text-muted-foreground/75">{field.label}:</span>
                           <span className="max-w-[160px] truncate">{val}</span>
                         </span>
                       );
                     })}
+                    {(() => {
+                      const source = nodeState.userInputs ?? {};
+                      const webStack = source['deploy_web_stack'] ?? '';
+                      const webDest = source['deploy_web_destination'] ?? '';
+                      if (!webStack && !webDest) return null;
+                      return (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-mono bg-background/85 border border-border/70 px-1.5 py-0.5 rounded-lg text-foreground">
+                          <span className="text-[9px] text-muted-foreground/75">Web:</span>
+                          <span className="max-w-[160px] truncate">{`${webStack || '—'} -> ${webDest || '—'}`}</span>
+                        </span>
+                      );
+                    })()}
+                    {(() => {
+                      const source = nodeState.userInputs ?? {};
+                      const apiStack = source['deploy_api_stack'] ?? '';
+                      const apiDest = source['deploy_api_destination'] ?? '';
+                      if (!apiStack && !apiDest) return null;
+                      return (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-mono bg-background/85 border border-border/70 px-1.5 py-0.5 rounded-lg text-foreground">
+                          <span className="text-[9px] text-muted-foreground/75">API:</span>
+                          <span className="max-w-[160px] truncate">{`${apiStack || '—'} -> ${apiDest || '—'}`}</span>
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
               )}

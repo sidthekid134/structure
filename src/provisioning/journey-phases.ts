@@ -8,7 +8,7 @@ import type {
   ProvisioningStepNode,
   UserActionNode,
 } from './graph.types.js';
-import { MODULE_CATALOG } from './module-catalog.js';
+import { getEffectiveModuleCatalog } from './module-catalog.js';
 import { globalPluginRegistry } from '../plugins/plugin-registry.js';
 
 // ---------------------------------------------------------------------------
@@ -22,6 +22,7 @@ export const BUILTIN_JOURNEY_PHASES = [
   'cloud_firebase',
   'repo',
   'cicd',
+  'runtime',
   'mobile_build',
   'signing_apple',
   'play',
@@ -53,6 +54,7 @@ export const JOURNEY_PHASE_TITLE: Record<string, string> = {
   cloud_firebase: 'Cloud & Firebase',
   repo: 'Source repository',
   cicd: 'CI/CD & automation',
+  runtime: 'Cloud runtime & deploy',
   mobile_build: 'Mobile builds',
   signing_apple: 'Apple signing & App Store',
   play: 'Google Play',
@@ -344,7 +346,7 @@ function buildModuleByNodeKey(): { moduleByNodeKey: Record<string, string>; modu
   const moduleByNodeKey: Record<string, string> = {};
   const moduleLabelById: Record<string, string> = {};
 
-  for (const mod of Object.values(MODULE_CATALOG)) {
+  for (const mod of Object.values(getEffectiveModuleCatalog())) {
     moduleLabelById[mod.id] = mod.label;
     for (const key of mod.stepKeys) {
       if (!(key in moduleByNodeKey)) moduleByNodeKey[key] = mod.id;

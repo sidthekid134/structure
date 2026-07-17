@@ -117,6 +117,66 @@ export const INTEGRATION_CONFIGS: IntegrationConfig[] = [
     ],
     customFlow: 'cloudflare',
   },
+  {
+    id: 'google-play',
+    scope: 'organization',
+    name: 'Google Play',
+    logo: Globe,
+    logoColor: 'text-emerald-500',
+    description:
+      'Connect Google Play organization credentials to enable automated Android publishing and signing workflows.',
+    docsUrl: 'https://support.google.com/googleplay/android-developer/answer/9844686',
+    fields: [
+      {
+        key: 'googlePlayDeveloperAccountId',
+        label: 'Google Play Developer Account ID',
+        placeholder: '12345678901234567890',
+        hint: 'Numeric developer account id from Play Console.',
+        type: 'text',
+      },
+    ],
+  },
+  {
+    id: 'llm',
+    scope: 'project',
+    name: 'LLM Providers',
+    logo: Zap,
+    logoColor: 'text-violet-500',
+    description:
+      'Configure project-scoped LLM credentials (OpenAI, Anthropic, Gemini, or Custom OpenAI-compatible endpoint).',
+    docsUrl: 'https://platform.openai.com/docs',
+    fields: [
+      {
+        key: 'llmKind',
+        label: 'Provider Kind',
+        placeholder: 'openai | anthropic | gemini | custom',
+        hint: 'Use one of: openai, anthropic, gemini, custom.',
+        type: 'text',
+      },
+      {
+        key: 'llmApiKey',
+        label: 'API Key',
+        placeholder: 'sk-...',
+        hint: 'Provider API key stored for this project.',
+        type: 'password',
+      },
+      {
+        key: 'llmDefaultModel',
+        label: 'Default Model',
+        placeholder: 'gpt-4o-mini',
+        hint: 'Model used when callers do not specify one.',
+        type: 'text',
+      },
+      {
+        key: 'llmBaseUrl',
+        label: 'Custom Base URL',
+        placeholder: 'https://api.example.com/v1',
+        hint: 'Required only for custom provider kind.',
+        type: 'text',
+        optional: true,
+      },
+    ],
+  },
 ];
 
 // NOTE: ALL_REGISTRY_PLUGINS / PROVIDER_PLUGIN_MAP / REGISTRY_CATEGORIES used to
@@ -189,7 +249,7 @@ export const PROJECT_SETUP_CONFIGS: Record<ProviderId, ProjectSetupConfig> = {
     introDescription:
       'Studio creates a dedicated repository for this project with branch protection rules, a deploy key for CI access, and GitHub Actions secrets pre-configured for your build and deploy workflows.',
     setupMethod: 'trigger',
-    triggerLabel: 'Create GitHub Repository',
+    triggerLabel: 'Create Source Repository',
     triggerDescription:
       'Studio will create the repository in your GitHub org, configure branch protection on main, generate a deploy key, and add Actions secrets for the project environment.',
     steps: [

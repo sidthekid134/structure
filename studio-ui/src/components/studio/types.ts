@@ -4,6 +4,7 @@ export type StudioView =
   | 'overview'
   | 'project'
   | 'project-setup'
+  | 'project-teardown'
   | 'project-modules'
   | 'project-dashboard'
   | 'project-settings'
@@ -63,7 +64,7 @@ export interface ResourceOutput {
   presentation?: ResourceOutputPresentation;
 }
 
-export type StepInputFieldType = 'text' | 'select' | 'p8';
+export type StepInputFieldType = 'text' | 'select' | 'multiselect' | 'p8';
 
 export interface StepInputField {
   key: string;
@@ -75,6 +76,10 @@ export interface StepInputField {
   defaultValue?: string;
   options?: string[];
   required?: boolean;
+  dependsOn?: {
+    fieldKey: string;
+    includesAny: string[];
+  };
 }
 
 export interface CompletionPortalLink {
@@ -163,6 +168,15 @@ export interface NodeState {
   userInputs?: Record<string, string>;
   invalidatedBy?: string;
   invalidatedAt?: number;
+  manualRequired?: boolean;
+  verificationMode?: 'automatic' | 'manual-confirmation';
+  verificationEvidenceRequired?: string[];
+  manualConfirmation?: {
+    note: string;
+    targetIds: string[];
+    confirmedAt: string;
+    recordedAt: number;
+  };
 }
 
 /**
@@ -281,6 +295,16 @@ export interface StepActionDescriptor {
   confirmationMessage?: string;
 }
 
+export type ModuleHintKind = 'scope' | 'requires' | 'recommends' | 'platform';
+
+export interface ModuleHint {
+  kind: ModuleHintKind;
+  label: string;
+  description: string;
+  moduleIds?: string[];
+  platforms?: MobilePlatform[];
+}
+
 // ---------------------------------------------------------------------------
 // Plugin catalog (served by GET /api/plugin-catalog)
 // ---------------------------------------------------------------------------
@@ -295,6 +319,8 @@ export interface PluginCatalogEntry {
   functionGroupId?: string;
   requiredModules: string[];
   optionalModules: string[];
+  moduleHints?: ModuleHint[];
+  platforms?: MobilePlatform[];
   displayMeta?: PluginDisplayMeta;
 }
 
@@ -359,30 +385,14 @@ export interface ProvisioningPlanResponse {
 }
 
 /**
- * Open string — built-in modules plus any plugin-contributed ones.
- * Mirrors the backend `ModuleId` type.
+ * Open string — module ids are validated by the backend's plugin registry.
+ * Mirrors the backend `ModuleId` type. The UI does not maintain a literal
+ * union of valid ids; instead it discovers them via the `/api/plugin-catalog`
+ * response so adding a new module on the backend doesn't require a UI release.
  */
 export type ModuleId = string & { readonly __brand?: 'ModuleId' };
 
 export type MobilePlatform = 'ios' | 'android';
-
-export const BUILTIN_MODULE_IDS = [
-  'firebase-core',
-  'firebase-auth',
-  'firebase-firestore',
-  'firebase-storage',
-  'firebase-messaging',
-  'github-repo',
-  'github-ci',
-  'eas-builds',
-  'eas-submit',
-  'apple-signing',
-  'google-play-publishing',
-  'cloudflare-domain',
-  'oauth-social',
-] as const;
-
-export type BuiltinModuleId = (typeof BUILTIN_MODULE_IDS)[number];
 
 /**
  * Backend-driven function group id (e.g. 'firebase', 'github', 'mobile',
@@ -400,14 +410,16 @@ export interface ModuleDefinition {
   functionGroupId: ModuleFunctionGroupId;
   requiredModules: ModuleId[];
   optionalModules: ModuleId[];
+  moduleHints?: ModuleHint[];
+  platforms?: MobilePlatform[];
   stepKeys: string[];
   teardownStepKeys: string[];
 }
 
 /**
- * Backend templates plus the synthetic UI-only `'custom'` template (which
- * means "start with no modules and toggle them manually"). Open string so
- * the backend can introduce new templates without a UI release.
+ * Project template id. Open string so the backend can introduce new
+ * templates (including `'custom'`, which is registered as an authoritative
+ * empty template) without requiring a UI release.
  */
 export type ProjectTemplateId = string & { readonly __brand?: 'ProjectTemplateId' };
 
@@ -440,6 +452,9 @@ export interface WsStepProgressMessage {
     resourcesProduced?: Record<string, string>;
     error?: string;
     userPrompt?: string;
+    manualRequired?: boolean;
+    verificationMode?: 'automatic' | 'manual-confirmation';
+    verificationEvidenceRequired?: string[];
   };
 }
 /** Open string — built-in providers plus plugin-contributed ones */
@@ -523,6 +538,8 @@ export interface ConnectedProviders {
   github: boolean;
   apple: boolean;
   cloudflare: boolean;
+  'google-play': boolean;
+  llm: boolean;
 }
 
 export const mapGcpStepToSetupStatus = (

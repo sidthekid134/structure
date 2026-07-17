@@ -4,14 +4,43 @@ import { EAS_STEPS, EAS_TEARDOWN_STEPS } from '../../provisioning/step-registry.
 export const easSubmitPlugin: PluginDefinition = {
   id: 'eas-submit',
   version: '1.0.0',
-  label: 'EAS Submit',
-  description: 'Configure EAS Submit for App Store and Google Play uploads.',
+  label: 'Store Submission',
+  description: 'Configure App Store and Google Play upload targets for EAS Submit.',
   integrationId: 'eas',
   provider: 'eas',
-  requiredModules: ['eas-builds'],
+  requiredModules: ['eas-builds', 'github-ci'],
   optionalModules: ['apple-signing', 'google-play-publishing'],
-  // platforms left unset: this module owns both ios + android sub-steps;
-  // the planner filters individual steps via their own `platforms` mask.
+  // This module owns both iOS and Android sub-steps; the planner filters
+  // individual steps via their own `platforms` mask.
+  platforms: ['ios', 'android'],
+  moduleHints: [
+    {
+      kind: 'scope',
+      label: 'Mobile release only',
+      description: 'EAS Submit is only useful for projects that publish iOS or Android builds.',
+      platforms: ['ios', 'android'],
+    },
+    {
+      kind: 'requires',
+      label: 'CI/CD must be present',
+      description: 'Submit targets are configured alongside the GitHub workflow and environment secrets.',
+      moduleIds: ['github-ci'],
+    },
+    {
+      kind: 'platform',
+      label: 'iOS path',
+      description: 'App Store uploads need Apple signing and App Store Connect credentials.',
+      moduleIds: ['apple-signing'],
+      platforms: ['ios'],
+    },
+    {
+      kind: 'platform',
+      label: 'Android path',
+      description: 'Google Play uploads need Play Console publishing and Android signing setup.',
+      moduleIds: ['google-play-publishing'],
+      platforms: ['android'],
+    },
+  ],
   includedInTemplates: ['mobile-app'],
   steps: [
     EAS_STEPS.find((s) => s.key === 'eas:configure-submit-apple')!,

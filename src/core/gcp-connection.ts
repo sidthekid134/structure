@@ -15,7 +15,7 @@
  */
 
 import { GoogleAuth } from 'google-auth-library';
-import type { VaultManager } from '../vault.js';
+import type { CredentialService } from '../services/credential-service.js';
 import type { ProjectManager, IntegrationConfigRecord } from '../studio/project-manager.js';
 import { createOperationLogger } from '../logger.js';
 import { OAuthManager } from './oauth-manager.js';
@@ -63,7 +63,6 @@ import {
   type GcpConnectionDetails,
   type GcpProjectConnectionStatus,
 } from './gcp/gcp-credentials.js';
-import { getVaultUnlock as resolveVaultUnlock } from '../studio/vault-session.js';
 
 // ---------------------------------------------------------------------------
 // Re-export types consumed by api.ts and other callers
@@ -137,12 +136,12 @@ export class GcpConnectionService implements GcpCredentialProvider {
   private readonly gcpProvider: GcpOAuthProvider;
 
   constructor(
-    private readonly vaultManager: VaultManager,
+    private readonly credentialService: CredentialService,
     private readonly projectManager: ProjectManager,
     oauthClientId?: string,
   ) {
     this.gcpProvider = new GcpOAuthProvider(oauthClientId);
-    this.oauthManager = new OAuthManager(vaultManager, () => resolveVaultUnlock());
+    this.oauthManager = new OAuthManager(credentialService);
   }
 
   // ---------------------------------------------------------------------------
@@ -177,8 +176,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
       this.gcpProvider,
       projectId,
       async (accessToken, email) => {
-        const passphrase = resolveVaultUnlock();
-        this.gcpProvider.storeConnectedEmail(this.vaultManager, passphrase, projectId, email);
+        this.gcpProvider.storeConnectedEmail(this.credentialService, projectId, email);
         const discover = await this.discoverStudioGcpProjectWithUserAccessToken(projectId, accessToken);
         return { gcpProjectDiscover: discover };
       },
@@ -197,10 +195,9 @@ export class GcpConnectionService implements GcpCredentialProvider {
   getProjectOAuthStatus(projectId: string, sessionId: string): GcpOAuthSessionStatus {
     this.ensureProjectExists(projectId);
     const status = this.oauthManager.getSessionStatus(sessionId, projectId);
-    const passphrase = resolveVaultUnlock();
     const details = status.connected
-      ? (getStoredConnectionDetails(this.vaultManager, passphrase, projectId) ??
-        buildOAuthPreviewDetails(projectId, this.vaultManager, passphrase, status.connectedEmail ?? 'unknown'))
+      ? (getStoredConnectionDetails(this.credentialService, projectId) ??
+        buildOAuthPreviewDetails(projectId, this.credentialService, status.connectedEmail ?? 'unknown'))
       : undefined;
 
     return {
@@ -221,17 +218,16 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
   getProjectConnectionStatus(projectId: string): GcpProjectConnectionStatus {
     this.ensureProjectExists(projectId);
-    const passphrase = resolveVaultUnlock();
-    const details = getStoredConnectionDetails(this.vaultManager, passphrase, projectId);
+    const details = getStoredConnectionDetails(this.credentialService, projectId);
     const integration = this.projectManager.getProject(projectId).integrations.firebase;
 
     if (details) return { connected: true, details, integration };
 
     if (this.hasStoredUserOAuthRefreshToken(projectId)) {
-      const userEmail = this.gcpProvider.getConnectedEmail(this.vaultManager, passphrase, projectId);
+      const userEmail = this.gcpProvider.getConnectedEmail(this.credentialService, projectId);
       return {
         connected: true,
-        details: buildOAuthPreviewDetails(projectId, this.vaultManager, passphrase, userEmail),
+        details: buildOAuthPreviewDetails(projectId, this.credentialService, userEmail),
         integration,
       };
     }
@@ -264,42 +260,41 @@ export class GcpConnectionService implements GcpCredentialProvider {
   ): Promise<GcpOAuthProjectDiscoverResult> {
     const expectedProjectId = buildStudioGcpProjectId(studioProjectId);
     const expectedDisplayName = `Studio ${studioProjectId}`;
-    const passphrase = resolveVaultUnlock();
-    const userEmail = this.gcpProvider.getConnectedEmail(this.vaultManager, passphrase, studioProjectId);
+    const userEmail = this.gcpProvider.getConnectedEmail(this.credentialService, studioProjectId);
 
     try {
-      const vaultId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+      const storedId = getStoredGcpProjectId(this.credentialService, studioProjectId);
 
-      if (vaultId) {
-        const summary = await fetchGcpProjectSummary(userAccessToken, vaultId);
+      if (storedId) {
+        const summary = await fetchGcpProjectSummary(userAccessToken, storedId);
         if (!summary.ok) {
           if (summary.reason === 'inaccessible') {
-        return {
+            return {
               outcome: 'inaccessible',
-              gcpProjectId: vaultId,
+              gcpProjectId: storedId,
               expectedProjectId,
               expectedDisplayName,
-              message: `Vault lists GCP project "${vaultId}" but it is not accessible with the signed-in Google account (403).`,
+              message: `Stored GCP project "${storedId}" is not accessible with the signed-in Google account (403).`,
             };
           }
-        return {
+          return {
             outcome: 'not_found',
-            gcpProjectId: vaultId,
+            gcpProjectId: storedId,
             expectedProjectId,
             expectedDisplayName,
-            message: `Vault lists GCP project "${vaultId}" but it was not found in GCP.`,
+            message: `Stored GCP project "${storedId}" was not found in GCP.`,
           };
         }
-        applyGcpProjectLinked(this.projectManager, studioProjectId, vaultId, userEmail);
+        applyGcpProjectLinked(this.projectManager, studioProjectId, storedId, userEmail);
         const nameNote = summary.name === expectedDisplayName
           ? `Display name matches "${expectedDisplayName}".`
           : `Note: display name is "${summary.name}" (expected "${expectedDisplayName}").`;
-        return { outcome: 'already_linked', gcpProjectId: vaultId, expectedProjectId, expectedDisplayName, message: `GCP project "${vaultId}" is reachable. ${nameNote}` };
+        return { outcome: 'already_linked', gcpProjectId: storedId, expectedProjectId, expectedDisplayName, message: `GCP project "${storedId}" is reachable. ${nameNote}` };
       }
 
       const byId = await fetchGcpProjectSummary(userAccessToken, expectedProjectId);
       if (byId.ok) {
-        storeGcpProjectId(this.vaultManager, passphrase, studioProjectId, expectedProjectId);
+        storeGcpProjectId(this.credentialService, studioProjectId, expectedProjectId);
         applyGcpProjectLinked(this.projectManager, studioProjectId, expectedProjectId, userEmail);
         const nameNote = byId.name === expectedDisplayName
           ? `Linked project "${expectedProjectId}" (display name "${expectedDisplayName}").`
@@ -310,20 +305,20 @@ export class GcpConnectionService implements GcpCredentialProvider {
       // 403 could mean "no access" or "doesn't exist" — search by display name
       const matches = await findGcpProjectsByDisplayName(userAccessToken, expectedDisplayName);
       if (matches.length === 0) {
-          return {
+        return {
           outcome: 'not_found', expectedProjectId, expectedDisplayName,
           message: `No GCP project with id "${expectedProjectId}" or display name "${expectedDisplayName}". Run "Create GCP Project" provisioning step.`,
         };
       }
       if (matches.length > 1) {
-      return {
+        return {
           outcome: 'ambiguous', expectedProjectId, expectedDisplayName,
           message: `Multiple GCP projects named "${expectedDisplayName}". Rename or delete duplicates in Cloud Console.`,
         };
       }
 
       const chosen = matches[0]!;
-      storeGcpProjectId(this.vaultManager, passphrase, studioProjectId, chosen.projectId);
+      storeGcpProjectId(this.credentialService, studioProjectId, chosen.projectId);
       applyGcpProjectLinked(this.projectManager, studioProjectId, chosen.projectId, userEmail);
       return {
         outcome: 'linked', gcpProjectId: chosen.projectId, expectedProjectId, expectedDisplayName,
@@ -340,17 +335,17 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
   getStoredGcpProjectId(studioProjectId: string): string | null {
     this.ensureProjectExists(studioProjectId);
-    return getStoredGcpProjectId(this.vaultManager, resolveVaultUnlock(), studioProjectId);
+    return getStoredGcpProjectId(this.credentialService, studioProjectId);
   }
 
   storeGcpProjectIdInVault(studioProjectId: string, gcpProjectId: string): void {
     this.ensureProjectExists(studioProjectId);
-    storeGcpProjectId(this.vaultManager, resolveVaultUnlock(), studioProjectId, gcpProjectId);
+    storeGcpProjectId(this.credentialService, studioProjectId, gcpProjectId);
   }
 
   storeProvisionerServiceAccountEmail(studioProjectId: string, email: string): void {
     this.ensureProjectExists(studioProjectId);
-    storeSaEmail(this.vaultManager, resolveVaultUnlock(), studioProjectId, email);
+    storeSaEmail(this.credentialService, studioProjectId, email);
   }
 
   recordProvisionerServiceAccountKey(
@@ -361,8 +356,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
   ): GcpProjectConnectionStatus {
     this.ensureProjectExists(studioProjectId);
     return recordProvisionerServiceAccountKey(
-      this.vaultManager,
-      resolveVaultUnlock(),
+      this.credentialService,
       this.projectManager,
       studioProjectId,
       gcpProjectId,
@@ -396,22 +390,20 @@ export class GcpConnectionService implements GcpCredentialProvider {
     if (parsed.type !== 'service_account') throw new Error('Invalid service account JSON: "type" must be "service_account".');
     if (!parsed.project_id || !parsed.client_email) throw new Error('Invalid service account JSON: missing project_id or client_email.');
 
-    const passphrase = resolveVaultUnlock();
     const details: GcpConnectionDetails = {
       projectId: parsed.project_id,
       serviceAccountEmail: parsed.client_email,
       userEmail: 'manual',
       connectedAt: new Date().toISOString(),
     };
-    storeSaKeyJson(this.vaultManager, passphrase, projectId, saKeyJson);
-    storeConnectionDetails(this.vaultManager, passphrase, projectId, details);
+    storeSaKeyJson(this.credentialService, projectId, saKeyJson);
+    storeConnectionDetails(this.credentialService, projectId, details);
     return syncFirebaseIntegration(this.projectManager, projectId, details);
   }
 
   disconnectProject(projectId: string): GcpProjectConnectionStatus & { removed: boolean } {
     this.ensureProjectExists(projectId);
-    const passphrase = resolveVaultUnlock();
-    const removed = deleteGcpCredentials(this.vaultManager, passphrase, projectId);
+    const removed = deleteGcpCredentials(this.credentialService, projectId);
 
     const project = this.projectManager.getProject(projectId);
     if (project.integrations.firebase) {
@@ -458,19 +450,18 @@ export class GcpConnectionService implements GcpCredentialProvider {
 
   async validateStep(studioProjectId: string, stepId: GcpBootstrapPhaseId): Promise<GcpStepValidationResult> {
     this.ensureProjectExists(studioProjectId);
-    const passphrase = resolveVaultUnlock();
     const hasOAuth = this.hasStoredUserOAuthRefreshToken(studioProjectId);
 
     switch (stepId) {
       case 'oauth_consent': {
         if (hasOAuth) return { valid: true, message: 'Google OAuth refresh token is stored.' };
-        const d = getStoredConnectionDetails(this.vaultManager, passphrase, studioProjectId);
+        const d = getStoredConnectionDetails(this.credentialService, studioProjectId);
         if (!d) return { valid: false, message: 'No OAuth refresh token or service account connection. Sign in with Google or upload a service account key.' };
         return { valid: true, message: `Connection recorded for GCP project ${d.projectId} (${d.serviceAccountEmail}).` };
       }
       case 'gcp_project': {
-        const details = getStoredConnectionDetails(this.vaultManager, passphrase, studioProjectId);
-        const projectId = details?.projectId ?? getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+        const details = getStoredConnectionDetails(this.credentialService, studioProjectId);
+        const projectId = details?.projectId ?? getStoredGcpProjectId(this.credentialService, studioProjectId);
         if (!projectId) return { valid: false, message: 'No GCP project id stored. Complete "Create GCP Project" first.' };
         try {
           const token = await this.getAccessTokenForGcpOperations(studioProjectId, 'validate:gcp_project');
@@ -483,8 +474,8 @@ export class GcpConnectionService implements GcpCredentialProvider {
         }
       }
       case 'service_account': {
-        const gcpProjectId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
-        const saEmail = getStoredSaEmail(this.vaultManager, passphrase, studioProjectId);
+        const gcpProjectId = getStoredGcpProjectId(this.credentialService, studioProjectId);
+        const saEmail = getStoredSaEmail(this.credentialService, studioProjectId);
         if (!gcpProjectId || !saEmail) return { valid: false, message: 'No service account email stored.' };
         const saPath = `/v1/projects/-/serviceAccounts/${encodeURIComponent(saEmail)}`;
         for (let attempt = 0; attempt < 2; attempt++) {
@@ -508,8 +499,8 @@ export class GcpConnectionService implements GcpCredentialProvider {
         return { valid: false, message: 'Service account check failed after attempting to enable required GCP APIs. Retry sync in a minute.' };
       }
       case 'iam_binding': {
-        const gcpProjectId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
-        const saEmail = getStoredSaEmail(this.vaultManager, passphrase, studioProjectId);
+        const gcpProjectId = getStoredGcpProjectId(this.credentialService, studioProjectId);
+        const saEmail = getStoredSaEmail(this.credentialService, studioProjectId);
         if (!gcpProjectId || !saEmail) return { valid: false, message: 'No connection metadata for IAM check.' };
         const member = `serviceAccount:${saEmail}`;
         for (let attempt = 0; attempt < 2; attempt++) {
@@ -533,14 +524,14 @@ export class GcpConnectionService implements GcpCredentialProvider {
         return { valid: false, message: 'IAM policy check failed after attempting to enable required GCP APIs. Retry sync in a minute.' };
       }
       case 'vault': {
-        const raw = getStoredSaKeyJson(this.vaultManager, passphrase, studioProjectId);
-        if (!raw) return { valid: false, message: 'No service_account_json in vault.' };
+        const raw = getStoredSaKeyJson(this.credentialService, studioProjectId);
+        if (!raw) return { valid: false, message: 'No service_account_json stored.' };
         try {
           const parsed = JSON.parse(raw) as { type?: string };
-          if (parsed.type !== 'service_account') return { valid: false, message: 'Vault payload is not a service account JSON.' };
+          if (parsed.type !== 'service_account') return { valid: false, message: 'Stored payload is not a service account JSON.' };
           return { valid: true, message: 'Service account key JSON is present and well-formed.' };
         } catch {
-          return { valid: false, message: 'Vault payload is not valid JSON.' };
+          return { valid: false, message: 'Stored payload is not valid JSON.' };
         }
       }
       default:
@@ -562,7 +553,6 @@ export class GcpConnectionService implements GcpCredentialProvider {
     this.ensureProjectExists(studioProjectId);
     const toRun = new Set(cascadeStepIds);
     const results: GcpStepRevertResult[] = [];
-    const passphrase = resolveVaultUnlock();
 
     let accessToken: string | null = null;
     let tokenError: string | null = null;
@@ -575,9 +565,9 @@ export class GcpConnectionService implements GcpCredentialProvider {
       }
     }
 
-    const details = getStoredConnectionDetails(this.vaultManager, passphrase, studioProjectId);
-    const revertProjectId = details?.projectId ?? getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
-    const revertSaEmail = details?.serviceAccountEmail ?? getStoredSaEmail(this.vaultManager, passphrase, studioProjectId);
+    const details = getStoredConnectionDetails(this.credentialService, studioProjectId);
+    const revertProjectId = details?.projectId ?? getStoredGcpProjectId(this.credentialService, studioProjectId);
+    const revertSaEmail = details?.serviceAccountEmail ?? getStoredSaEmail(this.credentialService, studioProjectId);
 
     if (toRun.has('iam_binding')) {
       if (!accessToken) {
@@ -626,7 +616,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
     const needsLocalCleanup = (toRun.has('vault') || toRun.has('oauth_consent')) && gcpApiAllSucceeded;
 
     if (needsLocalCleanup) {
-      const removed = deleteGcpCredentials(this.vaultManager, passphrase, studioProjectId);
+      const removed = deleteGcpCredentials(this.credentialService, studioProjectId);
       const project = this.projectManager.getProject(studioProjectId);
       if (project.integrations.firebase) {
         this.projectManager.updateIntegration(studioProjectId, 'firebase', {
@@ -658,8 +648,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
   // ---------------------------------------------------------------------------
 
   async ensureProjectForStudioProject(accessToken: string, studioProjectId: string): Promise<string> {
-    const passphrase = resolveVaultUnlock();
-    const existingId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+    const existingId = getStoredGcpProjectId(this.credentialService, studioProjectId);
     const gcpProjectId = existingId ?? buildStudioGcpProjectId(studioProjectId);
     log.info('ensureProjectForStudioProject', { studioProjectId, gcpProjectId, existing: Boolean(existingId) });
 
@@ -675,14 +664,14 @@ export class GcpConnectionService implements GcpCredentialProvider {
     const createResult = await createGcpProject(accessToken, gcpProjectId, `Studio ${studioProjectId}`);
     if (createResult === 'created' || createResult === 'already_exists') {
       await waitForProjectActive(accessToken, gcpProjectId);
-      storeGcpProjectId(this.vaultManager, passphrase, studioProjectId, gcpProjectId);
+      storeGcpProjectId(this.credentialService, studioProjectId, gcpProjectId);
       return gcpProjectId;
     }
 
     const retryId = buildGcpProjectIdWithEntropy(studioProjectId);
     await createGcpProject(accessToken, retryId, `Studio ${studioProjectId}`);
     await waitForProjectActive(accessToken, retryId);
-    storeGcpProjectId(this.vaultManager, passphrase, studioProjectId, retryId);
+    storeGcpProjectId(this.credentialService, studioProjectId, retryId);
     return retryId;
   }
 
@@ -708,8 +697,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
    */
   async deleteLinkedGcpProject(studioProjectId: string): Promise<{ gcpProjectId: string }> {
     this.ensureProjectExists(studioProjectId);
-    const passphrase = resolveVaultUnlock();
-    const gcpProjectId = getStoredGcpProjectId(this.vaultManager, passphrase, studioProjectId);
+    const gcpProjectId = getStoredGcpProjectId(this.credentialService, studioProjectId);
     if (!gcpProjectId) {
       throw new Error(`No GCP project linked to studio project "${studioProjectId}". Nothing to delete.`);
     }
@@ -728,9 +716,8 @@ export class GcpConnectionService implements GcpCredentialProvider {
   }
 
   private async getServiceAccountAccessToken(studioProjectId: string): Promise<string> {
-    const passphrase = resolveVaultUnlock();
-    const saJson = getStoredSaKeyJson(this.vaultManager, passphrase, studioProjectId);
-    if (!saJson) throw new Error('No service account key in vault. Cannot call GCP APIs for validate/revert.');
+    const saJson = getStoredSaKeyJson(this.credentialService, studioProjectId);
+    if (!saJson) throw new Error('No service account key stored. Cannot call GCP APIs for validate/revert.');
     let credentials: Record<string, unknown>;
     try { credentials = JSON.parse(saJson) as Record<string, unknown>; }
     catch { throw new Error('Stored service account JSON is invalid.'); }
@@ -754,7 +741,6 @@ export class GcpConnectionService implements GcpCredentialProvider {
   }
 
   private buildStepHandlerContext(studioProjectId: string): import('../provisioning/step-handler-registry.js').StepHandlerContext {
-    const passphrase = resolveVaultUnlock();
     return {
       projectId: studioProjectId,
       upstreamArtifacts: {},
@@ -766,8 +752,7 @@ export class GcpConnectionService implements GcpCredentialProvider {
         if (providerId === 'gcp') return this.hasStoredUserOAuthRefreshToken(studioProjectId);
         return false;
       },
-      vaultManager: this.vaultManager,
-      passphrase,
+      credentialService: this.credentialService,
       projectManager: this.projectManager,
     };
   }

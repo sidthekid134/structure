@@ -1,18 +1,14 @@
 /**
- * Registry mapping provisioning step keys → the vault-stored secret values
+ * Registry mapping provisioning step keys → the credential-stored secret values
  * those steps upload to a third-party system (GitHub repo/env secrets, etc.).
  *
  * Used by the Studio API to expose:
  *   - GET  .../provisioning/steps/:stepKey/secrets         (metadata only)
  *   - POST .../provisioning/steps/:stepKey/secrets/:name/reveal  (plaintext)
- *
- * The plaintext endpoint lets operators copy the *exact* value the
- * orchestrator would have uploaded — so a "bearer token is invalid" failure
- * downstream can be diagnosed by pasting the value into a local `eas whoami`
- * (or compared against the GitHub Secrets UI) without re-running the step.
  */
 
-import type { VaultManager } from '../vault.js';
+import type { CredentialService } from '../services/credential-service.js';
+import type { CredentialType } from '../services/credential-service.js';
 
 export type StepSecretContentType = 'text' | 'json';
 
@@ -25,13 +21,10 @@ export interface StepSecretDescriptor {
   description: string;
   /** Where the value gets uploaded by the step (used in UI badge). */
   destination: string;
-  /** Vault provider namespace (matches `vaultManager.getCredential` arg). */
-  vaultProvider: string;
-  /**
-   * Vault credential key. May contain `{projectId}` which gets substituted
-   * with the active project id at lookup time.
-   */
-  vaultKey: string;
+  /** CredentialType for org-level lookup, or null for project-level. */
+  credentialType: CredentialType;
+  /** If true, look up at org scope ('__organization__'); else use the request projectId. */
+  orgScope: boolean;
   /** Hint to UI for how to render/copy (e.g. JSON gets pretty-printed). */
   contentType: StepSecretContentType;
 }
@@ -39,9 +32,7 @@ export interface StepSecretDescriptor {
 /**
  * stepKey → list of secrets uploaded by the step.
  *
- * Order matters: it is the order shown in the UI. Keep `name` aligned with
- * the actual third-party secret name (this is what users will see in
- * GitHub → Settings → Secrets and variables, etc.).
+ * Order matters: it is the order shown in the UI.
  */
 const STEP_SECRETS: Readonly<Record<string, readonly StepSecretDescriptor[]>> = {
   'eas:store-token-in-github': [
@@ -51,8 +42,8 @@ const STEP_SECRETS: Readonly<Record<string, readonly StepSecretDescriptor[]>> = 
       description:
         'Expo robot token written at the GitHub repository level (one value, shared by every workflow job — env-level secrets are not used because the same token applies to every environment). Read by `expo/expo-github-action@v8` and `eas-cli` in workflows.',
       destination: 'GitHub repository secret',
-      vaultProvider: 'eas',
-      vaultKey: 'expo_token',
+      credentialType: 'expo_token',
+      orgScope: true,
       contentType: 'text',
     },
   ],
@@ -63,8 +54,8 @@ const STEP_SECRETS: Readonly<Record<string, readonly StepSecretDescriptor[]>> = 
       description:
         'Firebase service-account JSON written at the GitHub environment level (one copy per project env). Used by deploy/build workflows to authenticate to GCP/Firebase. Env-scoped because preview vs production typically point at different Firebase projects.',
       destination: 'GitHub environment secret',
-      vaultProvider: 'firebase',
-      vaultKey: '{projectId}/service_account_json',
+      credentialType: 'gcp_service_account_json',
+      orgScope: false,
       contentType: 'json',
     },
   ],
@@ -81,10 +72,6 @@ export function findStepSecretDescriptor(
   return getStepSecretDescriptors(stepKey).find((s) => s.name === secretName);
 }
 
-function resolveVaultKey(template: string, projectId: string): string {
-  return template.split('{projectId}').join(projectId);
-}
-
 export interface StepSecretStatus extends StepSecretDescriptor {
   present: boolean;
   /** Length of the stored plaintext, when present (helps spot empty/truncated values). */
@@ -92,15 +79,14 @@ export interface StepSecretStatus extends StepSecretDescriptor {
 }
 
 export function readStepSecretStatuses(
-  vaultManager: VaultManager,
-  vaultMasterKey: Buffer,
+  credentialService: CredentialService,
   stepKey: string,
   projectId: string,
 ): StepSecretStatus[] {
   const descriptors = getStepSecretDescriptors(stepKey);
   return descriptors.map((descriptor) => {
-    const key = resolveVaultKey(descriptor.vaultKey, projectId);
-    const value = vaultManager.getCredential(vaultMasterKey, descriptor.vaultProvider, key);
+    const scopeId = descriptor.orgScope ? '__organization__' : projectId;
+    const value = credentialService.retrieveCredential(scopeId, descriptor.credentialType);
     return {
       ...descriptor,
       present: typeof value === 'string' && value.length > 0,
@@ -110,12 +96,10 @@ export function readStepSecretStatuses(
 }
 
 export function readStepSecretValue(
-  vaultManager: VaultManager,
-  vaultMasterKey: Buffer,
+  credentialService: CredentialService,
   descriptor: StepSecretDescriptor,
   projectId: string,
 ): string | null {
-  const key = resolveVaultKey(descriptor.vaultKey, projectId);
-  const value = vaultManager.getCredential(vaultMasterKey, descriptor.vaultProvider, key);
-  return value ?? null;
+  const scopeId = descriptor.orgScope ? '__organization__' : projectId;
+  return credentialService.retrieveCredential(scopeId, descriptor.credentialType) ?? null;
 }

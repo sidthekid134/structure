@@ -32,7 +32,7 @@ import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
 import { deriveDevVaultDek, isDevVaultAutoUnlockEnabled } from './dev-vault.js';
 
 function profileLabelFromEnv(env: NodeJS.ProcessEnv): 'Dev' | 'Prod' {
-  const raw = env['STUDIO_PROFILE']?.trim().toLowerCase() ?? '';
+  const raw = env['STRUCTURE_PROFILE']?.trim().toLowerCase() ?? '';
   if (raw === 'dev' || raw === 'development') return 'Dev';
   return 'Prod';
 }
@@ -44,14 +44,14 @@ function webauthnNaming(env: NodeJS.ProcessEnv): {
 } {
   const label = profileLabelFromEnv(env);
   return {
-    rpName: `Studio Core ${label}`,
-    userName: `studio-core-${label.toLowerCase()}`,
-    userDisplayName: `Studio Core ${label}`,
+    rpName: `Structure ${label}`,
+    userName: `structure-${label.toLowerCase()}`,
+    userDisplayName: `Structure ${label}`,
   };
 }
 
 /** Body.confirm for `POST /api/auth/reset-local-data` (must match client). */
-const RESET_LOCAL_STUDIO_INSTALL_CONFIRM = 'RESET_LOCAL_STUDIO_INSTALL_FOR_NEW_PASSKEY';
+const RESET_LOCAL_STRUCTURE_INSTALL_CONFIRM = 'RESET_LOCAL_STRUCTURE_INSTALL_FOR_NEW_PASSKEY';
 
 /**
  * WebAuthn rpID must equal the registration/authentication origin's host (see WebAuthn § RP ID).
@@ -756,7 +756,7 @@ export function createWebAuthnRouter(storeDir: string, vaultManager: VaultManage
 
   router.post('/auth/reset-local-data', (req: Request, res: Response) => {
     const confirm = typeof req.body?.confirm === 'string' ? req.body.confirm : '';
-    if (confirm !== RESET_LOCAL_STUDIO_INSTALL_CONFIRM) {
+    if (confirm !== RESET_LOCAL_STRUCTURE_INSTALL_CONFIRM) {
       res.status(400).json({ error: 'Invalid confirmation.' });
       return;
     }

@@ -25,7 +25,7 @@ labels: bug
 
 ## Environment
 
-- Studio Pro version: <!-- `studio-pro --version`, or commit SHA if from source -->
+- Structure version: <!-- `structure --version`, or commit SHA if from source -->
 - OS: <!-- macOS 14.x ARM64 / Ubuntu 22.04 / etc. -->
 - Node version: <!-- `node --version` (only if running from source) -->
 - Browser (for UI bugs): <!-- Chrome 120 on macOS, etc. -->

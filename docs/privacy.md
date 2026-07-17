@@ -13,13 +13,13 @@
 
 ## Zero Telemetry
 
-Studio Pro collects **no data**. There are no analytics events, no crash reports, no usage metrics, and no calls to any telemetry service — including Anthropic's own infrastructure. The codebase contains no analytics SDK and no phone-home logic of any kind.
+Structure collects **no data**. There are no analytics events, no crash reports, no usage metrics, and no calls to any telemetry service — including Anthropic's own infrastructure. The codebase contains no analytics SDK and no phone-home logic of any kind.
 
 ---
 
 ## All Data Stays Local
 
-Every piece of data Studio Pro manages lives on your machine:
+Every piece of data Structure manages lives on your machine:
 
 | Data | Location |
 |---|---|
@@ -37,7 +37,7 @@ Nothing is uploaded, synced, or replicated to any remote service unless you deli
 
 ## External Endpoints
 
-Studio Pro makes outbound network connections **only when you configure the corresponding integration and trigger a provisioning step**. The complete list of external services the tool can contact:
+Structure makes outbound network connections **only when you configure the corresponding integration and trigger a provisioning step**. The complete list of external services the tool can contact:
 
 ### Google Cloud Platform
 
@@ -77,7 +77,7 @@ Studio Pro makes outbound network connections **only when you configure the corr
 
 ### LLM Providers
 
-Studio Pro can store API keys for up to four LLM providers per project. A key is only used when the corresponding module is selected and provisioned. The key is sent directly to the provider's API — it does not pass through any Studio-controlled proxy.
+Structure can store API keys for up to four LLM providers per project. A key is only used when the corresponding module is selected and provisioned. The key is sent directly to the provider's API — it does not pass through any Studio-controlled proxy.
 
 | Provider | Endpoint contacted | When |
 |---|---|---|
@@ -93,7 +93,7 @@ Studio Pro can store API keys for up to four LLM providers per project. A key is
 When you enroll a passkey for vault unlock:
 
 - The **passkey private key is stored entirely inside the OS keychain** — macOS Keychain on macOS, Windows Hello on Windows.
-- Studio Pro never sees the private key. It only receives the **PRF output** (a 32-byte symmetric value derived by the authenticator) which is used to unlock the vault DEK.
+- Structure never sees the private key. It only receives the **PRF output** (a 32-byte symmetric value derived by the authenticator) which is used to unlock the vault DEK.
 - If you delete the passkey from your OS keychain, you will need to re-enroll or use your vault passphrase to unlock.
 
 This is a standard WebAuthn PRF-extension flow. No passkey data is transmitted over the network.

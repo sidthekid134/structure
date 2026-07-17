@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * studio-pro CLI — foreground daemon + vault utilities.
+ * structure CLI — foreground daemon + vault utilities.
  */
 
 // Bundled CLI invocations are production by default. Anyone running the CLI
@@ -26,14 +26,14 @@ import { StudioServer } from './server.js';
 import { registerPendingHandoffToken } from './auth.js';
 import { destroyLocalStudioInstall } from './studio-local-data-destroy.js';
 
-const LOCK_FILE_NAME = '.studio-pro.lock';
-const PORT_FILE_NAME = '.studio-pro.port';
+const LOCK_FILE_NAME = '.structure.lock';
+const PORT_FILE_NAME = '.structure.port';
 
 function defaultStoreDir(): string {
-  const explicit = process.env['STUDIO_STORE_DIR'];
+  const explicit = process.env['STRUCTURE_STORE_DIR'];
   if (explicit) return explicit;
-  const profile = process.env['STUDIO_PROFILE']?.trim();
-  const appName = profile ? `studio-pro-${profile}` : 'studio-pro';
+  const profile = process.env['STRUCTURE_PROFILE']?.trim();
+  const appName = profile ? `structure-${profile}` : 'structure';
   return envPaths(appName, { suffix: '' }).data;
 }
 
@@ -112,15 +112,15 @@ function openUrl(url: string): void {
 async function cmdStart(): Promise<void> {
   const storeDir = defaultStoreDir();
   fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
-  const rawPort = process.env['STUDIO_PORT'];
+  const rawPort = process.env['STRUCTURE_PORT'];
   const parsedPort = rawPort !== undefined ? parseInt(rawPort, 10) : NaN;
   const lock = acquireLock(storeDir);
   if (!lock.acquired) {
     const runningPort = readPortFile(storeDir) ?? (Number.isFinite(parsedPort) ? parsedPort : 3737);
     const runningUrl = `http://localhost:${runningPort}/`;
-    console.error(`studio-pro: another instance is running (pid ${lock.pid}).`);
-    console.log(`Studio Pro: ${runningUrl}`);
-    if (process.env['STUDIO_NO_OPEN'] !== '1') {
+    console.error(`structure: another instance is running (pid ${lock.pid}).`);
+    console.log(`Structure: ${runningUrl}`);
+    if (process.env['STRUCTURE_NO_OPEN'] !== '1') {
       openUrl(runningUrl);
     }
     return;
@@ -130,7 +130,7 @@ async function cmdStart(): Promise<void> {
   registerPendingHandoffToken(handoff);
   const studio = new StudioServer({
     storeDir,
-    host: process.env['STUDIO_HOST'] ?? '127.0.0.1',
+    host: process.env['STRUCTURE_HOST'] ?? '127.0.0.1',
     port: Number.isFinite(parsedPort) ? parsedPort : 3737,
   });
   try {
@@ -145,8 +145,8 @@ async function cmdStart(): Promise<void> {
     typeof addr === 'object' && addr !== null && 'port' in addr ? (addr as import('net').AddressInfo).port : 3737;
   writePortFile(storeDir, boundPort);
   const url = `http://localhost:${boundPort}/#handoff=${encodeURIComponent(handoff)}`;
-  console.log(`Studio Pro: ${url}`);
-  if (process.env['STUDIO_NO_OPEN'] !== '1') {
+  console.log(`Structure: ${url}`);
+  if (process.env['STRUCTURE_NO_OPEN'] !== '1') {
     openUrl(url);
   }
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
@@ -163,7 +163,7 @@ async function cmdStart(): Promise<void> {
 function cmdVaultDestroy(args: string[]): void {
   const storeDir = defaultStoreDir();
   if (!args.includes('--i-am-sure')) {
-    console.error('studio-pro vault destroy requires --i-am-sure');
+    console.error('structure vault destroy requires --i-am-sure');
     process.exit(1);
   }
   try {
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     return;
   }
   if (cmd === 'service') {
-    console.error('studio-pro service install|uninstall is not implemented yet.');
+    console.error('structure service install|uninstall is not implemented yet.');
     process.exit(1);
   }
   console.error(`Unknown command: ${cmd}`);

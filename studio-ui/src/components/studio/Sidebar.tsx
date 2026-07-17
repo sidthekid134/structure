@@ -23,10 +23,10 @@ export function Sidebar({
       <div className="p-4 border-b border-border flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded overflow-hidden shrink-0">
-            <img src="/studio-pro-icon.png" alt="Studio Pro" className="w-full h-full object-cover" />
+            <img src="/structure-icon.png" alt="Structure" className="w-full h-full object-cover" />
           </div>
           <div className="overflow-hidden">
-            <p className="text-sm font-bold leading-tight">Studio Pro</p>
+            <p className="text-sm font-bold leading-tight">Structure</p>
             <p className="text-[10px] text-muted-foreground">Local · Encrypted</p>
           </div>
         </div>

@@ -1,5 +1,5 @@
 {
-  "name": "studio-pro",
+  "name": "structure",
   "version": "1.0.0",
   "description": "Local provisioning studio with passkey-protected encrypted vault. Provisions Firebase, GCP, Apple, EAS, GitHub and more from a unified, plugin-driven UI.",
   "keywords": [
@@ -36,7 +36,7 @@
   ],
   "main": "dist/index.js",
   "bin": {
-    "studio-pro": "./dist/studio/cli.js"
+    "structure": "./dist/studio/cli.js"
   },
   "scripts": {
     "ui:install": "npm --prefix studio-ui install",
@@ -47,16 +47,16 @@
     "build": "npm run ui:build && npm run build:backend",
     "build:cli": "node scripts/build-cli.js",
     "build:cli:all": "node scripts/build-cli.js --all",
-    "dev:backend": "STUDIO_PROFILE=dev STUDIO_PORT=3738 STUDIO_SERVE_UI_FROM_SOURCE=1 tsc-watch --preserveWatchOutput --onSuccess \"node dist/studio/server.js\"",
+    "dev:backend": "STRUCTURE_PROFILE=dev STRUCTURE_PORT=3738 STRUCTURE_SERVE_UI_FROM_SOURCE=1 tsc-watch --preserveWatchOutput --onSuccess \"node dist/studio/server.js\"",
     "dev:full": "concurrently -k -n backend,ui -c cyan,magenta \"npm run dev:backend\" \"npm run ui:watch\"",
     "reset:data": "npm run build:backend && node dist/studio/cli.js vault destroy --i-am-sure",
-    "prod:backend": "npm run build:backend && STUDIO_PROFILE=prod STUDIO_PORT=3737 node dist/studio/server.js",
+    "prod:backend": "npm run build:backend && STRUCTURE_PROFILE=prod STRUCTURE_PORT=3737 node dist/studio/server.js",
     "prod:ui": "npm run ui:build && npm --prefix studio-ui run preview -- --host 127.0.0.1 --port 4173",
     "lint:no-raw-console": "node scripts/check-no-raw-console.js",
     "pretest": "npm run lint:no-raw-console",
     "test": "jest --testPathPattern='src/__tests__'",
     "typecheck": "tsc --noEmit",
-    "prepack": "node -e \"console.error('studio-pro is distributed via GitHub Releases binaries, not npm. See docs/distribution.md.'); process.exit(1)\""
+    "prepack": "node -e \"console.error('structure is distributed via GitHub Releases binaries, not npm. See docs/distribution.md.'); process.exit(1)\""
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -112,6 +112,7 @@
     "jszip": "^3.10.1",
     "libsodium-wrappers": "^0.8.2",
     "libsodium-wrappers-sumo": "^0.8.4",
+    "simple-icons": "^16.18.1",
     "ws": "^8.16.0"
   }
 }

@@ -145,11 +145,11 @@ let _session: VaultSession | null = null;
 /**
  * Returns the process-wide vault session, lazily creating it on first call.
  *
- * `STUDIO_VAULT_IDLE_MS` overrides the auto-reseal timer when set to a positive integer.
+ * `STRUCTURE_VAULT_IDLE_MS` overrides the auto-reseal timer when set to a positive integer.
  */
 export function getVaultSession(options?: VaultSessionOptions): VaultSession {
   if (!_session) {
-    const envIdleMs = parseInt(process.env['STUDIO_VAULT_IDLE_MS'] ?? '', 10);
+    const envIdleMs = parseInt(process.env['STRUCTURE_VAULT_IDLE_MS'] ?? '', 10);
     const merged: VaultSessionOptions = {
       idleTimeoutMs:
         options?.idleTimeoutMs ?? (Number.isFinite(envIdleMs) && envIdleMs > 0 ? envIdleMs : undefined),

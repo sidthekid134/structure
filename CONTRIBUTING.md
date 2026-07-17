@@ -1,4 +1,4 @@
-# Contributing to Studio Pro
+# Contributing to Structure
 
 Thanks for your interest in contributing! This document covers the basics of
 developing, testing, and submitting changes.

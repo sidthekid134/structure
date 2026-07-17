@@ -36,9 +36,9 @@ The release workflow produces three platform binaries using `@yao-pkg/pkg` with 
 
 | Binary | Target triple | Notes |
 |---|---|---|
-| `studio-pro-macos` | `node20-darwin-arm64` | Apple Silicon; Intel Macs can run via Rosetta 2 |
-| `studio-pro-linux` | `node20-linux-x64` | x86-64; ARM Linux requires a manual build |
-| `studio-pro-windows.exe` | `node20-win32-x64` | Windows 10/11 x64 |
+| `structure-macos` | `node20-darwin-arm64` | Apple Silicon; Intel Macs can run via Rosetta 2 |
+| `structure-linux` | `node20-linux-x64` | x86-64; ARM Linux requires a manual build |
+| `structure-windows.exe` | `node20-win32-x64` | Windows 10/11 x64 |
 
 Native modules (`better-sqlite3`, `libsodium-wrappers-sumo`) are bundled as `pkg` assets listed under `pkg.assets` in `package.json`.
 
@@ -46,13 +46,13 @@ To run a downloaded binary:
 
 ```bash
 # macOS / Linux
-chmod +x studio-pro-macos
-./studio-pro-macos
+chmod +x structure-macos
+./structure-macos
 ```
 
 ```powershell
 # Windows
-.\studio-pro-windows.exe
+.\structure-windows.exe
 ```
 
 The server starts on `http://localhost:3737` and opens a browser tab automatically.
@@ -94,7 +94,7 @@ npm run build:backend   # or npm run build for the full build
 npm run build:cli
 ```
 
-Output: `binaries/studio-pro-<target>` (e.g., `binaries/studio-pro-node20-darwin-arm64`).
+Output: `binaries/structure-<target>` (e.g., `binaries/structure-node20-darwin-arm64`).
 
 ### All platform binaries
 
@@ -108,19 +108,19 @@ Builds for all three targets in sequence. Cross-compilation requires the target 
 
 ## Homebrew Tap
 
-A Homebrew tap is planned at `github.com/sidthekid134/homebrew-studio-pro`. Once active, installation will be:
+A Homebrew tap is planned at `github.com/sidthekid134/homebrew-structure`. Once active, installation will be:
 
 ```bash
-brew tap sidthekid134/studio-pro
-brew install studio-pro
+brew tap sidthekid134/structure
+brew install structure
 ```
 
-The formula will reference the GitHub Release binary URL for the current macOS target and include the SHA-256 checksum. A template formula is available at `release/homebrew-studio-pro.rb.template` in the repository.
+The formula will reference the GitHub Release binary URL for the current macOS target and include the SHA-256 checksum. A template formula is available at `release/homebrew-structure.rb.template` in the repository.
 
 To update the formula for a new release:
 
 1. Download the macOS binary from the GitHub Release.
-2. Compute the SHA-256: `shasum -a 256 studio-pro-macos`.
+2. Compute the SHA-256: `shasum -a 256 structure-macos`.
 3. Update the `url` and `sha256` fields in the formula.
 4. Push to the tap repository.
 
@@ -128,7 +128,7 @@ To update the formula for a new release:
 
 ## Versioning and Changelog
 
-Studio Pro follows **semantic versioning** (`MAJOR.MINOR.PATCH`):
+Structure follows **semantic versioning** (`MAJOR.MINOR.PATCH`):
 
 | Increment | When |
 |---|---|
@@ -150,7 +150,7 @@ Studio Pro follows **semantic versioning** (`MAJOR.MINOR.PATCH`):
 
 ## Fallback: Node + dist/
 
-If the `pkg` binary does not work on your platform (uncommon native module issue or unsupported architecture), you can run Studio Pro directly from the compiled output:
+If the `pkg` binary does not work on your platform (uncommon native module issue or unsupported architecture), you can run Structure directly from the compiled output:
 
 ```bash
 git clone <repo>

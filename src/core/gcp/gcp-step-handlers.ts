@@ -88,9 +88,9 @@ import { validatePlayFingerprint } from '../../validators/play-fingerprint-valid
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Structured logger for a step + studio project pair. */
+/** Structured logger for a step + project pair. */
 function makeLog(step: string, studioId: string): (msg: string) => void {
-  return (msg: string) => console.log(`[gcp:${step}] studio="${studioId}" | ${msg}`);
+  return (msg: string) => console.log(`[gcp:${step}] project="${studioId}" | ${msg}`);
 }
 
 function validateAndroidPackageName(packageName: string): void {
@@ -187,10 +187,10 @@ const createGcpProjectHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('create-gcp-project', projectId);
 
-    const storedId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const storedId = getStoredGcpProjectId(credentialService, projectId);
 
     if (storedId) {
       log(`Vault already has GCP project ID "${storedId}" — verifying it is accessible...`);
@@ -231,11 +231,11 @@ const createGcpProjectHandler: StepHandler = {
     await ensureRequiredProjectApis(token, finalId);
 
     const userEmail =
-      vaultManager.getCredential(passphrase, 'firebase', `${projectId}/connected_by_email`) ??
+      credentialService.retrieveCredential(projectId, 'gcp_connected_by_email') ??
       context.upstreamArtifacts['connected_by_email'] ??
       'unknown';
 
-    storeGcpProjectId(vaultManager, passphrase, projectId, finalId);
+    storeGcpProjectId(credentialService, projectId, finalId);
     applyGcpProjectLinked(projectManager, projectId, finalId, userEmail);
 
     log(`✓ COMPLETE — GCP project "${finalId}" created, activated, APIs enabled, and stored in vault.`);
@@ -243,10 +243,10 @@ const createGcpProjectHandler: StepHandler = {
   },
 
   async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('create-gcp-project:delete', projectId);
 
-    const storedId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const storedId = getStoredGcpProjectId(credentialService, projectId);
     if (!storedId) {
       log('No stored GCP project ID in vault — nothing to delete.');
       return { reconciled: true, message: 'No GCP project linked — nothing to delete.' };
@@ -263,7 +263,7 @@ const createGcpProjectHandler: StepHandler = {
       return { reconciled: false, message: `Could not delete GCP project "${storedId}": ${msg}` };
     }
 
-    vaultManager.deleteCredential(passphrase, 'firebase', `${projectId}/gcp_project_id`);
+    credentialService.deleteCredentialByType(projectId, 'gcp_project_id');
 
     try {
       const proj = projectManager.getProject(projectId);
@@ -285,10 +285,10 @@ const createGcpProjectHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('create-gcp-project:validate', projectId);
 
-    const storedId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const storedId = getStoredGcpProjectId(credentialService, projectId);
     if (!storedId) {
       log('✗ No GCP project ID in vault.');
       return { reconciled: false, message: 'No GCP project ID stored. Complete "Create GCP Project" first.' };
@@ -319,10 +319,10 @@ const createGcpProjectHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('create-gcp-project:sync', projectId);
 
-    const storedId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const storedId = getStoredGcpProjectId(credentialService, projectId);
 
     if (storedId) {
       log(`Vault has GCP project ID "${storedId}" — verifying it still exists...`);
@@ -361,12 +361,12 @@ const createGcpProjectHandler: StepHandler = {
     const expectedId = buildStudioGcpProjectId(projectId);
     const displayName = `Studio ${projectId}`;
     const userEmail =
-      vaultManager.getCredential(passphrase, 'firebase', `${projectId}/connected_by_email`) ?? 'unknown';
+      credentialService.retrieveCredential(projectId, 'gcp_connected_by_email') ?? 'unknown';
 
     const byId = await fetchGcpProjectSummary(token, expectedId);
     if (byId.ok) {
       log(`✓ Found project by expected ID "${expectedId}" — linking to studio project.`);
-      storeGcpProjectId(vaultManager, passphrase, projectId, expectedId);
+      storeGcpProjectId(credentialService, projectId, expectedId);
       applyGcpProjectLinked(projectManager, projectId, expectedId, userEmail);
       return { reconciled: true, resourcesProduced: { gcp_project_id: expectedId } };
     }
@@ -390,7 +390,7 @@ const createGcpProjectHandler: StepHandler = {
 
     const chosen = matches[0]!;
     log(`✓ Linked GCP project "${chosen.projectId}" found by display name. Storing in vault.`);
-    storeGcpProjectId(vaultManager, passphrase, projectId, chosen.projectId);
+    storeGcpProjectId(credentialService, projectId, chosen.projectId);
     applyGcpProjectLinked(projectManager, projectId, chosen.projectId, userEmail);
     return { reconciled: true, resourcesProduced: { gcp_project_id: chosen.projectId } };
   },
@@ -407,10 +407,10 @@ const enableFirebaseHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('enable-firebase', projectId);
     const pid =
-      getStoredGcpProjectId(vaultManager, passphrase, projectId) ??
+      getStoredGcpProjectId(credentialService, projectId) ??
       context.upstreamArtifacts['gcp_project_id'];
 
     if (!pid) {
@@ -451,10 +451,10 @@ const enableFirebaseHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('enable-firebase:validate', projectId);
 
-    const pid = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const pid = getStoredGcpProjectId(credentialService, projectId);
     if (!pid) {
       log('✗ No GCP project ID in vault.');
       return { reconciled: false, message: 'No GCP project ID stored — "Create GCP Project" must complete first.' };
@@ -478,10 +478,10 @@ const enableFirebaseHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('enable-firebase:sync', projectId);
 
-    const pid = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const pid = getStoredGcpProjectId(credentialService, projectId);
     if (!pid) return null; // upstream not complete — skip silently
 
     log(`→ Checking firebase.googleapis.com service state on "${pid}"...`);
@@ -511,10 +511,10 @@ const createProvisionerSaHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('create-provisioner-sa', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       log('✗ No GCP project ID in vault — "Create GCP Project" must complete first.');
       return { reconciled: false, message: 'GCP project ID not in vault. Complete "Create GCP Project" first.' };
@@ -525,18 +525,18 @@ const createProvisionerSaHandler: StepHandler = {
 
     const token = await context.getToken('gcp');
     const saEmail = await ensureProvisionerServiceAccount(token, gcpProjectId);
-    storeSaEmail(vaultManager, passphrase, projectId, saEmail);
+    storeSaEmail(credentialService, projectId, saEmail);
 
     log(`✓ COMPLETE — Service account "${saEmail}" is ready and stored in vault.`);
     return { reconciled: true, resourcesProduced: { provisioner_sa_email: saEmail } };
   },
 
   async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('create-provisioner-sa:delete', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const saEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const saEmail = getStoredSaEmail(credentialService, projectId);
 
     if (!gcpProjectId || !saEmail) {
       log('No service account metadata in vault — nothing to delete.');
@@ -547,7 +547,7 @@ const createProvisionerSaHandler: StepHandler = {
     try {
       const token = await context.getToken('gcp');
       const result = await deleteServiceAccount(token, gcpProjectId, saEmail);
-      vaultManager.deleteCredential(passphrase, 'firebase', `${projectId}/service_account_email`);
+      credentialService.deleteCredentialByType(projectId, 'gcp_service_account_email');
       const msg =
         result === 'deleted'
           ? `Deleted service account "${saEmail}".`
@@ -562,11 +562,11 @@ const createProvisionerSaHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('create-provisioner-sa:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    let saEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    let saEmail = getStoredSaEmail(credentialService, projectId);
 
     if (!gcpProjectId) {
       log('✗ Missing GCP project ID in vault.');
@@ -596,8 +596,8 @@ const createProvisionerSaHandler: StepHandler = {
         };
       }
       // Backfill missing vault metadata once existence is confirmed.
-      if (!getStoredSaEmail(vaultManager, passphrase, projectId)) {
-        storeSaEmail(vaultManager, passphrase, projectId, saEmail);
+      if (!getStoredSaEmail(credentialService, projectId)) {
+        storeSaEmail(credentialService, projectId, saEmail);
         log(`✓ Backfilled provisioner SA email in vault: "${saEmail}".`);
       }
       log(`✓ Service account "${saEmail}" exists and is accessible.`);
@@ -617,15 +617,15 @@ const createProvisionerSaHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('create-provisioner-sa:sync', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
-    const storedEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
+    const storedEmail = getStoredSaEmail(credentialService, projectId);
     const candidateEmail = storedEmail ?? provisionerSaEmail(gcpProjectId);
     if (!storedEmail) log(`○ No provisioner SA email in vault — inferring "${candidateEmail}" from project ID for sync check.`);
 
@@ -639,7 +639,7 @@ const createProvisionerSaHandler: StepHandler = {
         return { reconciled: false, message: `Service account "${candidateEmail}" was deleted from GCP. Revert and re-run this step.` };
       }
       if (!storedEmail) {
-        storeSaEmail(vaultManager, passphrase, projectId, candidateEmail);
+        storeSaEmail(credentialService, projectId, candidateEmail);
         log(`✓ Backfilled provisioner SA email in vault: "${candidateEmail}".`);
       }
       log(`✓ Service account "${candidateEmail}" exists in GCP.`);
@@ -664,12 +664,12 @@ const bindProvisionerIamHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('bind-provisioner-iam', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     const saEmail =
-      getStoredSaEmail(vaultManager, passphrase, projectId) ??
+      getStoredSaEmail(credentialService, projectId) ??
       context.upstreamArtifacts['provisioner_sa_email'];
 
     if (!gcpProjectId || !saEmail) {
@@ -694,11 +694,11 @@ const bindProvisionerIamHandler: StepHandler = {
   },
 
   async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('bind-provisioner-iam:delete', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const saEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const saEmail = getStoredSaEmail(credentialService, projectId);
 
     if (!gcpProjectId || !saEmail) {
       log('No IAM metadata in vault — nothing to remove.');
@@ -723,11 +723,11 @@ const bindProvisionerIamHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('bind-provisioner-iam:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const saEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const saEmail = getStoredSaEmail(credentialService, projectId);
 
     if (!gcpProjectId || !saEmail) {
       log('✗ Missing GCP project ID or SA email in vault.');
@@ -760,11 +760,11 @@ const bindProvisionerIamHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('bind-provisioner-iam:sync', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const saEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const saEmail = getStoredSaEmail(credentialService, projectId);
 
     if (!gcpProjectId || !saEmail) {
       return { reconciled: false, message: 'GCP project or service account not set up. Run prior steps first.' };
@@ -800,12 +800,12 @@ const generateSaKeyHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('generate-sa-key', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     const saEmail =
-      getStoredSaEmail(vaultManager, passphrase, projectId) ??
+      getStoredSaEmail(credentialService, projectId) ??
       context.upstreamArtifacts['provisioner_sa_email'];
 
     if (!gcpProjectId || !saEmail) {
@@ -817,8 +817,7 @@ const generateSaKeyHandler: StepHandler = {
     const token = await context.getToken('gcp');
     const saKeyJson = await createServiceAccountKey(token, gcpProjectId, saEmail);
     recordProvisionerServiceAccountKey(
-      vaultManager,
-      passphrase,
+      credentialService,
       projectManager,
       projectId,
       gcpProjectId,
@@ -831,12 +830,12 @@ const generateSaKeyHandler: StepHandler = {
   },
 
   async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('generate-sa-key:delete', projectId);
 
-    const raw = getStoredSaKeyJson(vaultManager, passphrase, projectId);
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const saEmail = getStoredSaEmail(vaultManager, passphrase, projectId);
+    const raw = getStoredSaKeyJson(credentialService, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const saEmail = getStoredSaEmail(credentialService, projectId);
 
     // Attempt to delete the actual GCP key resource before clearing the vault.
     if (raw && gcpProjectId && saEmail) {
@@ -860,16 +859,16 @@ const generateSaKeyHandler: StepHandler = {
       }
     }
 
-    deleteSaKeyJson(vaultManager, passphrase, projectId);
+    deleteSaKeyJson(credentialService, projectId);
     log('✓ Service account key JSON cleared from vault.');
     return { reconciled: true, message: 'Service account key deleted from GCP and cleared from vault.', resourcesProduced: {} };
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('generate-sa-key:validate', projectId);
 
-    const raw = getStoredSaKeyJson(vaultManager, passphrase, projectId);
+    const raw = getStoredSaKeyJson(credentialService, projectId);
     if (!raw) {
       log('✗ No service_account_json found in vault.');
       return { reconciled: false, message: 'No service account key JSON in vault. Run this step to generate one.' };
@@ -893,12 +892,12 @@ const generateSaKeyHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('generate-sa-key:sync', projectId);
 
     // Sync is read-only: only check what is already in the vault.
     // Regeneration belongs in create — doing it here would immediately undo a reset.
-    const raw = getStoredSaKeyJson(vaultManager, passphrase, projectId);
+    const raw = getStoredSaKeyJson(credentialService, projectId);
     if (!raw?.trim()) {
       log('○ No service account key JSON in vault — step is not complete.');
       return { reconciled: false, message: 'No service account key in vault. Run this step to generate one.' };
@@ -937,10 +936,10 @@ function makeApiEnablementHandler(
     requiredAuth: 'gcp',
 
     async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-      const { projectId, vaultManager, passphrase } = context;
+      const { projectId, credentialService } = context;
       const log = makeLog(logTag, projectId);
 
-      const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+      const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
       if (!gcpProjectId) {
         log('✗ No GCP project ID in vault. Complete "Create GCP Project" first.');
         return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
@@ -978,10 +977,10 @@ function makeApiEnablementHandler(
     },
 
     async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-      const { projectId, vaultManager, passphrase } = context;
+      const { projectId, credentialService } = context;
       const log = makeLog(`${logTag}:validate`, projectId);
 
-      const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+      const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
       if (!gcpProjectId) {
         log('✗ No GCP project ID in vault.');
         return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
@@ -1004,10 +1003,10 @@ function makeApiEnablementHandler(
     },
 
     async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-      const { projectId, vaultManager, passphrase } = context;
+      const { projectId, credentialService } = context;
       const log = makeLog(`${logTag}:sync`, projectId);
 
-      const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+      const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
       if (!gcpProjectId) return null;
 
       log(`→ Checking APIs on "${gcpProjectId}"...`);
@@ -1069,10 +1068,10 @@ const createFirestoreDbHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, userInputs } = context;
+    const { projectId, credentialService, userInputs } = context;
     const log = makeLog('create-firestore-db', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       log('✗ No GCP project ID in vault. Complete "Create GCP Project" first.');
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
@@ -1101,8 +1100,8 @@ const createFirestoreDbHandler: StepHandler = {
     const existing = await getFirestoreDatabase(token, gcpProjectId, databaseId);
     if (existing) {
       log(`✓ Firestore database "${databaseId}" already exists at "${existing.locationId}" (type: ${existing.type}).`);
-      storeFirestoreDatabaseId(vaultManager, passphrase, projectId, databaseId);
-      storeFirestoreLocation(vaultManager, passphrase, projectId, existing.locationId);
+      storeFirestoreDatabaseId(credentialService, projectId, databaseId);
+      storeFirestoreLocation(credentialService, projectId, existing.locationId);
       return {
         reconciled: true,
         resourcesProduced: {
@@ -1116,8 +1115,8 @@ const createFirestoreDbHandler: StepHandler = {
     const db = await createFirestoreDatabase(token, gcpProjectId, databaseId, locationId, dbType);
     const actualLocation = db.locationId || locationId;
 
-    storeFirestoreDatabaseId(vaultManager, passphrase, projectId, databaseId);
-    storeFirestoreLocation(vaultManager, passphrase, projectId, actualLocation);
+    storeFirestoreDatabaseId(credentialService, projectId, databaseId);
+    storeFirestoreLocation(credentialService, projectId, actualLocation);
 
     log(`✓ COMPLETE — Firestore database "${databaseId}" created at "${actualLocation}" on "${gcpProjectId}".`);
     return {
@@ -1130,15 +1129,15 @@ const createFirestoreDbHandler: StepHandler = {
   },
 
   async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('create-firestore-db:delete', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const databaseId = getStoredFirestoreDatabaseId(credentialService, projectId);
 
     if (!gcpProjectId || !databaseId) {
       log('No Firestore database metadata in vault — nothing to delete.');
-      deleteFirestoreCredentials(vaultManager, passphrase, projectId);
+      deleteFirestoreCredentials(credentialService, projectId);
       return { reconciled: true, message: 'No Firestore database linked — nothing to delete.' };
     }
 
@@ -1146,7 +1145,7 @@ const createFirestoreDbHandler: StepHandler = {
     try {
       const token = await context.getToken('gcp');
       const result = await deleteFirestoreDatabase(token, gcpProjectId, databaseId);
-      deleteFirestoreCredentials(vaultManager, passphrase, projectId);
+      deleteFirestoreCredentials(credentialService, projectId);
       const msg = result === 'deleted'
         ? `Deleted Firestore database "${databaseId}" from project "${gcpProjectId}".`
         : `Firestore database "${databaseId}" was already absent.`;
@@ -1160,11 +1159,11 @@ const createFirestoreDbHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('create-firestore-db:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const databaseId = getStoredFirestoreDatabaseId(credentialService, projectId);
 
     if (!gcpProjectId || !databaseId) {
       log('✗ No GCP project or Firestore database ID in vault.');
@@ -1195,13 +1194,13 @@ const createFirestoreDbHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('create-firestore-db:sync', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return null;
 
-    const storedDbId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    const storedDbId = getStoredFirestoreDatabaseId(credentialService, projectId);
     if (!storedDbId) {
       log('○ No Firestore database ID in vault — step has not run yet.');
       return { reconciled: false, message: 'No Firestore database recorded. Run this step to create one.' };
@@ -1212,8 +1211,8 @@ const createFirestoreDbHandler: StepHandler = {
       const token = await context.getToken('gcp');
       const db = await getFirestoreDatabase(token, gcpProjectId, storedDbId);
       if (db) {
-        if (db.locationId !== getStoredFirestoreLocation(vaultManager, passphrase, projectId)) {
-          storeFirestoreLocation(vaultManager, passphrase, projectId, db.locationId);
+        if (db.locationId !== getStoredFirestoreLocation(credentialService, projectId)) {
+          storeFirestoreLocation(credentialService, projectId, db.locationId);
         }
         log(`✓ Firestore database "${storedDbId}" exists at "${db.locationId}".`);
         return {
@@ -1243,10 +1242,10 @@ const registerIosAppHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('register-ios-app', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       log('✗ No GCP project ID in vault. Complete "Create GCP Project" first.');
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
@@ -1263,25 +1262,25 @@ const registerIosAppHandler: StepHandler = {
 
     if (match) {
       log(`✓ iOS app "${bundleId}" already registered (appId=${match.appId}). Storing in vault.`);
-      storeFirebaseIosAppId(vaultManager, passphrase, projectId, match.appId);
+      storeFirebaseIosAppId(credentialService, projectId, match.appId);
       return { reconciled: true, resourcesProduced: { firebase_ios_app_id: match.appId } };
     }
 
     log(`→ Registering iOS app "${bundleId}" (displayName="${displayName}") — awaiting Firebase operation...`);
     const appId = await registerFirebaseIosApp(token, gcpProjectId, bundleId, displayName);
-    storeFirebaseIosAppId(vaultManager, passphrase, projectId, appId);
+    storeFirebaseIosAppId(credentialService, projectId, appId);
 
     log(`✓ COMPLETE — iOS app registered. appId="${appId}"`);
     return { reconciled: true, resourcesProduced: { firebase_ios_app_id: appId } };
   },
 
   async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('register-ios-app:delete', projectId);
     // Firebase does not support deleting app registrations via the Management API.
-    const stored = getStoredFirebaseIosAppId(vaultManager, passphrase, projectId);
+    const stored = getStoredFirebaseIosAppId(credentialService, projectId);
     if (stored) {
-      vaultManager.deleteCredential(passphrase, 'firebase', `${projectId}/firebase_ios_app_id`);
+      credentialService.deleteCredentialByType(projectId, 'firebase_ios_app_id');
       log(`○ Removed vault entry for iOS appId "${stored}". The Firebase registration itself must be deleted via Cloud Console.`);
     } else {
       log('○ No iOS app ID in vault — nothing to clear.');
@@ -1293,11 +1292,11 @@ const registerIosAppHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('register-ios-app:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const storedAppId = getStoredFirebaseIosAppId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const storedAppId = getStoredFirebaseIosAppId(credentialService, projectId);
     if (!gcpProjectId || !storedAppId) {
       log('✗ No GCP project or iOS app ID in vault.');
       return { reconciled: false, message: 'iOS app not registered. Run this step to register it.' };
@@ -1318,15 +1317,15 @@ const registerIosAppHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('register-ios-app:sync', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return null;
 
     const module = projectManager.getProject(projectId);
     const bundleId = module.project.bundleId;
-    const storedAppId = getStoredFirebaseIosAppId(vaultManager, passphrase, projectId);
+    const storedAppId = getStoredFirebaseIosAppId(credentialService, projectId);
 
     log(`→ Looking for iOS app "${bundleId}" on Firebase project "${gcpProjectId}"...`);
     try {
@@ -1336,7 +1335,7 @@ const registerIosAppHandler: StepHandler = {
       if (match) {
         if (match.appId !== storedAppId) {
           log(`→ Updating vault: found appId "${match.appId}" for bundleId "${bundleId}" (was "${storedAppId ?? 'unset'}").`);
-          storeFirebaseIosAppId(vaultManager, passphrase, projectId, match.appId);
+          storeFirebaseIosAppId(credentialService, projectId, match.appId);
         }
         log(`✓ iOS app "${bundleId}" is registered (appId=${match.appId}).`);
         return { reconciled: true, resourcesProduced: { firebase_ios_app_id: match.appId } };
@@ -1360,10 +1359,10 @@ const registerAndroidAppHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('register-android-app', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       log('✗ No GCP project ID in vault. Complete "Create GCP Project" first.');
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
@@ -1381,24 +1380,24 @@ const registerAndroidAppHandler: StepHandler = {
 
     if (match) {
       log(`✓ Android app "${packageName}" already registered (appId=${match.appId}). Storing in vault.`);
-      storeFirebaseAndroidAppId(vaultManager, passphrase, projectId, match.appId);
+      storeFirebaseAndroidAppId(credentialService, projectId, match.appId);
       return { reconciled: true, resourcesProduced: { firebase_android_app_id: match.appId } };
     }
 
     log(`→ Registering Android app "${packageName}" (displayName="${displayName}") — awaiting Firebase operation...`);
     const appId = await registerFirebaseAndroidApp(token, gcpProjectId, packageName, displayName);
-    storeFirebaseAndroidAppId(vaultManager, passphrase, projectId, appId);
+    storeFirebaseAndroidAppId(credentialService, projectId, appId);
 
     log(`✓ COMPLETE — Android app registered. appId="${appId}"`);
     return { reconciled: true, resourcesProduced: { firebase_android_app_id: appId } };
   },
 
   async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('register-android-app:delete', projectId);
-    const stored = getStoredFirebaseAndroidAppId(vaultManager, passphrase, projectId);
+    const stored = getStoredFirebaseAndroidAppId(credentialService, projectId);
     if (stored) {
-      vaultManager.deleteCredential(passphrase, 'firebase', `${projectId}/firebase_android_app_id`);
+      credentialService.deleteCredentialByType(projectId, 'firebase_android_app_id');
       log(`○ Removed vault entry for Android appId "${stored}". The Firebase registration must be deleted via Cloud Console.`);
     } else {
       log('○ No Android app ID in vault — nothing to clear.');
@@ -1410,11 +1409,11 @@ const registerAndroidAppHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('register-android-app:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const storedAppId = getStoredFirebaseAndroidAppId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const storedAppId = getStoredFirebaseAndroidAppId(credentialService, projectId);
     if (!gcpProjectId || !storedAppId) {
       log('✗ No GCP project or Android app ID in vault.');
       return { reconciled: false, message: 'Android app not registered. Run this step to register it.' };
@@ -1436,16 +1435,16 @@ const registerAndroidAppHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('register-android-app:sync', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return null;
 
     const module = projectManager.getProject(projectId);
     const packageName = normalizeAndroidPackageName(module.project.bundleId);
     validateAndroidPackageName(packageName);
-    const storedAppId = getStoredFirebaseAndroidAppId(vaultManager, passphrase, projectId);
+    const storedAppId = getStoredFirebaseAndroidAppId(credentialService, projectId);
 
     log(`→ Looking for Android app "${packageName}" on Firebase project "${gcpProjectId}"...`);
     try {
@@ -1455,7 +1454,7 @@ const registerAndroidAppHandler: StepHandler = {
       if (match) {
         if (match.appId !== storedAppId) {
           log(`→ Updating vault: found appId "${match.appId}" for package "${packageName}" (was "${storedAppId ?? 'unset'}").`);
-          storeFirebaseAndroidAppId(vaultManager, passphrase, projectId, match.appId);
+          storeFirebaseAndroidAppId(credentialService, projectId, match.appId);
         }
         log(`✓ Android app "${packageName}" is registered (appId=${match.appId}).`);
         return { reconciled: true, resourcesProduced: { firebase_android_app_id: match.appId } };
@@ -1497,11 +1496,11 @@ const registerAndroidSha1Handler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, upstreamArtifacts, userInputs } = context;
+    const { projectId, credentialService, upstreamArtifacts, userInputs } = context;
     const log = makeLog('register-android-sha1', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const androidAppId = getStoredFirebaseAndroidAppId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const androidAppId = getStoredFirebaseAndroidAppId(credentialService, projectId);
     if (!gcpProjectId || !androidAppId) {
       log('✗ Missing GCP project or Firebase Android app in vault.');
       return {
@@ -1598,11 +1597,11 @@ const registerAndroidSha1Handler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('register-android-sha1:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
-    const androidAppId = getStoredFirebaseAndroidAppId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    const androidAppId = getStoredFirebaseAndroidAppId(credentialService, projectId);
     if (!gcpProjectId || !androidAppId) {
       return {
         reconciled: false,
@@ -1670,16 +1669,16 @@ const configureFirestoreRulesHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('configure-firestore-rules', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       log('✗ No GCP project ID in vault. Complete "Create GCP Project" first.');
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    const databaseId = getStoredFirestoreDatabaseId(credentialService, projectId);
     if (!databaseId) {
       log('✗ No Firestore database ID recorded in vault.');
       return {
@@ -1726,16 +1725,16 @@ const configureFirestoreRulesHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('configure-firestore-rules:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       log('✗ No GCP project ID in vault.');
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
     }
 
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    const databaseId = getStoredFirestoreDatabaseId(credentialService, projectId);
     if (!databaseId) {
       log('✗ No Firestore database ID recorded in vault.');
       return {
@@ -1792,13 +1791,13 @@ const configureFirestoreRulesHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('configure-firestore-rules:sync', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return null;
 
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    const databaseId = getStoredFirestoreDatabaseId(credentialService, projectId);
     if (!databaseId) {
       log('○ Firestore database ID is not yet stored in vault.');
       return {
@@ -1879,10 +1878,10 @@ const configureStorageRulesHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('configure-storage-rules', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       log('✗ No GCP project ID in vault. Complete "Create GCP Project" first.');
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
@@ -1903,10 +1902,10 @@ const configureStorageRulesHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('configure-storage-rules:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       log('✗ No GCP project ID in vault.');
       return { reconciled: false, message: 'GCP project not set up. Run "Create GCP Project" first.' };
@@ -1924,10 +1923,10 @@ const configureStorageRulesHandler: StepHandler = {
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('configure-storage-rules:sync', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return null;
 
     log(`→ Checking active Storage ruleset on "${gcpProjectId}"...`);
@@ -1957,10 +1956,10 @@ const deleteGcpProjectTeardownHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase, projectManager } = context;
+    const { projectId, credentialService, projectManager } = context;
     const log = makeLog('delete-gcp-project', projectId);
 
-    const storedId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const storedId = getStoredGcpProjectId(credentialService, projectId);
     if (!storedId) {
       log('No stored GCP project ID in vault — nothing to delete.');
       return { reconciled: true, message: 'No GCP project linked — nothing to delete.' };
@@ -1974,10 +1973,27 @@ const deleteGcpProjectTeardownHandler: StepHandler = {
     } catch (err) {
       const msg = (err as Error).message;
       log(`✗ Delete failed: ${msg}`);
+      const permissionDenied = /permission denied deleting gcp project/i.test(msg);
+      if (permissionDenied) {
+        return {
+          reconciled: false,
+          message:
+            `Could not delete GCP project "${storedId}" with the current Google account. ` +
+            'Re-authenticate with the Google account that owns the project, or delete it manually in Google Cloud Console.',
+          suggestsReauth: true,
+          recovery: {
+            type: 'reauth',
+            instructions:
+              `Reconnect Google OAuth using the account that owns "${storedId}", then rerun teardown. ` +
+              'If ownership cannot be changed, delete the project manually in Cloud Resource Manager.',
+            portalUrl: `https://console.cloud.google.com/cloud-resource-manager?project=${encodeURIComponent(storedId)}`,
+          },
+        };
+      }
       return { reconciled: false, message: `Could not delete GCP project "${storedId}": ${msg}` };
     }
 
-    vaultManager.deleteCredential(passphrase, 'firebase', `${projectId}/gcp_project_id`);
+    credentialService.deleteCredentialByType(projectId, 'gcp_project_id');
 
     try {
       const proj = projectManager.getProject(projectId);
@@ -2003,26 +2019,46 @@ const deleteGcpProjectTeardownHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('delete-gcp-project:validate', projectId);
-    const storedId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const storedId = getStoredGcpProjectId(credentialService, projectId);
     if (!storedId) {
       log('✓ No GCP project ID in vault — teardown complete.');
       return { reconciled: true, message: 'GCP project has been removed.' };
     }
     log(`Checking deletion state of "${storedId}"...`);
     const token = await context.getToken('gcp');
-    const status = await getGcpProjectStatus(token, storedId);
-    if (status === 'not_found') {
+    const summary = await fetchGcpProjectSummary(token, storedId);
+    if (!summary.ok && summary.reason === 'not_found') {
       log(`✓ GCP project "${storedId}" no longer exists.`);
       return { reconciled: true };
     }
+    if (summary.ok && summary.lifecycleState === 'DELETE_REQUESTED') {
+      log(`✓ GCP project "${storedId}" is already in DELETE_REQUESTED state.`);
+      return { reconciled: true, message: `GCP project "${storedId}" is pending permanent deletion.` };
+    }
+    const status = summary.ok ? (summary.lifecycleState ?? 'ACTIVE') : summary.reason;
     log(`○ GCP project "${storedId}" still exists (status: ${status}).`);
     return { reconciled: false, message: `GCP project "${storedId}" still exists. Run this teardown step to delete it.` };
   },
 
   async sync(context: StepHandlerContext): Promise<StepHandlerResult | null> {
     return this.validate(context);
+  },
+
+  getManualRevertAction(context: StepHandlerContext) {
+    const { projectId, credentialService } = context;
+    const storedId = getStoredGcpProjectId(credentialService, projectId);
+    if (!storedId) return null;
+    return {
+      stepKey: 'firebase:delete-gcp-project',
+      title: 'Delete GCP project manually',
+      body:
+        `Open Cloud Resource Manager for "${storedId}", select the project, and delete it ` +
+        'using a Google account with owner-level permissions.',
+      primaryUrl: `https://console.cloud.google.com/cloud-resource-manager?project=${encodeURIComponent(storedId)}`,
+      primaryLabel: 'Open Cloud Resource Manager',
+    };
   },
 };
 
@@ -2034,7 +2070,12 @@ function makeAssistedTeardownHandler(stepKey: string): StepHandler {
   return {
     stepKey,
     async create(_context: StepHandlerContext): Promise<StepHandlerResult> {
-      return { reconciled: true, message: 'User confirmed cleanup complete.' };
+      return {
+        reconciled: false,
+        message:
+          `${stepKey} is not safely deletable through Studio APIs yet. ` +
+          'Delete it in the provider console, or delete the backing GCP project to remove all Firebase resources.',
+      };
     },
     async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
       return { reconciled: true };
@@ -2065,10 +2106,10 @@ const deleteFirestoreDbTeardownHandler: StepHandler = {
     return createFirestoreDbHandler.delete(context);
   },
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
-    const databaseId = getStoredFirestoreDatabaseId(vaultManager, passphrase, projectId);
+    const { projectId, credentialService } = context;
+    const databaseId = getStoredFirestoreDatabaseId(credentialService, projectId);
     if (!databaseId) return { reconciled: true, message: 'Firestore database has been removed.' };
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return { reconciled: true };
     const token = await context.getToken('gcp');
     const db = await getFirestoreDatabase(token, gcpProjectId, databaseId);
@@ -2093,10 +2134,10 @@ const enableAuthProvidersHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('enable-auth-providers', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       return { reconciled: false, message: 'GCP project not yet provisioned — run firebase:create-gcp-project first.' };
     }
@@ -2133,15 +2174,39 @@ const enableAuthProvidersHandler: StepHandler = {
     return { reconciled: true, resourcesProduced: { enabled_auth_providers: 'email' } };
   },
 
-  async delete(_context: StepHandlerContext): Promise<StepHandlerResult> {
-    return { reconciled: true };
+  async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
+    const { projectId, credentialService } = context;
+    const log = makeLog('enable-auth-providers:delete', projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
+    if (!gcpProjectId) return { reconciled: true, message: 'No GCP project linked — nothing to disable.' };
+
+    const token = await context.getToken('gcp');
+    try {
+      await gcpRequest(
+        'PATCH',
+        'identitytoolkit.googleapis.com',
+        `/admin/v2/projects/${gcpProjectId}/config?updateMask=signIn.email.enabled`,
+        token,
+        JSON.stringify({ signIn: { email: { enabled: false } } }),
+      );
+      log(`✓ Email/password sign-in disabled on "${gcpProjectId}".`);
+      return { reconciled: true, message: 'Disabled Firebase Auth email/password sign-in.' };
+    } catch (err) {
+      const is403 = err instanceof GcpHttpError && err.statusCode === 403;
+      log(`✗ Could not disable email/password sign-in: ${(err as Error).message}`);
+      return {
+        reconciled: false,
+        message: `Could not disable Firebase Auth email/password sign-in: ${(err as Error).message}`,
+        suggestsReauth: is403,
+      };
+    }
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('enable-auth-providers:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return { reconciled: true };
 
     try {
@@ -2180,10 +2245,10 @@ const enableGoogleSignInHandler: StepHandler = {
   requiredAuth: 'gcp',
 
   async create(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('enable-google-sign-in', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) {
       return { reconciled: false, message: 'GCP project not yet provisioned — run firebase:create-gcp-project first.' };
     }
@@ -2212,10 +2277,10 @@ const enableGoogleSignInHandler: StepHandler = {
   },
 
   async delete(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('enable-google-sign-in:delete', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return { reconciled: true };
 
     const token = await context.getToken('gcp');
@@ -2240,10 +2305,10 @@ const enableGoogleSignInHandler: StepHandler = {
   },
 
   async validate(context: StepHandlerContext): Promise<StepHandlerResult> {
-    const { projectId, vaultManager, passphrase } = context;
+    const { projectId, credentialService } = context;
     const log = makeLog('enable-google-sign-in:validate', projectId);
 
-    const gcpProjectId = getStoredGcpProjectId(vaultManager, passphrase, projectId);
+    const gcpProjectId = getStoredGcpProjectId(credentialService, projectId);
     if (!gcpProjectId) return { reconciled: true };
 
     try {

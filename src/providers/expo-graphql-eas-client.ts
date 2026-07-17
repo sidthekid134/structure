@@ -721,7 +721,7 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
    */
   async ensureStudioEasEnvironmentMarkerOnApp(expoAppId: string, studioEnvironment: string): Promise<void> {
     const expoSlot = studioEnvironmentToExpoVariableEnvironments(studioEnvironment);
-    const name = 'STUDIO_EAS_ENV';
+    const name = 'STRUCTURE_EAS_ENV';
     const value = studioEnvironment;
     try {
       type M = { environmentVariable: { createEnvironmentVariableForApp: { id: string } } };
@@ -841,7 +841,7 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
   }
 
   /**
-   * Removes the `STUDIO_EAS_ENV` marker from the Expo app for a specific Studio
+   * Removes the `STRUCTURE_EAS_ENV` marker from the Expo app for a specific Studio
    * environment (matching by Expo env slot — e.g. studio "development" → DEVELOPMENT).
    * Idempotent: returns the number of variables actually deleted.
    */
@@ -850,7 +850,7 @@ export class ExpoGraphqlEasApiClient implements EasApiClient {
     studioEnvironment: string,
   ): Promise<number> {
     const expoSlot = studioEnvironmentToExpoVariableEnvironments(studioEnvironment)[0];
-    const vars = await this.listAppEnvironmentVariablesByName(expoAppId, 'STUDIO_EAS_ENV');
+    const vars = await this.listAppEnvironmentVariablesByName(expoAppId, 'STRUCTURE_EAS_ENV');
     const matching = vars.filter((v) => (v.environments ?? []).includes(expoSlot!));
     for (const v of matching) {
       await this.deleteEnvironmentVariable(v.id);

@@ -46,15 +46,15 @@ const deleteEnvironmentsStep: ProvisioningStepNode = {
 export const githubRepoPlugin: PluginDefinition = {
   id: 'github-repo',
   version: '1.0.0',
-  label: 'GitHub Repository',
-  description: 'Create the repository and core integration metadata.',
+  label: 'Source Repository',
+  description: 'Create the GitHub repository, environments, and project metadata.',
   integrationId: 'github',
   provider: 'github',
   providerMeta: {
     label: 'GitHub',
     scope: 'organization',
     secretKeys: ['token'],
-    dependsOnProviders: ['firebase'],
+    dependsOnProviders: [],
     displayMeta: {
       label: 'GitHub',
       color: 'text-slate-600 dark:text-slate-300',

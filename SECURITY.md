@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in Studio Pro, **please do not open a
+If you discover a security vulnerability in Structure, **please do not open a
 public GitHub issue**.
 
 Instead, report it privately via one of the following:
@@ -10,13 +10,13 @@ Instead, report it privately via one of the following:
 1. **GitHub Security Advisory** (preferred):
    <https://github.com/sidthekid134/structure/security/advisories/new>
 2. **Email:** siddhu.moparthi@gmail.com with the subject line
-   `[studio-pro security]`.
+   `[structure security]`.
 
 Please include:
 
 - A description of the vulnerability and its potential impact.
 - Steps to reproduce, or a proof-of-concept.
-- The version (or commit) of Studio Pro you are running.
+- The version (or commit) of Structure you are running.
 - Your platform (macOS / Linux, Node version if relevant).
 
 You should receive an acknowledgement within **72 hours**. We aim to provide
@@ -42,7 +42,7 @@ The following are considered valid security reports:
 
 ## Out of Scope
 
-- Local denial-of-service via resource exhaustion. Studio Pro is a
+- Local denial-of-service via resource exhaustion. Structure is a
   loopback-only daemon — a local user with `kill(2)` rights can already stop
   the process.
 - Issues that require local root or physical access to the user's machine.
@@ -61,5 +61,5 @@ prefer to remain anonymous) and a CVE if applicable.
 
 ## Security Posture
 
-For an overview of how Studio Pro stores credentials, derives keys, and
+For an overview of how Structure stores credentials, derives keys, and
 handles OAuth flows, see [docs/security.md](./docs/security.md).

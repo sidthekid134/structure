@@ -1,4 +1,4 @@
-# Build and distribute Studio Pro.
+# Build and distribute Structure.
 # macOS → signed + notarized DMG (drag-to-Applications).
 # Linux  → .tar.gz (execute bit preserved).
 
@@ -20,13 +20,13 @@ jobs:
         include:
           - os: macos-latest
             pkg_target: node22-macos-arm64
-            artifact_name: studio-pro-aarch64-apple-darwin
+            artifact_name: structure-aarch64-apple-darwin
           - os: ubuntu-latest
             pkg_target: node22-linux-x64
-            artifact_name: studio-pro-x86_64-unknown-linux-gnu
+            artifact_name: structure-x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             pkg_target: node22-linux-arm64
-            artifact_name: studio-pro-aarch64-unknown-linux-gnu
+            artifact_name: structure-aarch64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -64,7 +64,7 @@ jobs:
 
       - name: Package CLI (single binary)
         env:
-          STUDIO_PKG_NODE: node22
+          STRUCTURE_PKG_NODE: node22
         run: node scripts/build-cli.js --target=${{ matrix.pkg_target }}
 
       - name: Free disk space before DMG (macOS only)
@@ -110,20 +110,20 @@ jobs:
           echo "Signing with: $IDENTITY"
 
           # ── .app bundle ───────────────────────────────────────────────────
-          APP="$RUNNER_TEMP/Studio Pro.app"
+          APP="$RUNNER_TEMP/Structure.app"
           mkdir -p "$APP/Contents/MacOS"
-          cp "$BINARY" "$APP/Contents/MacOS/studio-pro"
-          chmod +x "$APP/Contents/MacOS/studio-pro"
+          cp "$BINARY" "$APP/Contents/MacOS/structure"
+          chmod +x "$APP/Contents/MacOS/structure"
 
           # Copy app icon if present
-          if [ -f "studio-ui/public/studio-pro-icon.png" ]; then
+          if [ -f "studio-ui/public/structure-icon.png" ]; then
             mkdir -p "$APP/Contents/Resources"
             # Convert PNG → icns using sips + iconutil
             ICONSET="$RUNNER_TEMP/icon.iconset"
             mkdir -p "$ICONSET"
             for size in 16 32 64 128 256 512; do
-              sips -z $size $size "studio-ui/public/studio-pro-icon.png" --out "$ICONSET/icon_${size}x${size}.png" > /dev/null
-              sips -z $((size*2)) $((size*2)) "studio-ui/public/studio-pro-icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" > /dev/null
+              sips -z $size $size "studio-ui/public/structure-icon.png" --out "$ICONSET/icon_${size}x${size}.png" > /dev/null
+              sips -z $((size*2)) $((size*2)) "studio-ui/public/structure-icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" > /dev/null
             done
             iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
           fi
@@ -135,10 +135,10 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>CFBundleName</key><string>Studio Pro</string>
-            <key>CFBundleDisplayName</key><string>Studio Pro</string>
-            <key>CFBundleIdentifier</key><string>com.sidmoparthi.studio-pro</string>
-            <key>CFBundleExecutable</key><string>studio-pro</string>
+            <key>CFBundleName</key><string>Structure</string>
+            <key>CFBundleDisplayName</key><string>Structure</string>
+            <key>CFBundleIdentifier</key><string>com.sidmoparthi.structure</string>
+            <key>CFBundleExecutable</key><string>structure</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleVersion</key><string>${SHORT_VER}</string>
             <key>CFBundleShortVersionString</key><string>${SHORT_VER}</string>
@@ -182,8 +182,8 @@ jobs:
           # HFS+ RW image first, then converting to compressed UDZO.
           DMG_STAGING="$RUNNER_TEMP/dmg_staging"
           DMG_MOUNT="$RUNNER_TEMP/dmg_mount"
-          RW_DMG="$RUNNER_TEMP/Studio-Pro-${VERSION}-rw.dmg"
-          DMG_PATH="binaries/Studio-Pro-${VERSION}.dmg"
+          RW_DMG="$RUNNER_TEMP/Structure-${VERSION}-rw.dmg"
+          DMG_PATH="binaries/Structure-${VERSION}.dmg"
           mkdir -p "$DMG_STAGING" "$DMG_MOUNT"
           cp -R "$APP" "$DMG_STAGING/"
           ln -s /Applications "$DMG_STAGING/Applications"
@@ -195,7 +195,7 @@ jobs:
           hdiutil create \
             -size "${DMG_SIZE_MB}m" \
             -fs HFS+ \
-            -volname "Studio Pro" \
+            -volname "Structure" \
             -ov \
             "$RW_DMG"
 
@@ -238,7 +238,7 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: |
-            binaries/Studio-Pro-*.dmg
+            binaries/Structure-*.dmg
             binaries/${{ matrix.artifact_name }}.tar.gz
 
   publish:

@@ -1,9 +1,11 @@
-import { VaultManager } from '../vault.js';
+import {
+  CredentialService,
+  ORG_SENTINEL,
+} from '../services/credential-service.js';
 import {
   ProjectManager,
   IntegrationConfigRecord,
 } from '../studio/project-manager.js';
-import { getVaultUnlock as resolveVaultUnlock } from '../studio/vault-session.js';
 
 const EXPO_GRAPHQL_URL =
   process.env['EXPO_STAGING'] === '1' || process.env['EXPO_STAGING'] === 'true'
@@ -50,22 +52,22 @@ export interface EasConnectionStatus {
 
 export class EasConnectionService {
   constructor(
-    private readonly vaultManager: VaultManager,
+    private readonly credentialService: CredentialService,
     private readonly projectManager: ProjectManager,
   ) {}
 
   getStoredExpoToken(): string | undefined {
-    return this.vaultManager.getCredential(resolveVaultUnlock(), 'eas', 'expo_token');
+    return this.credentialService.retrieveOrgCredential('expo_token') ?? undefined;
   }
 
   getStoredExpoUsername(): string | undefined {
-    const raw = this.vaultManager.getCredential(resolveVaultUnlock(), 'eas', 'expo_username');
+    const raw = this.credentialService.retrieveOrgCredential('expo_username');
     const username = raw?.trim();
     return username || undefined;
   }
 
   getStoredExpoAccountNames(): string[] {
-    const raw = this.vaultManager.getCredential(resolveVaultUnlock(), 'eas', 'expo_accounts');
+    const raw = this.credentialService.retrieveOrgCredential('expo_accounts');
     if (!raw) return [];
     try {
       const parsed = JSON.parse(raw) as unknown;
@@ -82,32 +84,26 @@ export class EasConnectionService {
     if (typeof token !== 'string' || token.trim().length === 0) {
       throw new Error('Expo token is required.');
     }
-    this.vaultManager.setCredential(resolveVaultUnlock(), 'eas', 'expo_token', token.trim());
+    this.credentialService.storeOrgCredential('expo_token', token.trim());
   }
 
   storeExpoConnectionDetails(details: ExpoConnectionDetails): void {
-    const passphrase = resolveVaultUnlock();
-    this.vaultManager.setCredential(passphrase, 'eas', 'expo_user_id', details.userId);
-    this.vaultManager.setCredential(passphrase, 'eas', 'expo_username', details.username);
-    this.vaultManager.setCredential(passphrase, 'eas', 'expo_accounts', JSON.stringify(details.accountNames));
-    this.vaultManager.setCredential(
-      passphrase,
-      'eas',
-      'expo_token_last_validated_at',
-      new Date().toISOString(),
-    );
+    this.credentialService.storeOrgCredential('expo_user_id', details.userId);
+    this.credentialService.storeOrgCredential('expo_username', details.username);
+    this.credentialService.storeOrgCredential('expo_accounts', JSON.stringify(details.accountNames));
   }
 
   deleteStoredExpoConnectionDetails(): void {
-    const passphrase = resolveVaultUnlock();
-    this.vaultManager.deleteCredential(passphrase, 'eas', 'expo_user_id');
-    this.vaultManager.deleteCredential(passphrase, 'eas', 'expo_username');
-    this.vaultManager.deleteCredential(passphrase, 'eas', 'expo_accounts');
-    this.vaultManager.deleteCredential(passphrase, 'eas', 'expo_token_last_validated_at');
+    this.credentialService.deleteCredentialByType(ORG_SENTINEL, 'expo_user_id');
+    this.credentialService.deleteCredentialByType(ORG_SENTINEL, 'expo_username');
+    this.credentialService.deleteCredentialByType(ORG_SENTINEL, 'expo_accounts');
   }
 
   deleteStoredExpoToken(): boolean {
-    return this.vaultManager.deleteCredential(resolveVaultUnlock(), 'eas', 'expo_token');
+    const summary = this.credentialService.getOrgCredentialSummary('expo_token');
+    if (!summary) return false;
+    this.credentialService.deleteCredential(summary.id);
+    return true;
   }
 
   async fetchExpoConnectionDetails(token: string): Promise<ExpoConnectionDetails> {

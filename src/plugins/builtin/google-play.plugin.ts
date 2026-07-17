@@ -9,15 +9,15 @@ import { GOOGLE_PLAY_FLOW } from '../../flows/google-play.flow.js';
 export const googlePlayPlugin: PluginDefinition = {
   id: 'google-play-publishing',
   version: '1.0.0',
-  label: 'Google Play',
-  description: 'Play Console listing, signing, service account, and internal testing track.',
+  label: 'Android Publishing',
+  description: 'Configure Play Console listing, app signing, service account access, and internal testing.',
   integrationId: 'google-play',
   provider: 'google-play',
   providerMeta: {
     label: 'Google Play',
     scope: 'organization',
     secretKeys: ['service_account_json', 'keystore_password'],
-    dependsOnProviders: ['firebase'],
+    dependsOnProviders: ['gcp'],
     displayMeta: {
       label: 'Google Play',
       color: 'text-green-600',
@@ -25,7 +25,7 @@ export const googlePlayPlugin: PluginDefinition = {
       border: 'border-green-500/30',
     },
   },
-  requiredModules: [],
+  requiredModules: ['gcp-project-foundation'],
   optionalModules: ['eas-submit'],
   includedInTemplates: ['mobile-app'],
   platforms: ['android'],
